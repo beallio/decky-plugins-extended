@@ -8,19 +8,18 @@ plugins into a single compatible store.
 To install plugins from this extended repository, point Decky Loader to its
 custom store URL.
 
-1. **Enable Developer Mode in Decky Loader.**
+1. **Set the Custom Store URL.**
    - Open the Quick Access Menu and select the Decky Loader plug icon.
    - Open **Settings** using the gear icon.
-   - In the **General** tab, turn on **Developer Mode**.
-2. **Set the custom store URL.**
-   - Open the newly available **Developer** tab in Decky settings.
-   - Find **Store URL** and set it to:
+   - Open the **General** tab in Decky settings.
+   - Find **Store Channel** and set it to `Custom`
+   - Set **Custom Store** to:
 
-     ```text
-     https://beallio.github.io/decky-plugins-extended
-     ```
+  ```text
+  https://beallio.github.io/decky-plugins-extended/plugins.json
+  ```
 
-3. **Browse plugins.**
+2. **Browse plugins.**
    - Return to the Decky Store using the shopping bag icon. It will populate
      with the extended plugin catalog.
 
