@@ -1,0 +1,10 @@
+[project]
+name = "decky-plugins-extended"
+version = "0.1.0"
+description = "A custom JSON generator for Decky Loader plugins"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "requests",
+    "urllib3",
+]
