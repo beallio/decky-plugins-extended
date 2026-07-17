@@ -274,7 +274,13 @@ def main():
             print(e)
         sys.exit(1)
 
-    print("Validating generated plugin schemas...")
+    # Ensure all testing plugin IDs match their stable counterparts exactly
+    for testing_plugin in testing_plugins:
+        stable_plugin = next((p for p in plugins if p.get("name") == testing_plugin.get("name")), None)
+        if stable_plugin:
+            testing_plugin["id"] = stable_plugin["id"]
+
+    print("\nValidating plugin schemas...")
     validate_plugin_schema(plugins, "stable", custom_plugin_names)
     validate_plugin_schema(testing_plugins, "testing", custom_plugin_names)
 
