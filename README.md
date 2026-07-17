@@ -20,9 +20,6 @@ custom store URL.
      https://beallio.github.io/decky-plugins-extended/plugins.json
      ```
 
-   - GitHub Pages must be enabled for this repository. If the repository is
-     private or Pages is unavailable, host the generated JSON elsewhere and
-     use that URL instead.
 3. **Browse plugins.**
    - Return to the Decky Store using the shopping bag icon. It will populate
      with the extended plugin catalog.
