@@ -283,6 +283,12 @@ def main():
         json.dump(plugins, f, indent=2)
     with open("public/testing_plugins.json", "w") as f:
         json.dump(testing_plugins, f, indent=2)
+        
+    # Decky Loader appends `/plugins` and `/testing_plugins` directly without an extension
+    with open("public/plugins", "w") as f:
+        json.dump(plugins, f, indent=2)
+    with open("public/testing_plugins", "w") as f:
+        json.dump(testing_plugins, f, indent=2)
 
     print("Successfully generated JSON files in the 'public' directory.")
 

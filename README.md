@@ -17,7 +17,7 @@ custom store URL.
    - Find **Store URL** and set it to:
 
      ```text
-     https://beallio.github.io/decky-plugins-extended/plugins.json
+     https://beallio.github.io/decky-plugins-extended
      ```
 
 3. **Browse plugins.**
