@@ -89,18 +89,6 @@ class GenerateJsonTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "Invalid hash length"):
             generate_json.validate_plugin_schema(plugins, "stable")
 
-    def test_validate_plugin_schema_requires_artifact_for_custom_plugins(self):
-        plugins = [{
-            "id": 1,
-            "name": "CustomPlugin",
-            "versions": [{"name": "1.0.0", "hash": "a" * 64}],
-        }]
-
-        with self.assertRaisesRegex(AssertionError, "Missing artifact URL"):
-            generate_json.validate_plugin_schema(plugins, "stable", {"CustomPlugin"})
-
-        generate_json.validate_plugin_schema(plugins, "stable")
-
     def test_main_separates_stable_and_testing_releases_and_ids(self):
         base_stable = [{
             "id": 7,

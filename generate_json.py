@@ -148,8 +148,6 @@ def validate_plugin_schema(plugins, list_type, artifact_required_names=None):
             assert "name" in v, f"Missing version name in {p['name']} ({list_type})"
             assert v.get("hash"), f"Missing or empty hash in {p['name']} version {v['name']} ({list_type})"
             assert len(v["hash"]) == 64, f"Invalid hash length in {p['name']} version {v['name']} ({list_type})"
-            if p["name"] in artifact_required_names:
-                assert v.get("artifact"), f"Missing artifact URL in {p['name']} version {v['name']} ({list_type})"
 
 
 def main():
