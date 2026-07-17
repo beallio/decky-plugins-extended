@@ -81,5 +81,4 @@ workflow uses its built-in `GITHUB_TOKEN`.
 
 The GitHub Actions workflow runs when generator inputs change, on manual
 dispatch, and every hour. It generates both catalogs with `uv`, validates
-their plugin IDs, names, version lists, SHA-256 hashes, and artifact URLs, then
-deploys the `public/` directory to GitHub Pages.
+their plugin IDs, names, version lists, SHA-256 hashes, and artifact URLs, then triggers the Cloudflare Pages deploy hook.
