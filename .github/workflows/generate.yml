@@ -9,7 +9,7 @@ on:
       - 'pyproject.toml'
       - 'uv.lock'
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 concurrency:
