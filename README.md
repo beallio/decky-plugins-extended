@@ -16,7 +16,7 @@ custom store URL.
    - Set **Custom Store** to:
 
   ```text
-  https://beallio.github.io/decky-plugins-extended/plugins.json
+  https://decky-plugins-extended.pages.dev/plugins.json
   ```
 
 2. **Browse plugins.**
@@ -25,10 +25,10 @@ custom store URL.
 
 ## View the catalogs
 
-The generated JSON files are hosted directly on GitHub Pages and can be viewed in your browser:
+The generated JSON files are hosted directly on Cloudflare Pages and can be viewed in your browser:
 
-- **Stable plugins:** [https://beallio.github.io/decky-plugins-extended/plugins.json](https://beallio.github.io/decky-plugins-extended/plugins.json)
-- **Testing plugins:** [https://beallio.github.io/decky-plugins-extended/testing_plugins.json](https://beallio.github.io/decky-plugins-extended/testing_plugins.json)
+- **Stable plugins:** [https://decky-plugins-extended.pages.dev/plugins.json](https://decky-plugins-extended.pages.dev/plugins.json)
+- **Testing plugins:** [https://decky-plugins-extended.pages.dev/testing_plugins.json](https://decky-plugins-extended.pages.dev/testing_plugins.json)
 
 ## Developer guide
 

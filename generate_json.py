@@ -283,6 +283,10 @@ def main():
         json.dump(plugins, f, indent=2)
     with open("public/testing_plugins.json", "w") as f:
         json.dump(testing_plugins, f, indent=2)
+        
+    # Write Cloudflare Pages _headers file for Decky Loader CORS preflight
+    with open("public/_headers", "w") as f:
+        f.write("/*\n  Access-Control-Allow-Origin: *\n  Access-Control-Allow-Methods: GET, OPTIONS\n  Access-Control-Allow-Headers: X-Decky-Version\n")
 
     print("Successfully generated JSON files in the 'public' directory.")
 
