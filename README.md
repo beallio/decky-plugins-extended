@@ -24,6 +24,13 @@ custom store URL.
    - Return to the Decky Store using the shopping bag icon. It will populate
      with the extended plugin catalog.
 
+## View the catalogs
+
+The generated JSON files are hosted directly on GitHub Pages and can be viewed in your browser:
+
+- **Stable plugins:** [https://beallio.github.io/decky-plugins-extended/plugins.json](https://beallio.github.io/decky-plugins-extended/plugins.json)
+- **Testing plugins:** [https://beallio.github.io/decky-plugins-extended/testing_plugins.json](https://beallio.github.io/decky-plugins-extended/testing_plugins.json)
+
 ## Developer guide
 
 The generator fetches, hashes, and merges custom GitHub releases into the
@@ -74,6 +81,6 @@ workflow uses its built-in `GITHUB_TOKEN`.
 ## Automation
 
 The GitHub Actions workflow runs when generator inputs change, on manual
-dispatch, and every six hours. It generates both catalogs with `uv`, validates
+dispatch, and every hour. It generates both catalogs with `uv`, validates
 their plugin IDs, names, version lists, SHA-256 hashes, and artifact URLs, then
 deploys the `public/` directory to GitHub Pages.
