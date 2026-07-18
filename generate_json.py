@@ -107,7 +107,15 @@ def build_version_object(release, existing_plugin=None):
                 known_hash = v.get("hash")
                 break
 
-    final_hash = known_hash if known_hash else calculate_hash(download_url)
+    final_hash = None
+    
+    # Check if GitHub natively provided the SHA-256 (recent GitHub feature)
+    github_digest = zip_asset.get("digest")
+    if github_digest and github_digest.startswith("sha256:"):
+        final_hash = github_digest.split(":")[1]
+        
+    if not final_hash:
+        final_hash = known_hash if known_hash else calculate_hash(download_url)
 
     return {
         "name": tag_name,
