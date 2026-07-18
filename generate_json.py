@@ -191,8 +191,8 @@ def main():
             if not plugin_name:
                 raise ValueError(f"package.json missing 'name' for {url}")
 
-            existing_stable = next((p for p in plugins if p.get("name") == plugin_name), None)
-            existing_testing = next((p for p in testing_plugins if p.get("name") == plugin_name), None)
+            existing_stable = next((p for p in plugins if p.get("name", "").lower() == plugin_name.lower()), None)
+            existing_testing = next((p for p in testing_plugins if p.get("name", "").lower() == plugin_name.lower()), None)
 
             releases = get_releases(owner, repo)
 
@@ -284,7 +284,7 @@ def main():
 
     # Ensure all testing plugin IDs match their stable counterparts exactly
     for testing_plugin in testing_plugins:
-        stable_plugin = next((p for p in plugins if p.get("name") == testing_plugin.get("name")), None)
+        stable_plugin = next((p for p in plugins if p.get("name", "").lower() == testing_plugin.get("name", "").lower()), None)
         if stable_plugin:
             testing_plugin["id"] = stable_plugin["id"]
 
