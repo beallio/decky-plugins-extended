@@ -110,7 +110,7 @@ def build_version_object(release, existing_plugin=None):
     final_hash = None
     
     # Check if GitHub natively provided the SHA-256 (recent GitHub feature)
-    github_digest = zip_asset.get("digest")
+    github_digest = zip_assets[0].get("digest")
     if github_digest and github_digest.startswith("sha256:"):
         final_hash = github_digest.split(":")[1]
         
