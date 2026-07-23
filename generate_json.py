@@ -280,7 +280,12 @@ def main():
         print("\n=== ERRORS ===")
         for e in errors:
             print(e)
-        sys.exit(1)
+        # A single unreachable repo must not blackhole the whole feed. Only bail
+        # out if nothing at all resolved, which points at a systemic failure.
+        if not custom_plugin_names:
+            print("No plugins resolved successfully. Aborting.")
+            sys.exit(1)
+        print(f"Continuing with {len(custom_plugin_names)} successfully processed plugin(s).")
 
     # Ensure all testing plugin IDs match their stable counterparts exactly
     for testing_plugin in testing_plugins:

@@ -167,7 +167,9 @@ class GenerateJsonTests(unittest.TestCase):
         stable_plugin = next(plugin for plugin in stable if plugin["name"] == "CustomPlugin")
         testing_plugin = next(plugin for plugin in testing if plugin["name"] == "CustomPlugin")
         self.assertEqual(stable_plugin["id"], 8)
-        self.assertEqual(testing_plugin["id"], 12)
+        # Testing IDs are synced to their stable counterpart, so this is 8 and
+        # not the 12 that the independent testing ID space would have assigned.
+        self.assertEqual(testing_plugin["id"], stable_plugin["id"])
         self.assertEqual([version["name"] for version in stable_plugin["versions"]], ["1.0.0"])
         self.assertEqual(
             [version["name"] for version in testing_plugin["versions"]],

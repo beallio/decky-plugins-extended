@@ -6,7 +6,6 @@ https://github.com/mubaraknumann/unifideck
 https://github.com/panyiwei-home/Friendeck
 https://github.com/danielcopper/decky-romm-sync
 https://github.com/MrWaip/vpn-deck
-https://github.com/seatann-dev/decky-wall
 https://github.com/hydralauncher/decky-hydra-launcher
 https://github.com/mdeguzis/decky-proton-pulse
 https://github.com/Necrosiak/Steamcord
@@ -17,7 +16,6 @@ https://github.com/ayrshirepixels/game-roulette
 https://github.com/hostsrc/decky-prysm
 https://github.com/BrenticusMaximus/ThemeDeck
 https://github.com/PixelAddictUnlocked/allycenter
-https://github.com/denmrnngp-cloud/hiddify-steam-deck-vpn
 https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager
 https://github.com/piyush-tyagi-13/ally-vibe-control
 https://github.com/DeckFilter/DeckyZone
