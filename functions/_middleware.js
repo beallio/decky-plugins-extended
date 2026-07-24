@@ -6,6 +6,13 @@
 
 const SORTABLE_PATHS = new Set(["/plugins.json", "/testing_plugins.json"]);
 
+// After downloading a plugin, Decky POSTs <store-url>/<name>/versions/<ver>/increment
+// to bump the install counter. Cloudflare answers non-GET on a static asset with
+// 405, which Decky logs as "Server did not accept install count increment
+// request" -- harmless, the install continues, but it fills the journal. There is
+// nowhere to record a count here, so acknowledge it and move on.
+const INCREMENT_PATH = /^\/(?:plugins|testing_plugins)\.json\/[^/]+\/versions\/[^/]+\/increment$/;
+
 function timestamp(value) {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;
@@ -70,11 +77,19 @@ export async function onRequestOptions(context) {
 }
 
 export async function onRequest(context) {
-  let response = await context.next();
-
   const url = new URL(context.request.url);
-  if (response.ok && SORTABLE_PATHS.has(url.pathname)) {
-    response = await sortCatalog(response, url);
+
+  let response;
+  if (context.request.method === "POST" && INCREMENT_PATH.test(url.pathname)) {
+    response = new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  } else {
+    response = await context.next();
+    if (response.ok && SORTABLE_PATHS.has(url.pathname)) {
+      response = await sortCatalog(response, url);
+    }
   }
 
   response.headers.set("Access-Control-Allow-Origin", "*");
