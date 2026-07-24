@@ -54,6 +54,21 @@ Stable releases are included in both catalogs. GitHub prereleases are included
 only in the testing catalog. Releases with zero or multiple `.zip` assets are
 skipped.
 
+### Store sorting
+
+Decky Loader sorts the store server-side: the frontend appends
+`?sort_by=<name|date|downloads>&sort_direction=<asc|desc>` to the store URL and
+renders the returned array in order. Static files ignore query strings, so the
+Cloudflare Pages Function in `functions/_middleware.js` reorders
+`plugins.json` and `testing_plugins.json` per request, matching what
+`plugins.deckbrew.xyz` returns for the same query (code-point name comparison,
+`created` for date, `downloads` for downloads). Requests without a recognized
+`sort_by` are passed through untouched.
+
+Custom plugins have no download counts, so they sort as zero and land at the
+bottom of a downloads-descending list; their date comes from the repository's
+creation timestamp.
+
 ### Local development
 
 This project uses [uv](https://docs.astral.sh/uv/) for Python dependency
