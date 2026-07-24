@@ -8,8 +8,6 @@ on:
       - 'generate_json.py'
       - 'pyproject.toml'
       - 'uv.lock'
-  schedule:
-    - cron: '0 */4 * * *'
   workflow_dispatch:
 
 concurrency:
