@@ -11,10 +11,13 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: "pages"
+  group: "generate"
   cancel-in-progress: false
 
 jobs:
+  # Cloudflare Pages runs the generator itself on every push, so this job does
+  # not publish anything: it is a pre-flight check that the catalog still builds
+  # and validates before Cloudflare tries the same thing.
   build:
     runs-on: ubuntu-latest
     permissions:
@@ -38,22 +41,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: uv run generate_json.py
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: './public'
-
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    needs: build
-    permissions:
-      pages: write
-      id-token: write
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v5

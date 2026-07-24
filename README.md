@@ -94,6 +94,15 @@ workflow uses its built-in `GITHUB_TOKEN`.
 
 ## Automation
 
-The GitHub Actions workflow runs when generator inputs change, on manual
-dispatch, and every hour. It generates both catalogs with `uv`, validates
-their plugin IDs, names, version lists, SHA-256 hashes, and artifact URLs, then triggers the Cloudflare Pages deploy hook.
+Cloudflare Pages is connected to this repository and deploys on every push to
+`main`. It runs `generate_json.py` as its build step, so the catalogs are
+regenerated from upstream Deckbrew and GitHub at deploy time rather than being
+committed — `public/` is gitignored and holds only local build output. The
+build reads a `GITHUB_TOKEN` configured as an environment variable in the
+Cloudflare Pages dashboard, and the same deploy publishes `functions/`.
+
+The GitHub Actions workflow does not publish anything. It runs when generator
+inputs change and on manual dispatch, generating both catalogs with `uv` and
+validating their plugin IDs, names, version lists, and SHA-256 hashes, so a bad
+`additional_plugins.txt` entry surfaces as a failed check instead of a failed
+Cloudflare build.
