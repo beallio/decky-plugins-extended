@@ -304,6 +304,11 @@ def merge_plugin_versions(existing_plugin, new_versions):
     sort_versions(existing_plugin["versions"])
 
 
+def read_repo_urls(path="additional_plugins.txt"):
+    with open(path, "r") as f:
+        return [line.strip() for line in f if line.strip() and not line.startswith("#")]
+
+
 def copy_static_files(source="static", destination="public"):
     """public/ is build output and gitignored, so the landing page lives in
     static/ and is copied in on every build alongside the generated catalogs."""
@@ -347,8 +352,7 @@ def main():
     max_stable_id = max([p.get("id", 0) for p in plugins]) if plugins else 0
     max_testing_id = max([p.get("id", 0) for p in testing_plugins]) if testing_plugins else 0
 
-    with open("additional_plugins.txt", "r") as f:
-        repo_urls = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    repo_urls = read_repo_urls()
 
     errors = []
     custom_plugin_names = set()

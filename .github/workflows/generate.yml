@@ -8,6 +8,10 @@ on:
       - 'generate_json.py'
       - 'pyproject.toml'
       - 'uv.lock'
+  schedule:
+    # Every 6 hours. A rebuild re-hashes any release zip GitHub has no digest
+    # for, so this is heavier than the check that gates it.
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -19,6 +23,7 @@ jobs:
   # not publish anything: it is a pre-flight check that the catalog still builds
   # and validates before Cloudflare tries the same thing.
   build:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -41,3 +46,43 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: uv run generate_json.py
+
+  # Cloudflare only rebuilds on push, so without this the catalog stays frozen at
+  # whatever upstream looked like at the last deploy. Check first and only spend a
+  # rebuild when something actually moved.
+  refresh:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version-file: 'pyproject.toml'
+
+      - name: Check for upstream and plugin updates
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uv run check_for_updates.py
+
+      - name: Trigger a Cloudflare rebuild
+        if: steps.check.outputs.changed == 'true'
+        env:
+          HOOK: ${{ secrets.CF_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::error::CF_DEPLOY_HOOK secret is not set; cannot trigger a rebuild."
+            exit 1
+          fi
+          curl --fail --silent --show-error -X POST "$HOOK" > /dev/null
+          echo "Requested a Cloudflare rebuild."
