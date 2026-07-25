@@ -16,7 +16,7 @@ custom store URL.
    - Set **Custom Store** to:
 
   ```text
-  https://decky-plugins-extended.pages.dev/plugins.json
+  https://decky-extended-plugins.beallio.com/plugins.json
   ```
 
 2. **Browse plugins.**
@@ -27,8 +27,11 @@ custom store URL.
 
 The generated JSON files are hosted directly on Cloudflare Pages and can be viewed in your browser:
 
-- **Stable plugins:** [https://decky-plugins-extended.pages.dev/plugins.json](https://decky-plugins-extended.pages.dev/plugins.json)
-- **Testing plugins:** [https://decky-plugins-extended.pages.dev/testing_plugins.json](https://decky-plugins-extended.pages.dev/testing_plugins.json)
+- **Stable plugins:** [https://decky-extended-plugins.beallio.com/plugins.json](https://decky-extended-plugins.beallio.com/plugins.json)
+- **Testing plugins:** [https://decky-extended-plugins.beallio.com/testing_plugins.json](https://decky-extended-plugins.beallio.com/testing_plugins.json)
+
+The `decky-plugins-extended.pages.dev` URLs serve the same content and keep
+working.
 
 ## Developer guide
 
@@ -80,6 +83,12 @@ stable catalog.
 Stable releases are included in both catalogs. GitHub prereleases are included
 only in the testing catalog. Releases with zero or multiple `.zip` assets are
 skipped.
+
+### Landing page
+
+`static/index.html` is copied into `public/` on every build and served at the
+site root. `public/` is build output and gitignored, so anything that should be
+published has to live in `static/`, not `public/`.
 
 ### Store sorting
 

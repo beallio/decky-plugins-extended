@@ -232,6 +232,26 @@ class GenerateJsonTests(unittest.TestCase):
         self.assertEqual(plugin["versions"][1]["downloads"], 10)
         self.assertEqual(plugin["versions"][1]["updates"], 4)
 
+    def test_copy_static_files_publishes_the_landing_page(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "static"
+            destination = Path(temp_dir) / "public"
+            source.mkdir()
+            destination.mkdir()
+            (source / "index.html").write_text("<h1>hi</h1>", encoding="utf-8")
+            (source / "nested").mkdir()
+
+            copied = generate_json.copy_static_files(str(source), str(destination))
+
+            self.assertEqual(copied, ["index.html"])
+            self.assertEqual((destination / "index.html").read_text(encoding="utf-8"), "<h1>hi</h1>")
+
+    def test_copy_static_files_without_a_static_dir(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.assertEqual(
+                generate_json.copy_static_files(str(Path(temp_dir) / "missing"), temp_dir), []
+            )
+
     def test_validate_plugin_schema_rejects_bad_hash(self):
         plugins = [{
             "id": 1,

@@ -3,6 +3,7 @@ import re
 import sys
 import json
 import base64
+import shutil
 import requests
 import hashlib
 from requests.adapters import HTTPAdapter
@@ -303,6 +304,24 @@ def merge_plugin_versions(existing_plugin, new_versions):
     sort_versions(existing_plugin["versions"])
 
 
+def copy_static_files(source="static", destination="public"):
+    """public/ is build output and gitignored, so the landing page lives in
+    static/ and is copied in on every build alongside the generated catalogs."""
+    if not os.path.isdir(source):
+        return []
+
+    copied = []
+    for name in sorted(os.listdir(source)):
+        path = os.path.join(source, name)
+        if os.path.isfile(path):
+            shutil.copy2(path, os.path.join(destination, name))
+            copied.append(name)
+
+    if copied:
+        print(f"Copied {len(copied)} static file(s): {', '.join(copied)}")
+    return copied
+
+
 def validate_plugin_schema(plugins, list_type, artifact_required_names=None):
     artifact_required_names = artifact_required_names or set()
     for p in plugins:
@@ -472,6 +491,8 @@ def main():
     # Write Cloudflare Pages _headers file for Decky Loader CORS preflight
     with open("public/_headers", "w") as f:
         f.write("/*\n  Access-Control-Allow-Origin: *\n  Access-Control-Allow-Methods: GET, OPTIONS\n  Access-Control-Allow-Headers: X-Decky-Version\n")
+
+    copy_static_files()
 
     print("Successfully generated JSON files in the 'public' directory.")
 
