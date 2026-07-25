@@ -244,6 +244,46 @@ def build_version_object(release, existing_plugin=None):
     }
 
 
+SEMVER = re.compile(r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.\-]+))?(?:\+[0-9A-Za-z.\-]+)?$")
+
+
+def parse_semver(name):
+    """Returns (major, minor, patch, prerelease_identifiers) or None. Prerelease
+    identifiers are compared per semver: numeric ones numerically, so beta.10
+    outranks beta.9. Build metadata is ignored, as compare-versions ignores it."""
+    match = SEMVER.match((name or "").strip())
+    if not match:
+        return None
+
+    major, minor, patch, prerelease = match.groups()
+    identifiers = []
+    for part in (prerelease or "").split(".") if prerelease else []:
+        identifiers.append((0, int(part), "") if part.isdigit() else (1, 0, part))
+    return int(major), int(minor or 0), int(patch or 0), identifiers
+
+
+def version_sort_key(version):
+    """Decky only ever reads versions[0] -- checkForPluginUpdates compares it
+    against the installed version and the install dropdown defaults to it -- so
+    the highest version has to sort first. Ordering by release date instead puts
+    a late hotfix to an old branch on top, and floats rolling tags ("nightly",
+    "dev-build") above every real release, where validate() then rejects them and
+    no update is ever offered. Versions with no parseable number sort last."""
+    parsed = parse_semver(version.get("name", ""))
+    created = version.get("created") or ""
+    if parsed is None:
+        return (0, 0, 0, 0, 0, [], created)
+
+    major, minor, patch, prerelease = parsed
+    # A prerelease ranks below the release it leads to: 1.0.0 > 1.0.0-beta.1.
+    return (1, major, minor, patch, 0 if prerelease else 1, prerelease, created)
+
+
+def sort_versions(versions):
+    versions.sort(key=version_sort_key, reverse=True)
+    return versions
+
+
 def merge_plugin_versions(existing_plugin, new_versions):
     existing_versions = {v["name"]: v for v in existing_plugin.get("versions", [])}
 
@@ -260,7 +300,7 @@ def merge_plugin_versions(existing_plugin, new_versions):
                 existing_plugin.setdefault("versions", []).append(nv)
             existing_versions[nv["name"]] = nv
 
-    existing_plugin["versions"].sort(key=lambda x: x.get("created", ""), reverse=True)
+    sort_versions(existing_plugin["versions"])
 
 
 def validate_plugin_schema(plugins, list_type, artifact_required_names=None):
@@ -333,6 +373,9 @@ def main():
             if not testing_versions:
                 print(f"  Warning: No valid releases found for {plugin_name}. Skipping.")
                 continue
+
+            sort_versions(stable_versions)
+            sort_versions(testing_versions)
 
             custom_plugin_names.add(plugin_name)
 

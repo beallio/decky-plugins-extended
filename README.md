@@ -92,9 +92,33 @@ Cloudflare Pages Function in `functions/_middleware.js` reorders
 `created` for date, `downloads` for downloads). Requests without a recognized
 `sort_by` are passed through untouched.
 
-Custom plugins have no download counts, so they sort as zero and land at the
-bottom of a downloads-descending list; their date comes from the repository's
-creation timestamp.
+Versions within a plugin are ordered by semver, highest first, not by release
+date. Decky only ever reads `versions[0]`, so a late hotfix to an old branch or
+a rolling tag would otherwise sit on top and suppress update detection. Versions
+with no parseable number (`nightly`, `dev-build`) sort last.
+
+### Install counts
+
+Counts live in a D1 database rather than in the catalogs, which are rebuilt from
+scratch on every deploy. The Pages Function folds them into the response before
+sorting, so `sort_by=downloads` sees real numbers, and records a row when Decky
+POSTs its increment after an install. Counts are *added* to whatever the entry
+already carries, so plugins merged with an upstream entry keep Deckbrew's totals
+and gain the installs made through this store. Without the binding everything
+still works; custom entries just stay at zero.
+
+Setup:
+
+```sh
+npx wrangler d1 create decky-plugin-counts
+npx wrangler d1 execute decky-plugin-counts --remote --file=schema.sql
+```
+
+Then bind it in the Cloudflare Pages project under Settings -> Bindings as a D1
+database with the variable name `DB`, for both Production and Preview.
+
+The endpoint is unauthenticated, so anyone can POST to inflate a number. That is
+acceptable for a personal store; do not read these as trustworthy statistics.
 
 ### Local development
 

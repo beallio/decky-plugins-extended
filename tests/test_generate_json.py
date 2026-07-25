@@ -167,6 +167,32 @@ class GenerateJsonTests(unittest.TestCase):
         with patch.object(generate_json.session, "get", return_value=Response()):
             self.assertIsNone(generate_json.get_plugin_json("owner", "repo", "main"))
 
+    def test_sort_versions_orders_by_semver_not_date(self):
+        versions = [
+            # Newest by date but an old branch: must not end up first.
+            {"name": "1.0.1", "created": "2026-06-01T00:00:00Z"},
+            {"name": "2.0.0", "created": "2026-01-01T00:00:00Z"},
+            {"name": "2.0.0-beta.2", "created": "2025-12-01T00:00:00Z"},
+            {"name": "2.0.0-beta.10", "created": "2025-12-02T00:00:00Z"},
+            # A rolling tag with no version in it sorts last, whatever its date.
+            {"name": "nightly", "created": "2026-07-01T00:00:00Z"},
+        ]
+
+        self.assertEqual(
+            [v["name"] for v in generate_json.sort_versions(versions)],
+            ["2.0.0", "2.0.0-beta.10", "2.0.0-beta.2", "1.0.1", "nightly"],
+        )
+
+    def test_parse_semver_handles_partial_and_invalid_versions(self):
+        self.assertEqual(generate_json.parse_semver("1.2.3")[:3], (1, 2, 3))
+        self.assertEqual(generate_json.parse_semver("0.1")[:3], (0, 1, 0))
+        self.assertEqual(generate_json.parse_semver("3")[:3], (3, 0, 0))
+        # Build metadata is ignored, as compare-versions ignores it.
+        self.assertEqual(generate_json.parse_semver("1.2.3+build.5")[:3], (1, 2, 3))
+        self.assertIsNone(generate_json.parse_semver("nightly"))
+        self.assertIsNone(generate_json.parse_semver("dev-build"))
+        self.assertIsNone(generate_json.parse_semver(""))
+
     def test_merge_plugin_versions_updates_and_sorts_versions(self):
         plugin = {
             "versions": [
