@@ -46,9 +46,23 @@ https://github.com/beallio/SDH-Ludusavi
 
 Each repository must have:
 
-- A `package.json` file on its default branch with a `name` field.
+- A `plugin.json` file on its default branch with a `name` field. Decky
+  identifies an installed plugin by that name, so the catalog entry has to use
+  it or the store will never match the plugin you have installed and will never
+  offer updates. A repository without `plugin.json` falls back to the
+  `package.json` name, which usually differs (`sdh-ludusavi` vs
+  `SDH-Ludusavi`) and has that consequence.
+- A `package.json` file on its default branch, used for the author,
+  description, and tags.
 - At least one GitHub release.
 - Exactly one `.zip` asset on every release that should appear in the catalogs.
+
+Release tags are reduced to the version they contain, so `Release-0.7.1` and
+`decky-romm-sync-v0.30.1` become `0.7.1` and `0.30.1`. Decky validates store
+versions as semver before offering an update and silently ignores anything
+else. Tags with no version in them at all (`nightly`, `dev-build`) are passed
+through unchanged; keep those as GitHub prereleases so they stay out of the
+stable catalog.
 
 Stable releases are included in both catalogs. GitHub prereleases are included
 only in the testing catalog. Releases with zero or multiple `.zip` assets are

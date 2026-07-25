@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import base64
@@ -56,15 +57,35 @@ def get_repo_info(owner, repo):
     return resp.json()
 
 
-def get_package_json(owner, repo, branch):
-    url = f"https://api.github.com/repos/{owner}/{repo}/contents/package.json?ref={branch}"
+def get_repo_json(owner, repo, branch, filename, required=True):
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{filename}?ref={branch}"
     resp = session.get(url, timeout=10)
+    if resp.status_code == 404 and not required:
+        return None
     resp.raise_for_status()
     data = resp.json()
     if data.get("encoding") == "base64":
         content = base64.b64decode(data["content"]).decode("utf-8")
         return json.loads(content)
-    raise ValueError(f"Unsupported encoding for package.json in {owner}/{repo}")
+    raise ValueError(f"Unsupported encoding for {filename} in {owner}/{repo}")
+
+
+def get_package_json(owner, repo, branch):
+    return get_repo_json(owner, repo, branch, "package.json")
+
+
+def get_plugin_json(owner, repo, branch):
+    return get_repo_json(owner, repo, branch, "plugin.json", required=False)
+
+
+def resolve_plugin_name(plugin_json, pkg):
+    """Decky identifies an installed plugin by the name in its plugin.json:
+    find_plugin_folder() matches on it, and checkForPluginUpdates() compares it
+    against the store entry's name. A catalog keyed on the package.json name
+    ("sdh-ludusavi" vs "SDH-Ludusavi") therefore never matches what is installed,
+    so updates are never offered. Prefer plugin.json and keep package.json as the
+    fallback for repositories that do not ship one on the default branch."""
+    return (plugin_json or {}).get("name") or (pkg or {}).get("name")
 
 
 def get_releases(owner, repo):
@@ -89,8 +110,25 @@ def calculate_hash(download_url):
     return h.hexdigest()
 
 
+# Matches the version inside a release tag: "v1.2.3", "Release-0.7.1",
+# "decky-romm-sync-v0.29.0" all yield the bare version.
+VERSION_IN_TAG = re.compile(r"\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.\-]+)?")
+
+
+def normalize_version(tag_name):
+    """Decky runs store version strings through compare-versions' validate()
+    before offering an update, and anything that is not semver-shaped is
+    discarded -- a plugin tagged "Release-0.7.1" can never show an update. Pull
+    the version out of the tag, falling back to the bare tag when it holds
+    nothing version-shaped."""
+    match = VERSION_IN_TAG.search(tag_name)
+    if match:
+        return match.group(0)
+    return tag_name.lstrip("v")
+
+
 def build_version_object(release, existing_plugin=None):
-    tag_name = release.get("tag_name", "1.0.0").lstrip("v")
+    tag_name = normalize_version(release.get("tag_name", "1.0.0"))
 
     zip_assets = [a for a in release.get("assets", []) if a.get("name", "").endswith(".zip")]
     if len(zip_assets) != 1:
@@ -187,9 +225,12 @@ def main():
             default_branch = repo_info.get("default_branch", "main")
 
             pkg = get_package_json(owner, repo, default_branch)
-            plugin_name = pkg.get("name")
+            plugin_json = get_plugin_json(owner, repo, default_branch)
+            plugin_name = resolve_plugin_name(plugin_json, pkg)
             if not plugin_name:
-                raise ValueError(f"package.json missing 'name' for {url}")
+                raise ValueError(f"No 'name' in plugin.json or package.json for {url}")
+            if plugin_json is None:
+                print(f"  Warning: no plugin.json on {default_branch}; falling back to the package.json name '{plugin_name}'.")
 
             existing_stable = next((p for p in plugins if p.get("name", "").lower() == plugin_name.lower()), None)
             existing_testing = next((p for p in testing_plugins if p.get("name", "").lower() == plugin_name.lower()), None)

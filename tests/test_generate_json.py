@@ -36,6 +36,44 @@ class GenerateJsonTests(unittest.TestCase):
         self.assertEqual(version["hash"], known_hash)
         self.assertEqual(version["artifact"], artifact)
 
+    def test_normalize_version_extracts_version_from_prefixed_tags(self):
+        cases = {
+            "v1.2.3": "1.2.3",
+            "1.2.3": "1.2.3",
+            "Release-0.7.1": "0.7.1",
+            "decky-romm-sync-v0.29.0": "0.29.0",
+            "panel-de-control-v0.30.1": "0.30.1",
+            "v2.0.0-beta.1": "2.0.0-beta.1",
+            "0.1": "0.1",
+            "1.04": "1.04",
+            # Nothing version-shaped: keep the tag rather than drop the release.
+            "latest": "latest",
+        }
+
+        for tag, expected in cases.items():
+            with self.subTest(tag=tag):
+                self.assertEqual(generate_json.normalize_version(tag), expected)
+
+    def test_resolve_plugin_name_prefers_plugin_json(self):
+        # Decky matches installed plugins on the plugin.json name, so it wins.
+        self.assertEqual(
+            generate_json.resolve_plugin_name({"name": "SDH-Ludusavi"}, {"name": "sdh-ludusavi"}),
+            "SDH-Ludusavi",
+        )
+        self.assertEqual(generate_json.resolve_plugin_name(None, {"name": "sdh-ludusavi"}), "sdh-ludusavi")
+        self.assertEqual(generate_json.resolve_plugin_name({}, {"name": "sdh-ludusavi"}), "sdh-ludusavi")
+        self.assertIsNone(generate_json.resolve_plugin_name(None, {}))
+
+    def test_get_plugin_json_returns_none_when_absent(self):
+        class Response:
+            status_code = 404
+
+            def raise_for_status(self):
+                raise AssertionError("must not raise for an optional missing file")
+
+        with patch.object(generate_json.session, "get", return_value=Response()):
+            self.assertIsNone(generate_json.get_plugin_json("owner", "repo", "main"))
+
     def test_merge_plugin_versions_updates_and_sorts_versions(self):
         plugin = {
             "versions": [
@@ -114,8 +152,10 @@ class GenerateJsonTests(unittest.TestCase):
             "created_at": "2025-01-01T00:00:00Z",
             "updated_at": "2026-01-01T00:00:00Z",
         }
+        # The store entry must be keyed on the plugin.json name, not this one.
+        plugin_json = {"name": "Custom Plugin"}
         package = {
-            "name": "CustomPlugin",
+            "name": "custom-plugin",
             "author": {"name": "Decky Author"},
             "description": "Plugin description",
             "keywords": "utility",
@@ -154,6 +194,7 @@ class GenerateJsonTests(unittest.TestCase):
                     patch.object(generate_json, "fetch_json", side_effect=fetch_json),
                     patch.object(generate_json, "get_repo_info", return_value=repo_info),
                     patch.object(generate_json, "get_package_json", return_value=package),
+                    patch.object(generate_json, "get_plugin_json", return_value=plugin_json),
                     patch.object(generate_json, "get_releases", return_value=releases),
                     patch.object(generate_json, "build_version_object", side_effect=build_version_object),
                 ):
@@ -164,8 +205,8 @@ class GenerateJsonTests(unittest.TestCase):
             stable = json.loads((workdir / "public/plugins.json").read_text(encoding="utf-8"))
             testing = json.loads((workdir / "public/testing_plugins.json").read_text(encoding="utf-8"))
 
-        stable_plugin = next(plugin for plugin in stable if plugin["name"] == "CustomPlugin")
-        testing_plugin = next(plugin for plugin in testing if plugin["name"] == "CustomPlugin")
+        stable_plugin = next(plugin for plugin in stable if plugin["name"] == "Custom Plugin")
+        testing_plugin = next(plugin for plugin in testing if plugin["name"] == "Custom Plugin")
         self.assertEqual(stable_plugin["id"], 8)
         # Testing IDs are synced to their stable counterpart, so this is 8 and
         # not the 12 that the independent testing ID space would have assigned.
