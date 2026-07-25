@@ -8,3 +8,10 @@ dependencies = [
     "requests",
     "urllib3",
 ]
+
+# This repository is a script plus its deps, not an importable package. Without
+# this, setuptools' flat-layout auto-discovery treats the top-level directories
+# as packages and fails the build once there is more than one of them:
+# "Multiple top-level packages discovered in a flat-layout: ['static', 'functions']".
+[tool.setuptools]
+py-modules = []
