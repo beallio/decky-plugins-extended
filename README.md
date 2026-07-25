@@ -57,6 +57,14 @@ Each repository must have:
 - At least one GitHub release.
 - Exactly one `.zip` asset on every release that should appear in the catalogs.
 
+Store card images come from `plugin.json`'s `publish.image`, the same field the
+official store ingests. Cards are 320x200 and cropped with `object-fit: cover`,
+so a wide banner works better than a tall icon. A repository that has no image,
+still carries the template's placeholder (which points at the loader's own
+repo), or whose image URL is gone falls back to the GitHub repository card at
+`https://opengraph.githubassets.com/1/<owner>/<repo>`. To give a plugin a proper
+image, get its author to set `publish.image` upstream.
+
 Release tags are reduced to the version they contain, so `Release-0.7.1` and
 `decky-romm-sync-v0.30.1` become `0.7.1` and `0.30.1`. Decky validates store
 versions as semver before offering an update and silently ignores anything

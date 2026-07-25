@@ -64,6 +64,70 @@ class GenerateJsonTests(unittest.TestCase):
         self.assertEqual(generate_json.resolve_plugin_name({}, {"name": "sdh-ludusavi"}), "sdh-ludusavi")
         self.assertIsNone(generate_json.resolve_plugin_name(None, {}))
 
+    def test_resolve_image_url_prefers_publish_image(self):
+        plugin_json = {"publish": {"image": "https://example.invalid/store.png"}}
+
+        with patch.object(generate_json, "image_is_usable", return_value=True):
+            self.assertEqual(
+                generate_json.resolve_image_url(plugin_json, "owner", "repo"),
+                "https://example.invalid/store.png",
+            )
+
+    def test_resolve_image_url_falls_back_to_repo_card(self):
+        fallback = "https://opengraph.githubassets.com/1/owner/repo"
+        template = "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
+
+        with patch.object(generate_json, "image_is_usable", return_value=True) as usable:
+            # Missing, empty, and the unedited template placeholder.
+            self.assertEqual(generate_json.resolve_image_url(None, "owner", "repo"), fallback)
+            self.assertEqual(generate_json.resolve_image_url({"publish": {}}, "owner", "repo"), fallback)
+            self.assertEqual(
+                generate_json.resolve_image_url({"publish": {"image": "  "}}, "owner", "repo"), fallback
+            )
+            self.assertEqual(
+                generate_json.resolve_image_url({"publish": {"image": template}}, "owner", "repo"), fallback
+            )
+            usable.assert_not_called()
+
+        # A dead link is replaced too.
+        with patch.object(generate_json, "image_is_usable", return_value=False):
+            self.assertEqual(
+                generate_json.resolve_image_url(
+                    {"publish": {"image": "https://example.invalid/gone.png"}}, "owner", "repo"
+                ),
+                fallback,
+            )
+
+    def test_image_is_usable_distinguishes_dead_from_transient(self):
+        class Response:
+            def __init__(self, status_code, content_type="image/png"):
+                self.status_code = status_code
+                self.headers = {"content-type": content_type}
+
+            def close(self):
+                pass
+
+        cases = [
+            (Response(200), True),
+            (Response(200, "text/html"), False),   # a 404 page served as 200
+            (Response(404, "text/plain"), False),
+            (Response(429, "text/html"), True),    # rate limited, not proof of a dead link
+            (Response(503, "text/html"), True),
+        ]
+        for response, expected in cases:
+            with self.subTest(status=response.status_code, ctype=response.headers["content-type"]):
+                with (
+                    patch.object(generate_json.anon_session, "head", return_value=response),
+                    patch.object(generate_json.anon_session, "get", return_value=response),
+                ):
+                    self.assertIs(generate_json.image_is_usable("https://example.invalid/x.png"), expected)
+
+    def test_image_is_usable_keeps_url_on_network_error(self):
+        with patch.object(
+            generate_json.anon_session, "head", side_effect=generate_json.requests.RequestException("boom")
+        ):
+            self.assertTrue(generate_json.image_is_usable("https://example.invalid/x.png"))
+
     def test_get_plugin_json_returns_none_when_absent(self):
         class Response:
             status_code = 404
@@ -218,6 +282,11 @@ class GenerateJsonTests(unittest.TestCase):
         )
         self.assertEqual(testing_plugin["author"], "Decky Author")
         self.assertEqual(testing_plugin["tags"], ["utility"])
+        # No publish.image in this plugin.json, so both entries get the repo card.
+        self.assertEqual(
+            stable_plugin["image_url"], "https://opengraph.githubassets.com/1/example/custom-plugin"
+        )
+        self.assertEqual(testing_plugin["image_url"], stable_plugin["image_url"])
 
 
 if __name__ == "__main__":

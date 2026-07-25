@@ -88,6 +88,53 @@ def resolve_plugin_name(plugin_json, pkg):
     return (plugin_json or {}).get("name") or (pkg or {}).get("name")
 
 
+# The plugin template ships this as the placeholder store image. Repositories
+# that never edited it would render the loader's repo card instead of their own.
+TEMPLATE_IMAGE_REPO = "SteamDeckHomebrew/PluginLoader"
+
+
+def image_is_usable(url):
+    """Reject images that are provably gone. A transient failure (rate limiting,
+    a 5xx, a timeout) is not proof, so keep the URL rather than flipping the
+    catalog to the fallback on a bad build."""
+    try:
+        resp = anon_session.head(url, timeout=15, allow_redirects=True)
+        if resp.status_code >= 400:
+            # Some hosts refuse HEAD; confirm with a GET before believing it.
+            resp = anon_session.get(url, timeout=15, stream=True)
+            resp.close()
+    except requests.RequestException as e:
+        print(f"    Warning: could not check image {url} ({e}). Keeping it.")
+        return True
+
+    if resp.status_code == 200:
+        return resp.headers.get("content-type", "").startswith("image/")
+    if resp.status_code in (404, 403, 410):
+        return False
+    print(f"    Warning: image check for {url} returned {resp.status_code}. Keeping it.")
+    return True
+
+
+def resolve_image_url(plugin_json, owner, repo):
+    """Store card images come from plugin.json's publish.image, the same field
+    the official store ingests. Fall back to the repository's OpenGraph card,
+    which GitHub renders for every repo, so no entry is left with a blank image."""
+    plugin_json = plugin_json or {}
+    publish = plugin_json.get("publish") or {}
+    candidate = (publish.get("image") or plugin_json.get("image") or "").strip()
+    fallback = f"https://opengraph.githubassets.com/1/{owner}/{repo}"
+
+    if not candidate:
+        return fallback
+    if TEMPLATE_IMAGE_REPO in candidate and f"{owner}/{repo}" != TEMPLATE_IMAGE_REPO:
+        print(f"    Note: {owner}/{repo} still has the template placeholder image. Using its repo card.")
+        return fallback
+    if not image_is_usable(candidate):
+        print(f"    Note: {owner}/{repo} publish.image is unreachable. Using its repo card.")
+        return fallback
+    return candidate
+
+
 def get_releases(owner, repo):
     releases = []
     url = f"https://api.github.com/repos/{owner}/{repo}/releases?per_page=100"
@@ -265,6 +312,10 @@ def main():
             if isinstance(tags, str):
                 tags = [tags]
 
+            # Only for entries this generator creates: plugins that merge into an
+            # upstream entry keep the store's own CDN image.
+            image_url = resolve_image_url(plugin_json, owner, repo)
+
             # --- TESTING PLUGINS ---
             if existing_testing:
                 print(f"  Found in testing plugins. Merging versions...")
@@ -280,7 +331,7 @@ def main():
                     "tags": tags,
                     "versions": testing_versions,
                     "visible": True,
-                    "image_url": "",
+                    "image_url": image_url,
                     "downloads": 0,
                     "updates": 0,
                     "created": repo_info.get("created_at"),
@@ -304,7 +355,7 @@ def main():
                         "tags": tags,
                         "versions": stable_versions,
                         "visible": True,
-                        "image_url": "",
+                        "image_url": image_url,
                         "downloads": 0,
                         "updates": 0,
                         "created": repo_info.get("created_at"),
