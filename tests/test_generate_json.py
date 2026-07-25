@@ -64,6 +64,35 @@ class GenerateJsonTests(unittest.TestCase):
         self.assertEqual(generate_json.resolve_plugin_name({}, {"name": "sdh-ludusavi"}), "sdh-ludusavi")
         self.assertIsNone(generate_json.resolve_plugin_name(None, {}))
 
+    def test_resolve_tags_promotes_the_root_flag(self):
+        # The store card shows its root warning off a 'root' tag, not off flags.
+        plugin_json = {"publish": {"tags": ["vpn", "network"]}, "flags": ["root", "_root", "debug"]}
+
+        self.assertEqual(
+            generate_json.resolve_tags(plugin_json, {"keywords": ["ignored"]}),
+            ["network", "root", "vpn"],
+        )
+
+    def test_resolve_tags_falls_back_to_keywords(self):
+        self.assertEqual(
+            generate_json.resolve_tags({"publish": {}}, {"keywords": ["deck", "plugin"]}),
+            ["deck", "plugin"],
+        )
+        self.assertEqual(generate_json.resolve_tags(None, {"keywords": "utility"}), ["utility"])
+        self.assertEqual(generate_json.resolve_tags(None, {}), [])
+        # A root plugin with no tags at all still gets the marker.
+        self.assertEqual(generate_json.resolve_tags({"flags": ["root"]}, {}), ["root"])
+
+    def test_resolve_description_prefers_publish_description(self):
+        plugin_json = {"publish": {"description": "Store copy"}}
+        pkg = {"description": "Developer copy"}
+        repo_info = {"description": "Repo copy"}
+
+        self.assertEqual(generate_json.resolve_description(plugin_json, pkg, repo_info), "Store copy")
+        self.assertEqual(generate_json.resolve_description({"publish": {}}, pkg, repo_info), "Developer copy")
+        self.assertEqual(generate_json.resolve_description(None, {"description": "  "}, repo_info), "Repo copy")
+        self.assertEqual(generate_json.resolve_description(None, {}, {}), "")
+
     def test_resolve_image_url_prefers_publish_image(self):
         plugin_json = {"publish": {"image": "https://example.invalid/store.png"}}
 

@@ -52,10 +52,15 @@ Each repository must have:
   offer updates. A repository without `plugin.json` falls back to the
   `package.json` name, which usually differs (`sdh-ludusavi` vs
   `SDH-Ludusavi`) and has that consequence.
-- A `package.json` file on its default branch, used for the author,
-  description, and tags.
+- A `package.json` file on its default branch, used for the author and as the
+  fallback source for the description and tags.
 - At least one GitHub release.
 - Exactly one `.zip` asset on every release that should appear in the catalogs.
+
+Tags and the description come from `plugin.json`'s `publish` block, matching
+the official store; `package.json` `keywords` and `description` are only the
+fallback. A plugin that declares `"flags": ["root"]` also gets a `root` tag,
+because that is how the store card decides to show its "runs as root" warning.
 
 Store card images come from `plugin.json`'s `publish.image`, the same field the
 official store ingests. Cards are 320x200 and cropped with `object-fit: cover`,

@@ -115,6 +115,38 @@ def image_is_usable(url):
     return True
 
 
+def resolve_tags(plugin_json, pkg):
+    """The store card decides whether to show the "runs as root" warning by
+    looking for a 'root' tag (PluginCard: storePlugin.tags.some(t => t ===
+    'root')), but a plugin declares that in plugin.json's flags. Mirror the
+    official catalog: publish.tags plus 'root' when flagged, sorted, with
+    package.json keywords only as a fallback -- those are usually template
+    boilerplate ('plugin-template', 'deck') rather than curated tags."""
+    plugin_json = plugin_json or {}
+    publish = plugin_json.get("publish") or {}
+
+    tags = publish.get("tags") or (pkg or {}).get("keywords") or []
+    if isinstance(tags, str):
+        tags = [tags]
+    tags = [str(tag).strip() for tag in tags if str(tag).strip()]
+
+    if "root" in (plugin_json.get("flags") or []):
+        tags.append("root")
+
+    # 'debug' is a loader-side flag; it never appears in the official catalog.
+    return sorted({tag for tag in tags if tag != "debug"})
+
+
+def resolve_description(plugin_json, pkg, repo_info):
+    """publish.description is the store-facing copy; package.json's description
+    is aimed at developers and is sometimes not even in English."""
+    publish = (plugin_json or {}).get("publish") or {}
+    for candidate in (publish.get("description"), (pkg or {}).get("description"), (repo_info or {}).get("description")):
+        if candidate and candidate.strip():
+            return candidate.strip()
+    return ""
+
+
 def resolve_image_url(plugin_json, owner, repo):
     """Store card images come from plugin.json's publish.image, the same field
     the official store ingests. Fall back to the repository's OpenGraph card,
@@ -308,9 +340,8 @@ def main():
             if isinstance(author, dict):
                 author = author.get("name", owner)
 
-            tags = pkg.get("keywords", [])
-            if isinstance(tags, str):
-                tags = [tags]
+            tags = resolve_tags(plugin_json, pkg)
+            description = resolve_description(plugin_json, pkg, repo_info)
 
             # Only for entries this generator creates: plugins that merge into an
             # upstream entry keep the store's own CDN image.
@@ -327,7 +358,7 @@ def main():
                     "id": max_testing_id,
                     "name": plugin_name,
                     "author": author,
-                    "description": pkg.get("description", repo_info.get("description", "")),
+                    "description": description,
                     "tags": tags,
                     "versions": testing_versions,
                     "visible": True,
@@ -351,7 +382,7 @@ def main():
                         "id": max_stable_id,
                         "name": plugin_name,
                         "author": author,
-                        "description": pkg.get("description", repo_info.get("description", "")),
+                        "description": description,
                         "tags": tags,
                         "versions": stable_versions,
                         "visible": True,
