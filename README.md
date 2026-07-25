@@ -179,5 +179,5 @@ into upstream entries regularly leaves this catalog ahead of Deckbrew's.
 
 To enable it, create a deploy hook under Pages -> Settings -> Builds &
 deployments -> Deploy hooks, and store the URL as the repository secret
-`CF_DEPLOY_HOOK`. Without the secret the job fails loudly rather than silently
+`CLOUDFLARE_DEPLOY_HOOK`. Without the secret the job fails loudly rather than silently
 skipping the rebuild.

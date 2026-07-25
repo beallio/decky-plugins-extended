@@ -78,10 +78,10 @@ jobs:
       - name: Trigger a Cloudflare rebuild
         if: steps.check.outputs.changed == 'true'
         env:
-          HOOK: ${{ secrets.CF_DEPLOY_HOOK }}
+          HOOK: ${{ secrets.CLOUDFLARE_DEPLOY_HOOK }}
         run: |
           if [ -z "$HOOK" ]; then
-            echo "::error::CF_DEPLOY_HOOK secret is not set; cannot trigger a rebuild."
+            echo "::error::CLOUDFLARE_DEPLOY_HOOK secret is not set; cannot trigger a rebuild."
             exit 1
           fi
           curl --fail --silent --show-error -X POST "$HOOK" > /dev/null
