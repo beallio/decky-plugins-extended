@@ -1,11 +1,12 @@
+import base64
+import hashlib
+import json
 import os
 import re
-import sys
-import json
-import base64
 import shutil
+import sys
+
 import requests
-import hashlib
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -415,10 +416,10 @@ def main():
 
             # --- TESTING PLUGINS ---
             if existing_testing:
-                print(f"  Found in testing plugins. Merging versions...")
+                print("  Found in testing plugins. Merging versions...")
                 merge_plugin_versions(existing_testing, testing_versions)
             else:
-                print(f"  Adding to testing plugins...")
+                print("  Adding to testing plugins...")
                 max_testing_id += 1
                 new_testing = {
                     "id": max_testing_id,
@@ -439,10 +440,10 @@ def main():
             # --- STABLE PLUGINS ---
             if stable_versions:
                 if existing_stable:
-                    print(f"  Found in stable plugins. Merging versions...")
+                    print("  Found in stable plugins. Merging versions...")
                     merge_plugin_versions(existing_stable, stable_versions)
                 else:
-                    print(f"  Adding to stable plugins...")
+                    print("  Adding to stable plugins...")
                     max_stable_id += 1
                     new_stable = {
                         "id": max_stable_id,
