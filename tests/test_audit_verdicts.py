@@ -11,6 +11,11 @@ import audit_plugins as ap
 REPOSITORY = "https://github.com/owner/plugin"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_tracked_verdict_store(monkeypatch, tmp_path):
+    monkeypatch.setattr(ap, "VERDICTS_FILE", str(tmp_path / "security-verdicts.json"))
+
+
 def _release(tag: str, asset_id: int) -> dict:
     return {
         "tag_name": tag,
@@ -276,7 +281,7 @@ def test_atomic_write_failure_preserves_prior_verdict_file(monkeypatch, tmp_path
     )
 
     with pytest.raises(OSError):
-        ap._write_verdicts_atomic(str(tmp_path), replacement)
+        ap._write_verdicts_atomic(replacement)
 
     assert json.loads((tmp_path / "verdicts.json").read_text(encoding="utf-8")) == prior
 
