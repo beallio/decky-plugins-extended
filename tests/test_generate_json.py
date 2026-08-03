@@ -17,6 +17,16 @@ class GenerateJsonTests(unittest.TestCase):
 
         self.assertIsNone(generate_json.build_version_object(release))
 
+    def test_build_version_object_skips_dual_casing_zips(self):
+        dual_zip_release = {
+            "tag_name": "v1.2.0",
+            "assets": [
+                {"name": "plugin.zip", "browser_download_url": "http://ex.com/1.zip"},
+                {"name": "Plugin.ZIP", "browser_download_url": "http://ex.com/2.zip"},
+            ],
+        }
+        self.assertIsNone(generate_json.build_version_object(dual_zip_release))
+
     def test_build_version_object_reuses_known_hash(self):
         artifact = "https://example.invalid/plugin.zip"
         known_hash = "a" * 64

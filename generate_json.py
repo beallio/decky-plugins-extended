@@ -16,7 +16,7 @@ from plugin_release_utils import (
     version_sort_key,
 )
 from plugin_release_utils import (
-    parse_semver as parse_semver,
+    parse_semver as parse_semver,  # re-export for external callers of generate_json.parse_semver
 )
 
 # Source URLs
@@ -233,7 +233,8 @@ def build_version_object(release, existing_plugin=None):
         return None
 
     zip_asset = get_zip_asset(release)
-    assert zip_asset is not None
+    if zip_asset is None:
+        return None
     download_url = zip_asset.get("browser_download_url")
 
     # Performance Optimization: Avoid re-hashing if we already know this version

@@ -1,21 +1,27 @@
 {
   "date": "2026-08-03",
-  "task_objective": "Extract shared release-selection logic into plugin_release_utils.py and fix testing-channel semver selection",
+  "task_objective": "Extract shared release-selection logic into plugin_release_utils.py, fix testing-channel semver selection, and resolve review round 01 notes.",
   "files_modified": [
     "plugin_release_utils.py",
     "generate_json.py",
-    "tests/test_plugin_release_utils.py"
+    "tests/test_plugin_release_utils.py",
+    "tests/test_generate_json.py",
+    "docs/agent_conversations/2026-08-03_release-utils.json"
   ],
   "tests_added": [
-    "tests/test_plugin_release_utils.py"
+    "tests/test_plugin_release_utils.py::test_has_exactly_one_zip_case_insensitive (updated with dual-casing skip documentation)",
+    "tests/test_generate_json.py::test_build_version_object_skips_dual_casing_zips"
   ],
   "design_decisions": [
     "Extracted normalize_version, parse_semver, version_sort_key, has_exactly_one_zip, get_zip_asset, and select_best_release into plugin_release_utils.py.",
     "Fixed select_best_release to rank purely by version_sort_key so higher semver prereleases (e.g. 2.0.0-beta.1) take precedence over lower stable releases (e.g. 1.0.0) when allow_prerelease=True.",
-    "Updated generate_json.py to import and delegate to plugin_release_utils while re-exporting parse_semver for external callers."
+    "Updated generate_json.py to import and delegate to plugin_release_utils while explicitly re-exporting parse_semver for external callers.",
+    "Replaced assert zip_asset is not None in generate_json.py with explicit if zip_asset is None: return None to prevent issues with python -O.",
+    "Catalog diff verification findings: releases with uppercase Plugin.ZIP are newly eligible (case-insensitive zip matching); releases with both plugin.zip and Plugin.ZIP are skipped as ambiguous (2 zip assets match case-insensitively). Dual-casing skip decision pinned with tests.",
+    "Mutation test verification: reverting select_best_release to fork logic resulted in AssertionError ('v1.0.0' == 'v2.0.0-beta.1') in test_select_best_release_testing_prefers_higher_prerelease."
   ],
   "results": {
-    "pytest": "25 passed",
+    "pytest": "26 passed, 14 subtests passed",
     "quality_gates": "passed",
     "round_complete_marker": "/tmp/decky-plugins-extended/release-utils_finished"
   }

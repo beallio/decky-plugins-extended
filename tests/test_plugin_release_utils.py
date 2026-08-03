@@ -35,6 +35,13 @@ def test_select_best_release_testing_prefers_higher_prerelease():
 
 
 def test_has_exactly_one_zip_case_insensitive():
+    """Verify case-insensitive ZIP asset matching and ambiguous multi-ZIP skipping.
+
+    Decision: A release carrying both 'plugin.zip' and 'Plugin.ZIP' has 2 ZIP assets
+    under case-insensitive matching. It is skipped because multiple ZIP assets are
+    ambiguous. The old case-sensitive check silently picked 'plugin.zip' while ignoring
+    'Plugin.ZIP'; case-insensitive matching safely rejects the release as ambiguous.
+    """
     uppercase_zip = {
         "tag_name": "v1.0.0",
         "assets": [
