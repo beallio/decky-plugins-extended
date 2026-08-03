@@ -11,11 +11,6 @@ import audit_plugins as ap
 REPOSITORY = "https://github.com/owner/plugin"
 
 
-@pytest.fixture(autouse=True)
-def _isolate_tracked_verdict_store(monkeypatch, tmp_path):
-    monkeypatch.setattr(ap, "VERDICTS_FILE", str(tmp_path / "security-verdicts.json"))
-
-
 def _release(tag: str, asset_id: int) -> dict:
     return {
         "tag_name": tag,
