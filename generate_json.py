@@ -4,11 +4,13 @@ import json
 import os
 import shutil
 import sys
+from urllib.parse import urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from audit_plugins import classification_for, load_verdicts
 from plugin_release_utils import (
     get_zip_asset,
     has_exactly_one_zip,
@@ -302,6 +304,63 @@ def merge_plugin_versions(existing_plugin, new_versions):
     sort_versions(existing_plugin["versions"])
 
 
+def remove_blocked_versions(existing_plugin, blocked_identities):
+    """Remove audited artifacts by normalized version and SHA-256 together."""
+    if not existing_plugin or not blocked_identities:
+        return 0
+
+    versions = existing_plugin.get("versions", [])
+    retained = [
+        version
+        for version in versions
+        if (version.get("name"), version.get("hash")) not in blocked_identities
+    ]
+    removed = len(versions) - len(retained)
+    existing_plugin["versions"] = sort_versions(retained)
+    return removed
+
+
+def _release_verdict_entry(repository, release, verdicts):
+    zip_asset = get_zip_asset(release)
+    if zip_asset is None:
+        return {}
+    release_id = f"{release.get('tag_name', '')}@{zip_asset.get('id', '')}"
+    return verdicts.get(repository.rstrip("/"), {}).get(release_id, {})
+
+
+def _repository_slug(value):
+    parsed = urlparse(value)
+    parts = [part for part in parsed.path.split("/") if part]
+    if parsed.netloc.lower() == "github.com" and len(parts) >= 2:
+        return f"{parts[0]}/{parts[1].removesuffix('.git')}".lower()
+    if not parsed.netloc:
+        parts = [part for part in value.rstrip("/").split("/") if part]
+        if len(parts) >= 2:
+            return f"{parts[-2]}/{parts[-1].removesuffix('.git')}".lower()
+    return ""
+
+
+def catalog_version_is_blocked(version, verdicts):
+    """Match an upstream catalog version to a durable BLOCK verdict."""
+    repository_slug = _repository_slug(version.get("artifact", ""))
+    if not repository_slug:
+        return False
+
+    identity = (version.get("name"), version.get("hash"))
+    for repository, release_verdicts in verdicts.items():
+        if _repository_slug(repository) != repository_slug:
+            continue
+        for release_id, entry in release_verdicts.items():
+            tag_name = release_id.rsplit("@", 1)[0]
+            audited_identity = (
+                normalize_version(tag_name),
+                entry.get("artifact_sha256"),
+            )
+            if identity == audited_identity and entry.get("classification") == "BLOCK":
+                return True
+    return False
+
+
 def read_repo_urls(path="additional_plugins.txt"):
     with open(path, "r") as f:
         return [line.strip() for line in f if line.strip() and not line.startswith("#")]
@@ -359,6 +418,7 @@ def main():
     )
 
     repo_urls = read_repo_urls()
+    verdicts = load_verdicts()
 
     errors = []
     custom_plugin_names = set()
@@ -403,10 +463,27 @@ def main():
 
             stable_versions = []
             testing_versions = []
+            blocked_identities = set()
+            valid_release_count = 0
+            blocked_release_count = 0
 
             for rel in releases:
                 v_obj = build_version_object(rel, existing_testing or existing_stable)
                 if not v_obj:
+                    continue
+                valid_release_count += 1
+
+                verdict = classification_for(url, rel, verdicts)
+                if verdict.effective_classification == "BLOCK":
+                    blocked_release_count += 1
+                    verdict_entry = _release_verdict_entry(url, rel, verdicts)
+                    audited_hash = verdict_entry.get("artifact_sha256")
+                    if audited_hash:
+                        blocked_identities.add((v_obj["name"], audited_hash))
+                    rule_ids = ", ".join(verdict.blocking_rule_ids) or "unknown rule"
+                    print(
+                        f"  Blocking {plugin_name} release {rel.get('tag_name', '')}: {rule_ids}"
+                    )
                     continue
 
                 # Testing includes stable + prereleases
@@ -414,6 +491,19 @@ def main():
                 # Stable only includes non-prereleases
                 if not rel.get("prerelease"):
                     stable_versions.append(v_obj.copy())
+
+            remove_blocked_versions(existing_stable, blocked_identities)
+            remove_blocked_versions(existing_testing, blocked_identities)
+
+            if valid_release_count and blocked_release_count == valid_release_count:
+                if existing_stable in plugins:
+                    plugins.remove(existing_stable)
+                if existing_testing in testing_plugins:
+                    testing_plugins.remove(existing_testing)
+                print(
+                    f"  Warning: All valid releases for {plugin_name} are blocked. Removing it from both catalogs."
+                )
+                continue
 
             if not testing_versions:
                 print(
@@ -484,6 +574,8 @@ def main():
                     }
                     plugins.append(new_stable)
             else:
+                if existing_stable and not existing_stable.get("versions"):
+                    plugins.remove(existing_stable)
                 print(
                     f"  No stable releases found for {plugin_name}. Skipping stable plugins."
                 )

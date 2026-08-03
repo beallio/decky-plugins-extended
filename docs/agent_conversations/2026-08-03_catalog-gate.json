@@ -1,0 +1,46 @@
+{
+  "date": "2026-08-03",
+  "task_objective": "Exclude durable BLOCK verdicts from stable and testing catalogs, reconcile already-published blocked artifacts, preserve the newest allowed fallback, and prevent both update-detector inputs from repeatedly rebuilding for held-back releases.",
+  "files_modified": [
+    "generate_json.py",
+    "check_for_updates.py",
+    "tests/test_catalog_gate.py",
+    "docs/agent_conversations/2026-08-03_catalog-gate.json"
+  ],
+  "tests_added": [
+    "tests/test_catalog_gate.py::test_gate_removes_blocked_existing_version_and_uses_fallback",
+    "tests/test_catalog_gate.py::test_gate_loads_verdicts_only_once",
+    "tests/test_catalog_gate.py::test_fully_blocked_plugin_disappears_with_distinct_log",
+    "tests/test_catalog_gate.py::test_manual_review_and_audit_error_releases_still_ship",
+    "tests/test_catalog_gate.py::test_reconciliation_requires_normalized_name_and_audited_hash",
+    "tests/test_catalog_gate.py::test_custom_update_check_ignores_blocked_newest_release",
+    "tests/test_catalog_gate.py::test_upstream_update_check_ignores_blocked_newest_release",
+    "tests/test_catalog_gate.py::test_upstream_update_gate_requires_the_audited_hash",
+    "tests/test_catalog_gate.py::test_two_consecutive_update_checks_stay_false_for_blocked_releases"
+  ],
+  "design_decisions": [
+    "Loaded verdicts once per generator or update-check invocation and reused that snapshot throughout each run.",
+    "Identified current GitHub releases through the existing repository plus release-ID adapter, while identifying upstream catalog artifacts by canonical GitHub owner/repository, normalized version, and audited SHA-256.",
+    "Removed blocked versions from fetched stable and testing entries before merging, and removed a plugin entry entirely when every otherwise-valid release was BLOCKed.",
+    "Kept MANUAL_REVIEW, AUDIT_ERROR, PASS, and unknown releases fail-open; only effective classification BLOCK is excluded.",
+    "The plan was already committed on dev in d838f34, so the implementation branch inherited it instead of creating a duplicate empty plan commit.",
+    "The required origin/dev pull could not be performed because origin exposes only main; the branch was created from the clean local dev at 85ebc44, which already contained the finalized audit-verdicts merge."
+  ],
+  "verification_evidence": {
+    "baseline": "PASS: 198 passed before implementation.",
+    "failure_first": "EXPECTED RED: all 7 initial catalog-gate tests failed before implementation; the two-consecutive updater fixture printed changed=true twice.",
+    "task_a_then_task_b": "After catalog gating landed but before check_for_updates.py changed, 4 generator cases passed and the 3 updater cases remained red, demonstrating both halves were independently exercised.",
+    "catalog_gate": "PASS: the blocked normalized name and audited hash were absent from stable and testing output, and the PASS fallback was versions[0] in both catalogs.",
+    "existing_catalog_reconciliation": "PASS: one exact normalized-name/SHA pair was removed while the same normalized name with a different SHA remained.",
+    "fully_blocked_plugin": "PASS: a plugin with every valid release BLOCKed was absent from both catalogs and emitted the distinct All valid releases are blocked message.",
+    "non_block_policy": "PASS: MANUAL_REVIEW and first-seen AUDIT_ERROR releases remained in both catalogs.",
+    "both_update_contributors": "PASS: custom-repository and upstream-catalog fixtures each ignored their BLOCKed newest release and selected the allowed fallback.",
+    "second_consecutive_run": "PASS: generated catalog output was used as the live fixture; two consecutive check_for_updates.main calls each wrote changed=false.",
+    "mutation": "MUTATION VERIFIED: changing the generator BLOCK comparison to an unreachable classification made test_gate_removes_blocked_existing_version_and_uses_fallback fail because ('2.0.0', blocked SHA-256) remained in the generated catalog. Output is in /tmp/decky-plugins-extended/catalog-gate-mutation.log.",
+    "full_suite": "PASS: scripts/orchestration/run-quality-gates reported repository-wide Ruff clean, 23 files formatted, and 207 passed with 17 subtests passed."
+  },
+  "not_verified": [
+    "The settled fail-open policy can still admit a first-seen unaudited artifact during an audit outage; no degraded-state catalog marker is part of this plan.",
+    "The audit false-positive rate remains unmeasured, so gating remains BLOCK-only."
+  ]
+}
