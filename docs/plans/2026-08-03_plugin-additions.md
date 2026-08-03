@@ -28,9 +28,19 @@ Sub-plans execute in this order, each finalized into `dev` before the next begin
 4. `audit-verdicts` — per-release entry point and verdict store
 5. `catalog-gate` — the actual gate plus the rebuild-loop fix
 6. `audit-ci` — workflows and docs
-7. `plugin-additions` — the 13 new plugin entries
+7. `scanner-precision` — cut the false-positive rate
+8. `plugin-additions` — the 13 new plugin entries
 
-**This sub-plan is #7: `plugin-additions`.**  Depends on every preceding sub-plan — this is the first one whose additions are actually vetted.
+**This sub-plan is #8: `plugin-additions`.**  Depends on every preceding sub-plan — this is the
+first one whose additions are actually vetted, and the first that uses the auditor for its
+intended purpose rather than building it.
+
+`scanner-precision` (#7) was inserted before this one for a reason that matters here. Auditing
+`beallio/SDH-Ludusavi`, a known-good plugin, produced 14 findings that were all false
+positives; after #7 it produces 11, with the three high-severity ones gone. The reports you are
+about to read are therefore usable, but **still noisy** — `PRIVILEGE_SYSTEMCTL` and
+`SENSITIVE_ENV_HARVEST` are deliberately left firing on legitimate behaviour. Do not treat a
+non-empty findings list as disqualifying. Read what the rules actually matched.
 
 **Slug used throughout this plan:** `plugin-additions`
 
