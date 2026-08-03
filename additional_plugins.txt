@@ -36,3 +36,5 @@ https://github.com/Rayekkk/LeGoTDP
 https://github.com/Rayekkk/LeGo-Vibe-Control
 https://github.com/Rayekkk/LeGo2BrightnessFix
 https://github.com/cwtechshiz/nordvpn-decky
+https://github.com/Rayekkk/DeckyVibranceHDR
+https://github.com/parvagans/achievement-companion
