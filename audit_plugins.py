@@ -174,6 +174,7 @@ class ArchiveStats:
     sha256: str = ""
     safe: bool = True
     issues: list[str] = field(default_factory=list)
+    static_scan_skipped_extensions: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -1558,6 +1559,74 @@ def scan_text_content(
     return findings
 
 
+_ENV_ACCESS_PATTERN = re.compile(
+    r"\bos\.environ(?:\.get\s*\(\s*|\s*\[\s*)['\"]([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
+_PROTECTED_ENV_PREFIXES = (
+    "AWS_",
+    "CF_",
+    "CLOUDFLARE_",
+    "GITHUB_",
+    "SSH_",
+    "STEAM_",
+)
+_GENERIC_PLUGIN_NAME_STEMS = {"decky", "loader", "plugin", "sdh"}
+
+
+def _normalised_name_stems(plugin_name: str) -> set[str]:
+    normalised = (
+        unicodedata.normalize("NFKD", plugin_name)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+    )
+    parts = [part.lower() for part in re.findall(r"[A-Za-z0-9]+", normalised)]
+    stems = {
+        part
+        for part in parts
+        if len(part) >= 4 and part not in _GENERIC_PLUGIN_NAME_STEMS
+    }
+    combined = "".join(parts)
+    if len(combined) >= 4 and combined not in _GENERIC_PLUGIN_NAME_STEMS:
+        stems.add(combined)
+    return stems
+
+
+def _is_plugin_namespaced_env(env_name: str, plugin_name: str) -> bool:
+    upper_name = env_name.upper()
+    if upper_name.startswith(_PROTECTED_ENV_PREFIXES) or upper_name.endswith(
+        "PRIVATE_KEY"
+    ):
+        return False
+
+    env_parts = [part.lower() for part in upper_name.split("_") if part]
+    env_compact = "".join(env_parts)
+    return any(
+        stem in env_parts or env_compact.startswith(stem)
+        for stem in _normalised_name_stems(plugin_name)
+    )
+
+
+def _downgrade_plugin_namespaced_env_findings(
+    findings: list[Finding], plugin_name: str
+) -> None:
+    """Downgrade only env reads clearly namespaced to this plugin."""
+    if not plugin_name:
+        return
+    for finding in findings:
+        if (
+            finding.rule_id != "SENSITIVE_ENV_HARVEST"
+            or finding.classification != "MANUAL_REVIEW"
+        ):
+            continue
+        env_names = _ENV_ACCESS_PATTERN.findall(finding.evidence)
+        if env_names and all(
+            _is_plugin_namespaced_env(env_name, plugin_name) for env_name in env_names
+        ):
+            finding.classification = "PASS_WITH_WARNINGS"
+            finding.message = "Plugin-namespaced environment variable read."
+
+
 def extract_urls_and_domains(content: str) -> tuple[list[str], list[str]]:
     """Extract HTTP/HTTPS URLs and unique domain names from text content."""
     urls: list[str] = []
@@ -2110,6 +2179,66 @@ def _looks_like_script_asset(path: str, data: bytes, executable_bits: bool) -> b
     return False
 
 
+def _metadata_diff_is_build_stamped(
+    path: str, source_raw: bytes, artifact_raw: bytes
+) -> bool:
+    """Return whether metadata drift is limited to Decky's exact build stamps."""
+    filename = posixpath.basename(path).lower()
+    if filename not in {"plugin.json", "package.json"}:
+        return False
+    try:
+        source = json.loads(source_raw)
+        artifact = json.loads(artifact_raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
+        return False
+    if not isinstance(source, dict) or not isinstance(artifact, dict):
+        return False
+
+    source_version = source.get("version")
+    artifact_version = artifact.get("version")
+    if (
+        source_version != artifact_version
+        and isinstance(source_version, str)
+        and isinstance(artifact_version, str)
+    ):
+        source["version"] = artifact_version
+
+    if filename == "package.json":
+        return source == artifact
+
+    source_flags = source.get("flags")
+    artifact_flags = artifact.get("flags")
+    if source_flags != artifact_flags:
+        if (
+            isinstance(source_flags, list)
+            and isinstance(artifact_flags, list)
+            and source_flags.count("debug") == 1
+            and [flag for flag in source_flags if flag != "debug"] == artifact_flags
+        ):
+            source["flags"] = artifact_flags
+
+    source_publish = source.get("publish")
+    artifact_publish = artifact.get("publish")
+    if isinstance(source_publish, dict) and isinstance(artifact_publish, dict):
+        source_image = source_publish.get("image")
+        artifact_image = artifact_publish.get("image")
+        if (
+            source_image != artifact_image
+            and isinstance(source_image, str)
+            and isinstance(artifact_image, str)
+            and isinstance(artifact_version, str)
+        ):
+            release_tag = (
+                artifact_version
+                if artifact_version.startswith("v")
+                else f"v{artifact_version}"
+            )
+            if source_image.replace("/main/", f"/{release_tag}/") == artifact_image:
+                source_publish["image"] = artifact_image
+
+    return source == artifact
+
+
 def _resolve_ref_to_commit_and_tree_sha(
     owner: str, repo: str, ref: str
 ) -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -2254,6 +2383,7 @@ def compare_source_and_artifact(
             )
         source_tree_exact: dict[str, Optional[str]] = {}
         source_tree_lower: dict[str, Optional[str]] = {}
+        source_path_lower: dict[str, str] = {}
         for item in tree_data.get("tree") or []:
             if isinstance(item, dict):
                 p = item.get("path")
@@ -2261,6 +2391,7 @@ def compare_source_and_artifact(
                 if p:
                     source_tree_exact[p] = sha
                     source_tree_lower[p.lower()] = sha
+                    source_path_lower[p.lower()] = p
         summary["checked"] = True
     except Exception as exc:
         detail = f"Could not fetch source tree for {owner}/{repo}@{ref}: {exc}"
@@ -2287,21 +2418,19 @@ def compare_source_and_artifact(
             short_path = parts[1] if len(parts) == 2 else parts[0]
             short_lower = short_path.lower()
 
+            source_path: Optional[str] = None
+            if short_path in source_tree_exact:
+                source_path = short_path
+            elif rel_path in source_tree_exact:
+                source_path = rel_path
+            elif short_lower in source_tree_lower:
+                source_path = source_path_lower[short_lower]
+            elif rel_lower in source_tree_lower:
+                source_path = source_path_lower[rel_lower]
             source_sha = (
-                source_tree_exact.get(short_path)
-                if short_path in source_tree_exact
-                else source_tree_exact.get(rel_path)
-                if rel_path in source_tree_exact
-                else source_tree_lower.get(short_lower)
-                if short_lower in source_tree_lower
-                else source_tree_lower.get(rel_lower)
+                source_tree_exact.get(source_path) if source_path is not None else None
             )
-            in_source = (
-                short_path in source_tree_exact
-                or rel_path in source_tree_exact
-                or short_lower in source_tree_lower
-                or rel_lower in source_tree_lower
-            )
+            in_source = source_path is not None
 
             try:
                 if os.path.islink(full_path):
@@ -2339,22 +2468,36 @@ def compare_source_and_artifact(
                         raw_lf = raw.replace(b"\r\n", b"\n")
                         zip_sha_lf = git_blob_sha1(raw_lf)
                         if zip_sha_lf != source_sha:
-                            summary["modified_source_files"].append(rel_path)
-                            findings.append(
-                                Finding(
-                                    rule_id="MODIFIED_SOURCE_FILE",
-                                    severity="high",
-                                    classification="MANUAL_REVIEW",
-                                    path=rel_path,
-                                    line=0,
-                                    message=(
-                                        f"File {rel_path!r} is present in repository source "
-                                        "but has modified content in the release ZIP."
-                                    ),
-                                    evidence=f"hash-mismatch (source: {source_sha[:8]}, zip: {zip_sha[:8]})",
-                                    scanner="source-artifact-diff",
+                            build_stamped_metadata = False
+                            if source_path and posixpath.basename(
+                                source_path
+                            ).lower() in {"plugin.json", "package.json"}:
+                                source_raw = get_repo_file_raw(
+                                    owner, repo, ref, source_path
                                 )
-                            )
+                                if source_raw is not None:
+                                    build_stamped_metadata = (
+                                        _metadata_diff_is_build_stamped(
+                                            source_path, source_raw, raw
+                                        )
+                                    )
+                            if not build_stamped_metadata:
+                                summary["modified_source_files"].append(rel_path)
+                                findings.append(
+                                    Finding(
+                                        rule_id="MODIFIED_SOURCE_FILE",
+                                        severity="high",
+                                        classification="MANUAL_REVIEW",
+                                        path=rel_path,
+                                        line=0,
+                                        message=(
+                                            f"File {rel_path!r} is present in repository source "
+                                            "but has modified content in the release ZIP."
+                                        ),
+                                        evidence=f"hash-mismatch (source: {source_sha[:8]}, zip: {zip_sha[:8]})",
+                                        scanner="source-artifact-diff",
+                                    )
+                                )
                 continue
 
             try:
@@ -2861,6 +3004,17 @@ def generate_markdown_report(report: AuditReport) -> str:
     # Archive stats
     if report.archive_stats:
         stats = report.archive_stats
+        skipped_extensions = (
+            stats.get("static_scan_skipped_extensions", {})
+            if isinstance(stats, dict)
+            else stats.static_scan_skipped_extensions
+        )
+        skipped_summary = (
+            ", ".join(
+                f"{ext}: {count}" for ext, count in sorted(skipped_extensions.items())
+            )
+            or "None"
+        )
         lines += [
             "## Archive Statistics",
             "",
@@ -2871,6 +3025,7 @@ def generate_markdown_report(report: AuditReport) -> str:
             f"| Uncompressed Size | {_fmt_bytes(stats['uncompressed_bytes'] if isinstance(stats, dict) else stats.uncompressed_bytes)} |",
             f"| Compression Ratio | {(stats['compression_ratio'] if isinstance(stats, dict) else stats.compression_ratio):.1f}x |",
             f"| Safe | {'✅' if (stats['safe'] if isinstance(stats, dict) else stats.safe) else '🚫'} |",
+            f"| Static source rules skipped | {skipped_summary} |",
             "",
         ]
 
@@ -3302,9 +3457,15 @@ def audit_release(
                     except Exception:
                         continue
 
-                    # Static rules
-                    text_findings = scan_text_content(content, rel_path, ext)
-                    report.findings.extend(text_findings)
+                    # Static source-behaviour rules do not apply to generated data
+                    # formats. Secrets still scan below because source maps and JSON
+                    # can embed credentials or original source text.
+                    if ext in _NON_SCRIPT_GENERATED_EXTENSIONS:
+                        skipped = zip_stats.static_scan_skipped_extensions
+                        skipped[ext] = skipped.get(ext, 0) + 1
+                    else:
+                        text_findings = scan_text_content(content, rel_path, ext)
+                        report.findings.extend(text_findings)
 
                     # Secrets
                     secret_findings = scan_for_secrets(content, rel_path)
@@ -3363,6 +3524,8 @@ def audit_release(
                     scanner="metadata-checker",
                 )
             )
+
+        _downgrade_plugin_namespaced_env_findings(report.findings, report.plugin_name)
 
         # --- External scanners ---
         if zip_stats.safe and os.path.isdir(extract_dir):
