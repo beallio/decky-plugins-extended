@@ -17,10 +17,17 @@ already contains the earlier ones.
 | 4 | `audit-verdicts` | Per-release audit entry point; durable verdict store | 2 |
 | 5 | `catalog-gate` | The gate itself **and** the rebuild-loop fix | 4 |
 | 6 | `audit-ci` | Audit workflows; hardening for the existing `generate.yml`; docs | 5 |
-| 7 | `plugin-additions` | The 13 new plugin entries, now actually vetted | 6 |
+| 7 | `scanner-precision` | Cut the false-positive rate on generated artifacts and build-stamped metadata | 6 |
+| 8 | `plugin-additions` | The 13 new plugin entries, now actually vetted | 7 |
 
 The auditor is **advisory** until sub-plan 5. Sub-plans 2-4 deliberately land no gating, so a
 half-built scanner cannot empty the store.
+
+Sub-plan 7 was added after the fact. Auditing `beallio/SDH-Ludusavi`, a known-good plugin,
+produced 14 findings and a `MANUAL_REVIEW` classification, all false positives — the first real
+measurement of a rate the original plan explicitly listed as unverified. Nothing was broken by
+it (the gate excludes only `BLOCK`), but `plugin-additions` requires reading 13 repositories'
+reports and acting on them, so the scanner is corrected before decisions are made against it.
 
 ---
 
