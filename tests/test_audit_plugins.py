@@ -6,6 +6,7 @@ No real secrets, malware, or functioning destructive payloads are used.
 
 import base64
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -415,6 +416,15 @@ class TestStaticAnalysis(unittest.TestCase):
         findings = self._scan(content)
         rule_ids = {f.rule_id for f in findings}
         self.assertIn("OBFUSCATION_LARGE_BASE64", rule_ids)
+
+    def test_static_rules_redact_secrets_in_evidence(self):
+        token = "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        content = f"subprocess.run(cmd)  # token {token}\n"
+        findings = self._scan(content)
+        self.assertTrue(len(findings) > 0)
+        for f in findings:
+            self.assertNotIn(token, f.evidence)
+            self.assertIn("[REDACTED]", f.evidence)
 
 
 # ---------------------------------------------------------------------------
@@ -1046,6 +1056,73 @@ class TestSourceArtifactDiff(unittest.TestCase):
         self.assertEqual(status.status, "passed")
         self.assertEqual(summary["zip_only_scripts"], [])
         self.assertFalse(any(f.rule_id == "ZIP_ONLY_SCRIPT" for f in findings))
+
+    def test_modified_same_path_file_detected(self):
+        source_data = b"print('original')"
+        header = f"blob {len(source_data)}\x00".encode("ascii")
+        source_sha = hashlib.sha1(header + source_data).hexdigest()
+
+        extract = self._mk_extract({"plugin/main.py": "print('modified')"})
+
+        def side_effect(url, params=None):
+            if "/git/ref/tags/" in url:
+                return {"object": {"type": "commit", "sha": "sha-commit"}}
+            if "/git/commits/" in url:
+                return {"tree": {"sha": "sha-tree"}}
+            if "/git/trees/" in url:
+                return {
+                    "truncated": False,
+                    "tree": [
+                        {"path": "plugin/main.py", "type": "blob", "sha": source_sha}
+                    ],
+                }
+            raise AssertionError(f"Unexpected URL {url}")
+
+        with patch.object(ap, "_gh_get", side_effect=side_effect):
+            summary, findings, status = ap.compare_source_and_artifact(
+                extract, "o", "r", "v1"
+            )
+        self.assertEqual(status.status, "found_issue")
+        self.assertIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
+
+    def test_shannon_entropy_removed(self):
+        self.assertFalse(hasattr(ap, "_shannon_entropy"))
+
+    def test_normal_plugin_compiled_assets_no_false_positives(self):
+        extract = self._mk_extract(
+            {
+                "plugin/dist/index.js": "var a=1; /* minified bundle */",
+                "plugin/dist/index.js.map": '{"version":3}',
+                "plugin/assets/logo.png": b"\x89PNG\r\n\x1a\n",
+                "plugin/main.py": "print('ok')",
+            }
+        )
+        source_data = b"print('ok')"
+        header = f"blob {len(source_data)}\x00".encode("ascii")
+        source_sha = hashlib.sha1(header + source_data).hexdigest()
+
+        def side_effect(url, params=None):
+            if "/git/ref/tags/" in url:
+                return {"object": {"type": "commit", "sha": "sha-commit"}}
+            if "/git/commits/" in url:
+                return {"tree": {"sha": "sha-tree"}}
+            if "/git/trees/" in url:
+                return {
+                    "truncated": False,
+                    "tree": [
+                        {"path": "plugin/main.py", "type": "blob", "sha": source_sha}
+                    ],
+                }
+            raise AssertionError(f"Unexpected URL {url}")
+
+        with patch.object(ap, "_gh_get", side_effect=side_effect):
+            summary, findings, status = ap.compare_source_and_artifact(
+                extract, "o", "r", "v1"
+            )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertEqual(summary["zip_only_scripts"], [])
+        self.assertEqual(findings, [])
 
     def test_native_binary_is_executable_not_script(self):
         extract = self._mk_extract({"plugin/helper": b"\x7fELF\x02\x01\x01\x00abc"})
