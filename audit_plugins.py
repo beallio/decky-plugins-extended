@@ -1707,6 +1707,20 @@ def _looks_like_secret_placeholder(value: str) -> bool:
     )
 
 
+def _looks_like_credential_value(value: str) -> bool:
+    """Return whether a matched literal has the minimum shape of a credential."""
+    return not any(character.isspace() for character in value)
+
+
+def _matched_secret_value(name: str, match: re.Match) -> str:
+    """Select the redacted value solely for computing non-identifying shape facts."""
+    if "value" in match.re.groupindex:
+        return match.group("value")
+    if name == "password_literal":
+        return match.group(1)
+    return match.group(0)
+
+
 def scan_for_secrets(content: str, path: str) -> list[Finding]:
     """Scan text content for secret-like patterns.  Values are redacted."""
     findings: list[Finding] = []
@@ -1716,11 +1730,16 @@ def scan_for_secrets(content: str, path: str) -> list[Finding]:
             m = pattern.search(line)
             if m:
                 is_fixture = _looks_like_test_fixture(line)
+                matched_value = _matched_secret_value(name, m)
                 is_placeholder = (
                     name in _PLACEHOLDER_SECRET_PATTERNS
-                    and _looks_like_secret_placeholder(m.group("value"))
+                    and _looks_like_secret_placeholder(matched_value)
                 )
-                is_warning = is_fixture or is_placeholder
+                is_noncredential_shaped = (
+                    name in _PLACEHOLDER_SECRET_PATTERNS
+                    and not _looks_like_credential_value(matched_value)
+                )
+                is_warning = is_fixture or is_placeholder or is_noncredential_shaped
                 # Never print the actual secret value
                 evidence = (
                     f"[{name} pattern matched at position {m.start()}] {SECRET_REDACT}"
@@ -1738,6 +1757,7 @@ def scan_for_secrets(content: str, path: str) -> list[Finding]:
                             f"Potential {name} detected (redacted)."
                             f"{' May be test fixture.' if is_fixture else ''}"
                             f"{' Looks like a placeholder.' if is_placeholder else ''}"
+                            f"{' Does not look credential-shaped.' if is_noncredential_shaped else ''}"
                         ),
                         evidence=evidence,
                         scanner="secrets-scanner",
