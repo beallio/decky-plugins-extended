@@ -81,6 +81,63 @@ CLASSIFICATION_ORDER = [
 ]
 
 
+_SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
+    (
+        "github_token",
+        re.compile(
+            r"ghp_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}"
+        ),
+    ),
+    ("aws_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    (
+        "private_key_header",
+        re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"),
+    ),
+    (
+        "generic_api_key",
+        re.compile(
+            r"(?i)(?:api[_\-]?key|apikey|api_secret)\s*[=:]\s*['\"]?([A-Za-z0-9\-_]{16,})"
+        ),
+    ),
+    (
+        "bearer_token",
+        re.compile(r"(?i)(?:bearer|token)\s*[=:]\s*['\"]?([A-Za-z0-9\-_\.]{20,})"),
+    ),
+    (
+        "cloudflare_token",
+        re.compile(
+            r"(?i)cf[-_](?:token|key|api)['\"]?\s*[=:]\s*['\"]?([A-Za-z0-9\-_]{20,})"
+        ),
+    ),
+    ("password_literal", re.compile(r"(?i)password\s*=\s*['\"]([^'\"]{8,})['\"]")),
+]
+
+
+def redact_secrets(text: str) -> str:
+    """Redact secret patterns from text."""
+    if not text:
+        return text
+    result = str(text)
+    for _name, pattern in _SECRET_PATTERNS:
+
+        def _repl(m: re.Match) -> str:
+            if m.lastindex and m.lastindex >= 1:
+                full = m.group(0)
+                start_g1 = m.start(1) - m.start(0)
+                end_g1 = m.end(1) - m.start(0)
+                return full[:start_g1] + SECRET_REDACT + full[end_g1:]
+            return SECRET_REDACT
+
+        result = pattern.sub(_repl, result)
+    return result
+
+
+def git_blob_sha1(data: bytes) -> str:
+    """Compute Git's blob SHA-1 for binary data."""
+    header = f"blob {len(data)}\x00".encode("ascii")
+    return hashlib.sha1(header + data).hexdigest()
+
+
 @dataclass
 class Finding:
     rule_id: str
@@ -92,6 +149,10 @@ class Finding:
     evidence: str  # length-limited, secrets redacted
     scanner: str
     allowlisted: bool = False
+
+    def __post_init__(self) -> None:
+        if self.evidence:
+            self.evidence = redact_secrets(self.evidence)
 
 
 @dataclass
@@ -1454,7 +1515,7 @@ def scan_text_content(
         for rule_id, severity, classification, message, pattern in rules:
             m = pattern.search(line)
             if m:
-                evidence = _truncate(line.strip(), EVIDENCE_MAX_LEN)
+                evidence = redact_secrets(_truncate(line.strip(), EVIDENCE_MAX_LEN))
                 findings.append(
                     Finding(
                         rule_id=rule_id,
@@ -1511,53 +1572,6 @@ def extract_urls_and_domains(content: str) -> tuple[list[str], list[str]]:
 # ---------------------------------------------------------------------------
 # Secrets scanning
 # ---------------------------------------------------------------------------
-
-_SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
-    (
-        "github_token",
-        re.compile(
-            r"ghp_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}"
-        ),
-    ),
-    ("aws_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    (
-        "private_key_header",
-        re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"),
-    ),
-    (
-        "generic_api_key",
-        re.compile(
-            r"(?i)(?:api[_\-]?key|apikey|api_secret)\s*[=:]\s*['\"]?([A-Za-z0-9\-_]{16,})"
-        ),
-    ),
-    (
-        "bearer_token",
-        re.compile(r"(?i)(?:bearer|token)\s*[=:]\s*['\"]?([A-Za-z0-9\-_\.]{20,})"),
-    ),
-    (
-        "cloudflare_token",
-        re.compile(
-            r"(?i)cf[-_](?:token|key|api)['\"]?\s*[=:]\s*['\"]?([A-Za-z0-9\-_]{20,})"
-        ),
-    ),
-    ("password_literal", re.compile(r"(?i)password\s*=\s*['\"]([^'\"]{8,})['\"]")),
-]
-
-# High-entropy detection thresholds
-_ENTROPY_THRESHOLD = 4.5
-_ENTROPY_MIN_LEN = 20
-
-
-def _shannon_entropy(s: str) -> float:
-    if not s:
-        return 0.0
-    from collections import Counter
-
-    counts = Counter(s)
-    length = len(s)
-    import math
-
-    return -sum((c / length) * math.log2(c / length) for c in counts.values())
 
 
 def _looks_like_test_fixture(context_line: str) -> bool:
@@ -2071,7 +2085,11 @@ def _looks_like_script_asset(path: str, data: bytes, executable_bits: bool) -> b
     is_script_ext = ext in _SCRIPT_EXTENSIONS
     # Avoid flagging common generated minified bundles as scripts solely by extension.
     if is_script_ext and (
-        low.endswith(".min.js") or ".bundle." in low or ".chunk." in low
+        low.endswith(".min.js")
+        or ".bundle." in low
+        or ".chunk." in low
+        or "dist/" in low
+        or "/dist/" in f"/{low}"
     ):
         is_script_ext = False
 
@@ -2175,6 +2193,7 @@ def compare_source_and_artifact(
         "checked": False,
         "zip_only_executables": [],
         "zip_only_scripts": [],
+        "modified_source_files": [],
         "large_binaries_absent_from_source": [],
         "unexpected_urls": [],
     }
@@ -2225,11 +2244,15 @@ def compare_source_and_artifact(
                     detail="Tree response truncated by GitHub API.",
                 ),
             )
-        source_files: set[str] = {
-            item["path"].lower()
-            for item in (tree_data.get("tree") or [])
-            if isinstance(item, dict)
-        }
+        source_tree_exact: dict[str, Optional[str]] = {}
+        source_tree_lower: dict[str, Optional[str]] = {}
+        for item in tree_data.get("tree") or []:
+            if isinstance(item, dict):
+                p = item.get("path")
+                sha = item.get("sha")
+                if p:
+                    source_tree_exact[p] = sha
+                    source_tree_lower[p.lower()] = sha
         summary["checked"] = True
     except Exception as exc:
         detail = f"Could not fetch source tree for {owner}/{repo}@{ref}: {exc}"
@@ -2248,18 +2271,36 @@ def compare_source_and_artifact(
     for root, _dirs, files in os.walk(extract_dir):
         for fname in files:
             full_path = os.path.join(root, fname)
-            rel_path = os.path.relpath(full_path, extract_dir)
-            rel_lower = rel_path.lower().replace("\\", "/")
+            rel_path = os.path.relpath(full_path, extract_dir).replace("\\", "/")
+            rel_lower = rel_path.lower()
 
             # Strip a leading plugin-name directory (common in release ZIPs)
-            parts = rel_lower.split("/", 1)
+            parts = rel_path.split("/", 1)
             short_path = parts[1] if len(parts) == 2 else parts[0]
+            short_lower = short_path.lower()
 
-            in_source = short_path in source_files or rel_lower in source_files
+            source_sha = (
+                source_tree_exact.get(short_path)
+                if short_path in source_tree_exact
+                else source_tree_exact.get(rel_path)
+                if rel_path in source_tree_exact
+                else source_tree_lower.get(short_lower)
+                if short_lower in source_tree_lower
+                else source_tree_lower.get(rel_lower)
+            )
+            in_source = (
+                short_path in source_tree_exact
+                or rel_path in source_tree_exact
+                or short_lower in source_tree_lower
+                or rel_lower in source_tree_lower
+            )
 
             try:
-                with open(full_path, "rb") as fh:
-                    raw = fh.read(2048)
+                if os.path.islink(full_path):
+                    raw = os.readlink(full_path).encode("utf-8", errors="replace")
+                else:
+                    with open(full_path, "rb") as fh:
+                        raw = fh.read()
             except Exception:
                 continue
 
@@ -2284,6 +2325,28 @@ def compare_source_and_artifact(
                 continue
 
             if in_source:
+                if source_sha:
+                    zip_sha = git_blob_sha1(raw)
+                    if zip_sha != source_sha:
+                        raw_lf = raw.replace(b"\r\n", b"\n")
+                        zip_sha_lf = git_blob_sha1(raw_lf)
+                        if zip_sha_lf != source_sha:
+                            summary["modified_source_files"].append(rel_path)
+                            findings.append(
+                                Finding(
+                                    rule_id="MODIFIED_SOURCE_FILE",
+                                    severity="high",
+                                    classification="MANUAL_REVIEW",
+                                    path=rel_path,
+                                    line=0,
+                                    message=(
+                                        f"File {rel_path!r} is present in repository source "
+                                        "but has modified content in the release ZIP."
+                                    ),
+                                    evidence=f"hash-mismatch (source: {source_sha[:8]}, zip: {zip_sha[:8]})",
+                                    scanner="source-artifact-diff",
+                                )
+                            )
                 continue
 
             try:
@@ -2314,13 +2377,9 @@ def compare_source_and_artifact(
 
     summary["zip_only_executables"].sort()
     summary["zip_only_scripts"].sort()
+    summary["modified_source_files"].sort()
     status = "found_issue" if findings else "passed"
     return summary, findings, ScannerStatus(name="source-artifact-diff", status=status)
-
-
-# ---------------------------------------------------------------------------
-# Audit cache
-# ---------------------------------------------------------------------------
 
 
 def compute_audit_context_hash(
