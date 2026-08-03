@@ -298,13 +298,19 @@ def test_upstream_update_gate_requires_the_audited_hash(monkeypatch):
 def test_two_consecutive_update_checks_stay_false_for_blocked_releases(
     monkeypatch, tmp_path, capsys
 ):
-    live = [_plugin([_version("v1.0.0", FALLBACK_HASH)])]
-    upstream = [
-        _plugin([_version("v2.0.0", BLOCKED_HASH), _version("v1.0.0", FALLBACK_HASH)])
-    ]
     releases = [
         _release("v2.0.0", 2, BLOCKED_HASH),
         _release("v1.0.0", 1, FALLBACK_HASH),
+    ]
+    live, _testing = _run_generator(
+        monkeypatch,
+        tmp_path,
+        releases,
+        _verdicts(),
+        [_version("v2.0.0", BLOCKED_HASH), _version("v1.0.0", FALLBACK_HASH)],
+    )
+    upstream = [
+        _plugin([_version("v2.0.0", BLOCKED_HASH), _version("v1.0.0", FALLBACK_HASH)])
     ]
 
     def fetch_json(url):
