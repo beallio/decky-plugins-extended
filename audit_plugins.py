@@ -1712,6 +1712,16 @@ def _looks_like_credential_value(value: str) -> bool:
     return not any(character.isspace() for character in value)
 
 
+def _secret_value_shape(value: str) -> tuple[int, bool, bool]:
+    """Return non-identifying facts that let reviewers assess a redacted value."""
+    contains_whitespace = any(character.isspace() for character in value)
+    non_whitespace = [character for character in value if not character.isspace()]
+    entirely_alphabetic = bool(non_whitespace) and all(
+        character.isalpha() for character in non_whitespace
+    )
+    return len(value), contains_whitespace, entirely_alphabetic
+
+
 def _matched_secret_value(name: str, match: re.Match) -> str:
     """Select the redacted value solely for computing non-identifying shape facts."""
     if "value" in match.re.groupindex:
@@ -1740,9 +1750,16 @@ def scan_for_secrets(content: str, path: str) -> list[Finding]:
                     and not _looks_like_credential_value(matched_value)
                 )
                 is_warning = is_fixture or is_placeholder or is_noncredential_shaped
+                value_length, contains_whitespace, entirely_alphabetic = (
+                    _secret_value_shape(matched_value)
+                )
                 # Never print the actual secret value
                 evidence = (
-                    f"[{name} pattern matched at position {m.start()}] {SECRET_REDACT}"
+                    f"[{name} pattern matched at position {m.start()}; "
+                    f"value_length={value_length}; "
+                    f"contains_whitespace={'yes' if contains_whitespace else 'no'}; "
+                    f"entirely_alphabetic={'yes' if entirely_alphabetic else 'no'}] "
+                    f"{SECRET_REDACT}"
                 )
                 findings.append(
                     Finding(

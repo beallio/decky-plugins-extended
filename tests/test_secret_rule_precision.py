@@ -1,3 +1,5 @@
+import hashlib
+
 import audit_plugins as ap
 
 
@@ -107,3 +109,21 @@ def test_any_whitespace_makes_a_matched_value_noncredential_shaped():
     finding = _single_finding('api_key = "Chave\tAPI\tHubcap"')
 
     assert finding.classification == "PASS_WITH_WARNINGS"
+
+
+def test_secret_evidence_reports_shape_without_leaking_value():
+    value = "aB3dE5gH7jK9mN1pQ3rS"
+    finding = _single_finding(f'api_key = "{value}"')
+
+    assert f"value_length={len(value)}" in finding.evidence
+    assert "contains_whitespace=no" in finding.evidence
+    assert "entirely_alphabetic=no" in finding.evidence
+
+    forbidden = {value, hashlib.sha256(value.encode()).hexdigest()}
+    forbidden.update(value[index : index + 4] for index in range(len(value) - 3))
+    assert all(fragment not in finding.evidence for fragment in forbidden)
+
+    prose = _single_finding('api_key = "Chave API Hubcap"')
+    assert "value_length=16" in prose.evidence
+    assert "contains_whitespace=yes" in prose.evidence
+    assert "entirely_alphabetic=yes" in prose.evidence
