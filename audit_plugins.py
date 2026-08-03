@@ -97,17 +97,22 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     (
         "generic_api_key",
         re.compile(
-            r"(?i)(?:api[_\-]?key|apikey|api_secret)\s*[=:]\s*['\"]?([A-Za-z0-9\-_]{16,})"
+            r"(?i)(?:api[_\-]?key|apikey|api_secret)\s*[=:]\s*"
+            r"(?P<quote>['\"])(?P<value>[^'\"]{16,})(?P=quote)"
         ),
     ),
     (
         "bearer_token",
-        re.compile(r"(?i)(?:bearer|token)\s*[=:]\s*['\"]?([A-Za-z0-9\-_\.]{20,})"),
+        re.compile(
+            r"(?i)(?:bearer|token)\s*[=:]\s*"
+            r"(?P<quote>['\"])(?P<value>[^'\"]{20,})(?P=quote)"
+        ),
     ),
     (
         "cloudflare_token",
         re.compile(
-            r"(?i)cf[-_](?:token|key|api)['\"]?\s*[=:]\s*['\"]?([A-Za-z0-9\-_]{20,})"
+            r"(?i)cf[-_](?:token|key|api)\s*[=:]\s*"
+            r"(?P<quote>['\"])(?P<value>[^'\"]{20,})(?P=quote)"
         ),
     ),
     ("password_literal", re.compile(r"(?i)password\s*=\s*['\"]([^'\"]{8,})['\"]")),
@@ -122,6 +127,11 @@ def redact_secrets(text: str) -> str:
     for _name, pattern in _SECRET_PATTERNS:
 
         def _repl(m: re.Match) -> str:
+            if "value" in m.re.groupindex:
+                full = m.group(0)
+                start_value = m.start("value") - m.start(0)
+                end_value = m.end("value") - m.start(0)
+                return full[:start_value] + SECRET_REDACT + full[end_value:]
             if m.lastindex and m.lastindex >= 1:
                 full = m.group(0)
                 start_g1 = m.start(1) - m.start(0)
@@ -1666,6 +1676,36 @@ def _looks_like_test_fixture(context_line: str) -> bool:
     return any(m.lower() in low for m in markers)
 
 
+_PLACEHOLDER_SECRET_PATTERNS = {
+    "generic_api_key",
+    "bearer_token",
+    "cloudflare_token",
+}
+
+
+def _looks_like_secret_placeholder(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped:
+        return False
+    if len(set(stripped)) == 1:
+        return True
+    low = stripped.lower()
+    return any(
+        marker in low
+        for marker in (
+            "example",
+            "placeholder",
+            "changeme",
+            "your-",
+            "xxx",
+            "<",
+            ">",
+            "{{",
+            "todo",
+        )
+    )
+
+
 def scan_for_secrets(content: str, path: str) -> list[Finding]:
     """Scan text content for secret-like patterns.  Values are redacted."""
     findings: list[Finding] = []
@@ -1675,6 +1715,11 @@ def scan_for_secrets(content: str, path: str) -> list[Finding]:
             m = pattern.search(line)
             if m:
                 is_fixture = _looks_like_test_fixture(line)
+                is_placeholder = (
+                    name in _PLACEHOLDER_SECRET_PATTERNS
+                    and _looks_like_secret_placeholder(m.group("value"))
+                )
+                is_warning = is_fixture or is_placeholder
                 # Never print the actual secret value
                 evidence = (
                     f"[{name} pattern matched at position {m.start()}] {SECRET_REDACT}"
@@ -1682,11 +1727,17 @@ def scan_for_secrets(content: str, path: str) -> list[Finding]:
                 findings.append(
                     Finding(
                         rule_id="SECRET_" + name.upper(),
-                        severity="low" if is_fixture else "critical",
-                        classification="PASS_WITH_WARNINGS" if is_fixture else "BLOCK",
+                        severity="low" if is_warning else "critical",
+                        classification=(
+                            "PASS_WITH_WARNINGS" if is_warning else "BLOCK"
+                        ),
                         path=path,
                         line=lineno,
-                        message=f"Potential {name} detected (redacted).{' May be test fixture.' if is_fixture else ''}",
+                        message=(
+                            f"Potential {name} detected (redacted)."
+                            f"{' May be test fixture.' if is_fixture else ''}"
+                            f"{' Looks like a placeholder.' if is_placeholder else ''}"
+                        ),
                         evidence=evidence,
                         scanner="secrets-scanner",
                     )
