@@ -38,7 +38,9 @@ over the network, not the test suite. Warm, the suite is ~1.4s. No action needed
 `audit_plugins.py:2929-2932`:
 
 ```python
-commit_sha, _tree_sha, _tag_err = _resolve_ref_to_commit_and_tree_sha(owner, repo, tag_name)
+commit_sha, _tree_sha, _tag_err = _resolve_ref_to_commit_and_tree_sha(
+    owner, repo, tag_name
+)
 resolved_tag_commit_sha = commit_sha or ""
 ```
 

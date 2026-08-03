@@ -322,3 +322,68 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                 os.path.exists(sentinel),
                 "Sentinel file was created! Code execution occurred!",
             )
+
+    def test_failed_tag_resolution_returns_error_and_does_not_cache(self):
+        """Failed tag resolution returns AUDIT_ERROR and does not cache entries across tags."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_dir = os.path.join(tmp_dir, ".audit-cache")
+            policy = {"enforcement": {"mode": "report-only"}, "scanners": {}}
+            exceptions = []
+
+            release_v1 = {
+                "tag_name": "v1.0.0",
+                "assets": [
+                    {
+                        "id": 123,
+                        "name": "plugin.zip",
+                        "browser_download_url": "http://ex.com/v1.zip",
+                    }
+                ],
+            }
+            release_v2 = {
+                "tag_name": "v2.0.0",
+                "assets": [
+                    {
+                        "id": 456,
+                        "name": "plugin.zip",
+                        "browser_download_url": "http://ex.com/v2.zip",
+                    }
+                ],
+            }
+
+            with (
+                patch("audit_plugins.get_repo_metadata", return_value={"name": "repo"}),
+                patch(
+                    "audit_plugins.get_releases",
+                    side_effect=[[release_v1], [release_v2]],
+                ),
+                patch(
+                    "audit_plugins._resolve_ref_to_commit_and_tree_sha",
+                    return_value=(None, None, "boom"),
+                ),
+            ):
+                report1 = ap.audit_repository(
+                    "https://github.com/owner/repo",
+                    policy,
+                    exceptions,
+                    cache_dir=cache_dir,
+                )
+                self.assertEqual(report1.final_classification, "AUDIT_ERROR")
+                self.assertIn(
+                    "Failed to resolve ref v1.0.0 to commit SHA: boom",
+                    report1.errors[0],
+                )
+
+                report2 = ap.audit_repository(
+                    "https://github.com/owner/repo",
+                    policy,
+                    exceptions,
+                    cache_dir=cache_dir,
+                )
+                self.assertEqual(report2.final_classification, "AUDIT_ERROR")
+                self.assertIn(
+                    "Failed to resolve ref v2.0.0 to commit SHA: boom",
+                    report2.errors[0],
+                )
+                if os.path.exists(cache_dir):
+                    self.assertEqual(len(os.listdir(cache_dir)), 0)

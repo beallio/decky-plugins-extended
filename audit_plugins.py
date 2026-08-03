@@ -2350,8 +2350,8 @@ def _cache_key(
     repository: str,
     release_id: str,
     artifact_sha256: str,
-    audit_context_hash: str = "",
-    resolved_tag_commit_sha: str = "",
+    audit_context_hash: str,
+    resolved_tag_commit_sha: str,
 ) -> str:
     repo_norm = repository.rstrip("/")
     raw = f"{repo_norm}|{release_id}|{artifact_sha256}|{audit_context_hash}|{resolved_tag_commit_sha}"
@@ -2448,8 +2448,8 @@ def load_cached_report(
     repository: str,
     release_id: str,
     artifact_sha256: str,
-    audit_context_hash: str = "",
-    resolved_tag_commit_sha: str = "",
+    audit_context_hash: str,
+    resolved_tag_commit_sha: str,
 ) -> Optional[AuditReport]:
     key = _cache_key(
         repository,
@@ -2466,14 +2466,8 @@ def load_cached_report(
             data = json.load(f)
 
         if (
-            (
-                audit_context_hash
-                and data.get("audit_context_hash") != audit_context_hash
-            )
-            or (
-                resolved_tag_commit_sha
-                and data.get("resolved_tag_commit_sha") != resolved_tag_commit_sha
-            )
+            data.get("audit_context_hash") != audit_context_hash
+            or data.get("resolved_tag_commit_sha") != resolved_tag_commit_sha
             or (artifact_sha256 and data.get("artifact_sha256") != artifact_sha256)
         ):
             log.debug("Cache entry rejected due to field mismatch.")
@@ -2491,8 +2485,8 @@ def save_cached_report(
     cache_dir: str,
     report: AuditReport,
     release_id: str,
-    audit_context_hash: str = "",
-    resolved_tag_commit_sha: str = "",
+    audit_context_hash: str,
+    resolved_tag_commit_sha: str,
 ) -> None:
     if not report.artifact_sha256:
         return
@@ -2926,10 +2920,17 @@ def audit_repository(
     tag_name = release.get("tag_name", "")
     report.release = tag_name
 
-    commit_sha, _tree_sha, _tag_err = _resolve_ref_to_commit_and_tree_sha(
+    commit_sha, _tree_sha, tag_err = _resolve_ref_to_commit_and_tree_sha(
         owner, repo, tag_name
     )
-    resolved_tag_commit_sha = commit_sha or ""
+    if not commit_sha:
+        report.errors.append(
+            f"Failed to resolve ref {tag_name} to commit SHA: {tag_err or 'unknown error'}"
+        )
+        report.final_classification = "AUDIT_ERROR"
+        return report
+
+    resolved_tag_commit_sha = commit_sha
     report.resolved_tag_commit_sha = resolved_tag_commit_sha
 
     zips = [

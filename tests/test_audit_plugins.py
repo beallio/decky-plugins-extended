@@ -1186,6 +1186,17 @@ class TestSafeExtraction(unittest.TestCase):
 class TestAuditRepositoryMocked(unittest.TestCase):
     """Smoke tests for audit_repository with all network calls mocked."""
 
+    def setUp(self):
+        self.resolve_patcher = patch.object(
+            ap,
+            "_resolve_ref_to_commit_and_tree_sha",
+            return_value=("commit123", "tree123", None),
+        )
+        self.resolve_patcher.start()
+
+    def tearDown(self):
+        self.resolve_patcher.stop()
+
     def _make_simple_zip(self) -> bytes:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
@@ -1706,13 +1717,19 @@ class TestAuditRepositoryMocked(unittest.TestCase):
 
 class TestAuditCache(unittest.TestCase):
     def test_cache_key_is_deterministic(self):
-        key1 = ap._cache_key("https://github.com/owner/repo", "v1.0.0", "abc123")
-        key2 = ap._cache_key("https://github.com/owner/repo", "v1.0.0", "abc123")
+        key1 = ap._cache_key(
+            "https://github.com/owner/repo", "v1.0.0", "abc123", "ctx123", "commit123"
+        )
+        key2 = ap._cache_key(
+            "https://github.com/owner/repo", "v1.0.0", "abc123", "ctx123", "commit123"
+        )
         self.assertEqual(key1, key2)
 
     def test_cache_miss_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
-            result = ap.load_cached_report(tmp, "https://github.com/x/y", "v1", "abc")
+            result = ap.load_cached_report(
+                tmp, "https://github.com/x/y", "v1", "abc", "ctx123", "commit123"
+            )
             self.assertIsNone(result)
 
     def test_cache_roundtrip(self):
@@ -1724,12 +1741,14 @@ class TestAuditCache(unittest.TestCase):
             final_classification="PASS",
         )
         with tempfile.TemporaryDirectory() as tmp:
-            ap.save_cached_report(tmp, report, "v1.0.0@99")
+            ap.save_cached_report(tmp, report, "v1.0.0@99", "ctx123", "commit123")
             loaded = ap.load_cached_report(
                 tmp,
                 "https://github.com/owner/repo",
                 "v1.0.0@99",
                 "a" * 64,
+                "ctx123",
+                "commit123",
             )
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded.final_classification, "PASS")
@@ -1743,12 +1762,14 @@ class TestAuditCache(unittest.TestCase):
             final_classification="PASS",
         )
         with tempfile.TemporaryDirectory() as tmp:
-            ap.save_cached_report(tmp, report, "v1.0.0@99")
+            ap.save_cached_report(tmp, report, "v1.0.0@99", "ctx123", "commit123")
             loaded = ap.load_cached_report(
                 tmp,
                 "https://github.com/owner/repo",
                 "v1.0.0@99",
                 "b" * 64,  # different SHA
+                "ctx123",
+                "commit123",
             )
         self.assertIsNone(loaded)
 
