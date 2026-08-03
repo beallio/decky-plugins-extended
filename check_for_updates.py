@@ -3,8 +3,8 @@
 Cloudflare rebuilds on push, so between pushes the catalog is frozen at whatever
 upstream looked like at the last deploy. This compares what is live against the
 current upstream catalog and the latest release of every configured repository.
-It deliberately does not hash anything: names and version strings are enough to
-know a rebuild is needed, and the rebuild does the expensive work.
+The verdict store's audited hashes are used only to identify BLOCKed upstream
+artifacts; the rebuild still performs any expensive hashing.
 
 The test is "is this version missing from the live entry", not "does the newest
 version match". The catalogs merge GitHub releases into upstream entries, so ours
@@ -40,10 +40,14 @@ def report(missing, label):
         print(f"  ... and {len(missing) - 10} more")
 
 
-def check_upstream(live):
+def check_upstream(live, verdicts):
     missing = []
     for plugin in g.fetch_json(g.PLUGINS_URL):
-        versions = plugin.get("versions") or []
+        versions = [
+            version
+            for version in (plugin.get("versions") or [])
+            if not g.catalog_version_is_blocked(version, verdicts)
+        ]
         if not versions:
             continue
         newest = versions[0].get("name")
@@ -52,7 +56,7 @@ def check_upstream(live):
     return missing
 
 
-def check_custom_repos(live):
+def check_custom_repos(live, verdicts):
     missing = []
     for url in g.read_repo_urls():
         owner, repo = url.rstrip("/").split("/")[-2:]
@@ -70,6 +74,8 @@ def check_custom_repos(live):
                     }
                     for r in g.get_releases(owner, repo)
                     if not r.get("prerelease")
+                    and g.classification_for(url, r, verdicts).effective_classification
+                    != "BLOCK"
                 ]
             )
         except Exception as e:
@@ -85,11 +91,12 @@ def check_custom_repos(live):
 
 def main():
     live = version_index(g.fetch_json(LIVE_URL))
+    verdicts = g.load_verdicts()
 
-    upstream = check_upstream(live)
+    upstream = check_upstream(live, verdicts)
     report(upstream, "Upstream versions missing")
 
-    custom = check_custom_repos(live)
+    custom = check_custom_repos(live, verdicts)
     report(custom, "Custom repository releases missing")
 
     changed = bool(upstream or custom)
