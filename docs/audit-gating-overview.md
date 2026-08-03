@@ -18,10 +18,20 @@ already contains the earlier ones.
 | 5 | `catalog-gate` | The gate itself **and** the rebuild-loop fix | 4 |
 | 6 | `audit-ci` | Audit workflows; hardening for the existing `generate.yml`; docs | 5 |
 | 7 | `scanner-precision` | Cut the false-positive rate on generated artifacts and build-stamped metadata | 6 |
-| 8 | `plugin-additions` | The 13 new plugin entries, now actually vetted | 7 |
+| 8 | `plugin-additions` | 9 of the 13 new plugin entries, vetted | 7 |
+| 9 | `secret-rule-precision` | Require quoted literals in the loose secret patterns; re-evaluate 3 wrongly excluded plugins | 8 |
 
 The auditor is **advisory** until sub-plan 5. Sub-plans 2-4 deliberately land no gating, so a
 half-built scanner cannot empty the store.
+
+Sub-plans 7 and 9 were both added after the fact, each because a review measured a
+false-positive problem the original plan had listed only as an unverified risk.
+
+Sub-plan 9 is the more serious of the two. Three secret patterns make the quote optional and
+so match an unquoted identifier: `token = get_steam_authentication_token()` produces
+`SECRET_BEARER_TOKEN`. Unlike #7's findings, `SECRET_*` classifies `BLOCK`, which
+`catalog-gate` silently excludes — so this removes plugins from the store rather than merely
+flagging them. It surfaced in #8, where it wrongly excluded three legitimate plugins.
 
 Sub-plan 7 was added after the fact. Auditing `beallio/SDH-Ludusavi`, a known-good plugin,
 produced 14 findings and a `MANUAL_REVIEW` classification, all false positives — the first real
