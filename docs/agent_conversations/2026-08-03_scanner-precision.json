@@ -1,0 +1,85 @@
+{
+  "date": "2026-08-03",
+  "task_objective": "Cut auditor false positives from generated artifacts, Decky build-stamped metadata, and clearly plugin-namespaced environment reads without weakening secret or source-integrity checks.",
+  "branch": "feat/scanner-precision",
+  "plan_commit": "eb2d6ef",
+  "implementation_commit": "9a01cae",
+  "setup": {
+    "baseline": "210 passed",
+    "remote_dev_pull": "Attempted git pull --ff-only origin dev; origin has no dev ref, so the clean local dev tip eb2d6ef was used as the required base.",
+    "real_release_inspected": "beallio/SDH-Ludusavi v0.4.3 and v0.4.4-dev.g99610a6",
+    "observed_build_stamps": [
+      "plugin.json version is changed to the release version",
+      "plugin.json publish.image changes from the main ref to the release tag",
+      "plugin.json flags removes only the debug flag",
+      "package.json version is changed to the release version"
+    ]
+  },
+  "files_modified": [
+    "audit_plugins.py",
+    "tests/test_audit_plugins.py",
+    "docs/agent_conversations/2026-08-03_scanner-precision.json"
+  ],
+  "design_decisions": [
+    "Static source-behaviour rules skip extensions already listed in _NON_SCRIPT_GENERATED_EXTENSIONS, while secret scanning and metadata parsing still run.",
+    "ArchiveStats records a per-extension skipped-file count and both JSON and Markdown reports expose it.",
+    "Metadata suppression parses both sides as JSON and accepts only the exact observed Decky transformations. Adding root or any other flag, changing any unrelated key, or malformed JSON still emits MODIFIED_SOURCE_FILE.",
+    "Environment findings downgrade only when a literal os.environ key shares a normalized non-generic stem with plugin.json name. AWS, GitHub, Steam, SSH, Cloudflare, and private-key names remain MANUAL_REVIEW.",
+    "The SDH-Ludusavi SYNCTHING variables intentionally remain MANUAL_REVIEW because SYNCTHING does not share a stem with the plugin name SDH-Ludusavi; broadening that association would violate the plan's narrow heuristic.",
+    "The scanner-precision fixture intentionally remains BLOCK because its required fake GitHub token exercises the existing blocking secret rule. The initial PASS_WITH_WARNINGS test expectation was corrected for this pre-existing classification, not to accommodate changed runtime behavior."
+  ],
+  "tests_added": [
+    "plugin-namespaced environment read downgrades to PASS_WITH_WARNINGS",
+    "GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY, STEAM_API_KEY, and SSH_PRIVATE_KEY stay MANUAL_REVIEW",
+    "version-only plugin.json and package.json drift is allowed",
+    "exact observed Decky plugin.json stamps are allowed",
+    "flags gaining root and malformed JSON still emit MODIFIED_SOURCE_FILE",
+    "reports disclose skipped generated extensions",
+    "offline SDH-Ludusavi-shaped fixture retains only the env, subprocess, and secret survivors",
+    "skipping JSON source rules does not bypass ROOT_ACCESS metadata validation"
+  ],
+  "verification_evidence": {
+    "dev_red": "At dev-equivalent production code eb2d6ef, the fixture produced PRIVILEGE_MOUNT plus two MODIFIED_SOURCE_FILE findings and the three intended survivors; 3 selected tests failed as expected.",
+    "branch_green": "The fixture passes with exactly SENSITIVE_ENV_HARVEST, EXEC_SUBPROCESS_RUN, and SECRET_GITHUB_TOKEN; PRIVILEGE_MOUNT and MODIFIED_SOURCE_FILE are absent.",
+    "secret_reachability": "SECRET_GITHUB_TOKEN remains present for the fake token inside dist/index.js.map and keeps the fixture classification BLOCK.",
+    "metadata_negative_controls": "Version-only drift passes; root flag drift and malformed JSON both produce MODIFIED_SOURCE_FILE.",
+    "source_diff_fence": "test_modified_same_path_file_detected passes normally. In an isolated /tmp mutation that disabled all mismatch findings, it failed because status changed from found_issue to passed.",
+    "env_scope": "Plugin name Syncthing plus SYNCTHING_API_KEY downgrades. Four protected-name subtests remain MANUAL_REVIEW.",
+    "real_plugin": {
+      "repository": "beallio/SDH-Ludusavi",
+      "release": "v0.4.3",
+      "baseline": "14 findings / score 100 / MANUAL_REVIEW when scanners were available",
+      "new_finding_count": 11,
+      "remaining": {
+        "PRIVILEGE_SYSTEMCTL": 5,
+        "SENSITIVE_ENV_HARVEST": 3,
+        "EXEC_SUBPROCESS_RUN": 2,
+        "EXEC_SUBPROCESS_POPEN": 1
+      },
+      "removed": {
+        "PRIVILEGE_MOUNT": 1,
+        "MODIFIED_SOURCE_FILE": 2
+      },
+      "scanner_statuses": {
+        "trivy": "unavailable: trivy not found in PATH",
+        "clamav": "unavailable: clamscan not found in PATH",
+        "semgrep": "skipped",
+        "source-artifact-diff": "passed"
+      },
+      "top_level": "AUDIT_ERROR with score 0 because required Trivy and ClamAV are unavailable locally"
+    },
+    "full_suite": "219 passed",
+    "quality_gates": "ruff check passed; 25 files formatted; 219 passed and 21 subtests passed; no deleted review notes"
+  },
+  "temporary_logs": [
+    "/tmp/decky-plugins-extended/scanner-precision-pull-error.log",
+    "/tmp/decky-plugins-extended/scanner-precision-baseline-pytest.log",
+    "/tmp/decky-plugins-extended/scanner-precision-dev-red.log",
+    "/tmp/decky-plugins-extended/scanner-precision-targeted.log",
+    "/tmp/decky-plugins-extended/scanner-precision-mutation.log",
+    "/tmp/decky-plugins-extended/scanner-precision-full-pytest.log",
+    "/tmp/decky-plugins-extended/scanner-precision-quality-gates-prelog.log",
+    "/tmp/decky-plugins-extended/scanner-precision-real.qd6src/reports/security-report.json"
+  ],
+  "unrelated_improvements_deferred": []
+}

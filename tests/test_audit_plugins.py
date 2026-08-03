@@ -410,6 +410,35 @@ class TestStaticAnalysis(unittest.TestCase):
         rule_ids = {f.rule_id for f in findings}
         self.assertIn("NETWORK_DISABLED_TLS", rule_ids)
 
+    def test_plugin_namespaced_env_read_is_warning(self):
+        findings = self._scan('api_key = os.environ.get("SYNCTHING_API_KEY")\n')
+        ap._downgrade_plugin_namespaced_env_findings(findings, "Syncthing")
+        env_finding = next(
+            finding
+            for finding in findings
+            if finding.rule_id == "SENSITIVE_ENV_HARVEST"
+        )
+        self.assertEqual(env_finding.classification, "PASS_WITH_WARNINGS")
+
+    def test_well_known_sensitive_env_reads_stay_manual_review(self):
+        for env_name in (
+            "GITHUB_TOKEN",
+            "AWS_SECRET_ACCESS_KEY",
+            "STEAM_API_KEY",
+            "SSH_PRIVATE_KEY",
+        ):
+            with self.subTest(env_name=env_name):
+                findings = self._scan(f'value = os.environ.get("{env_name}")\n')
+                ap._downgrade_plugin_namespaced_env_findings(
+                    findings, env_name.split("_", 1)[0]
+                )
+                env_finding = next(
+                    finding
+                    for finding in findings
+                    if finding.rule_id == "SENSITIVE_ENV_HARVEST"
+                )
+                self.assertEqual(env_finding.classification, "MANUAL_REVIEW")
+
     def test_base64_obfuscation_large_string(self):
         large_b64 = base64.b64encode(b"A" * 200).decode()
         content = f'data = "{large_b64}"\n'
@@ -923,6 +952,20 @@ class TestReportGeneration(unittest.TestCase):
         # Should not contain an actual token value
         self.assertNotIn("ghp_", md)
 
+    def test_reports_disclose_generated_extensions_skipped_by_static_rules(self):
+        report = self._sample_report()
+        report.archive_stats = ap.ArchiveStats(
+            static_scan_skipped_extensions={".json": 2, ".map": 1}
+        )
+        data = json.loads(ap.generate_json_report(report))
+        self.assertEqual(
+            data["archive_stats"]["static_scan_skipped_extensions"],
+            {".json": 2, ".map": 1},
+        )
+        markdown = ap.generate_markdown_report(report)
+        self.assertIn("Static source rules skipped", markdown)
+        self.assertIn(".json: 2, .map: 1", markdown)
+
     def test_write_reports_produces_files(self):
         report = self._sample_report()
         with tempfile.TemporaryDirectory() as tmp:
@@ -1127,6 +1170,117 @@ class TestSourceArtifactDiff(unittest.TestCase):
                 extract, "o", "r", "v1"
             )
         self.assertEqual(status.status, "found_issue")
+        self.assertIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
+
+    def _compare_metadata_files(self, source_files, artifact_files):
+        extract = self._mk_extract(
+            {f"plugin/{path}": content for path, content in artifact_files.items()}
+        )
+        tree = []
+        for path, content in source_files.items():
+            source_raw = content if isinstance(content, bytes) else content.encode()
+            tree.append(
+                {
+                    "path": path,
+                    "type": "blob",
+                    "sha": ap.git_blob_sha1(source_raw),
+                }
+            )
+
+        def get_source(_owner, _repo, _ref, path):
+            content = source_files.get(path)
+            if content is None:
+                return None
+            return content if isinstance(content, bytes) else content.encode()
+
+        with (
+            patch.object(
+                ap, "_resolve_ref_to_tree_sha", return_value=("sha-tree", None)
+            ),
+            patch.object(
+                ap,
+                "_gh_get",
+                return_value={"truncated": False, "tree": tree},
+            ),
+            patch.object(ap, "get_repo_file_raw", side_effect=get_source),
+        ):
+            return ap.compare_source_and_artifact(extract, "o", "r", "v1")
+
+    def test_version_only_metadata_drift_is_allowed(self):
+        source_files = {
+            "plugin.json": json.dumps(
+                {"name": "Syncthing", "version": "1.0.0", "flags": []}
+            ),
+            "package.json": json.dumps(
+                {"name": "syncthing", "version": "1.0.0", "private": True}
+            ),
+        }
+        artifact_files = {
+            "plugin.json": json.dumps(
+                {"name": "Syncthing", "version": "1.0.1-dev.gabc", "flags": []}
+            ),
+            "package.json": json.dumps(
+                {
+                    "name": "syncthing",
+                    "version": "1.0.1-dev.gabc",
+                    "private": True,
+                }
+            ),
+        }
+        summary, findings, status = self._compare_metadata_files(
+            source_files, artifact_files
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertNotIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
+
+    def test_decky_stamped_plugin_metadata_is_allowed(self):
+        source = json.dumps(
+            {
+                "name": "Syncthing",
+                "version": "1.0.0",
+                "flags": ["debug"],
+                "publish": {
+                    "image": "https://raw.githubusercontent.com/o/r/main/assets/icon.png"
+                },
+            }
+        )
+        artifact = json.dumps(
+            {
+                "name": "Syncthing",
+                "version": "1.0.1-dev.gabc",
+                "flags": [],
+                "publish": {
+                    "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/assets/icon.png"
+                },
+            }
+        )
+        summary, findings, status = self._compare_metadata_files(
+            {"plugin.json": source}, {"plugin.json": artifact}
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertNotIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
+
+    def test_plugin_flags_drift_is_not_allowed(self):
+        source = json.dumps({"name": "Syncthing", "version": "1.0.0", "flags": []})
+        artifact = json.dumps(
+            {"name": "Syncthing", "version": "1.0.0", "flags": ["root"]}
+        )
+        summary, findings, status = self._compare_metadata_files(
+            {"plugin.json": source}, {"plugin.json": artifact}
+        )
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(summary["modified_source_files"], ["plugin/plugin.json"])
+        self.assertIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
+
+    def test_malformed_metadata_drift_is_not_allowed(self):
+        source = json.dumps({"name": "Syncthing", "version": "1.0.0", "flags": []})
+        summary, findings, status = self._compare_metadata_files(
+            {"plugin.json": source}, {"plugin.json": "{not-json"}
+        )
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(summary["modified_source_files"], ["plugin/plugin.json"])
         self.assertIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
 
     def test_shannon_entropy_removed(self):
@@ -1344,6 +1498,146 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 )
             zf.writestr("my-plugin/main.py", "# hello world\n")
         return buf.getvalue()
+
+    def _run_scanner_precision_fixture(self, plugin_flags=None):
+        plugin_flags = [] if plugin_flags is None else plugin_flags
+        token = "ghp_" + "A" * 36
+        source_files = {
+            "plugin.json": json.dumps(
+                {
+                    "name": "Syncthing",
+                    "version": "1.0.0",
+                    "flags": plugin_flags,
+                }
+            ).encode(),
+            "package.json": json.dumps(
+                {"name": "syncthing", "version": "1.0.0", "private": True}
+            ).encode(),
+            "main.py": (
+                'import os\nimport subprocess\napi_key = os.environ.get("SYNCTHING_API_KEY")\n'
+                'subprocess.run(["true"])\n'
+            ).encode(),
+        }
+        artifact_files = {
+            "syncthing/plugin.json": json.dumps(
+                {
+                    "name": "Syncthing",
+                    "version": "1.0.1-dev.gabc",
+                    "flags": plugin_flags,
+                }
+            ),
+            "syncthing/package.json": json.dumps(
+                {
+                    "name": "syncthing",
+                    "version": "1.0.1-dev.gabc",
+                    "private": True,
+                }
+            ),
+            "syncthing/main.py": source_files["main.py"],
+            "syncthing/dist/index.js.map": json.dumps(
+                {
+                    "version": 3,
+                    "sources": ["/home/deck/mount/build/src/index.ts"],
+                    "token": token,
+                }
+            ),
+        }
+        zip_data = _make_zip(
+            [_regular(path, content) for path, content in artifact_files.items()]
+        )
+        release = {
+            "tag_name": "v1.0.1-dev.gabc",
+            "prerelease": True,
+            "assets": [
+                {
+                    "name": "syncthing.zip",
+                    "id": 1,
+                    "browser_download_url": "https://example.com/syncthing.zip",
+                }
+            ],
+        }
+        tree = [
+            {
+                "path": path,
+                "type": "blob",
+                "sha": ap.git_blob_sha1(content),
+            }
+            for path, content in source_files.items()
+        ]
+
+        def fake_download(_url, dest_path):
+            Path(dest_path).write_bytes(zip_data)
+            return hashlib.sha256(zip_data).hexdigest()
+
+        def fake_get_repo_file_raw(_owner, _repo, _ref, path):
+            return source_files.get(path)
+
+        with (
+            patch.object(
+                ap,
+                "get_repo_metadata",
+                return_value={"default_branch": "main", "archived": False},
+            ),
+            patch.object(ap, "get_releases", return_value=[release]),
+            patch.object(ap, "get_repo_file_raw", side_effect=fake_get_repo_file_raw),
+            patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(
+                ap,
+                "run_clamav",
+                return_value=(ap.ScannerStatus(name="clamav", status="passed"), []),
+            ),
+            patch.object(
+                ap,
+                "run_trivy",
+                return_value=(ap.ScannerStatus(name="trivy", status="passed"), []),
+            ),
+            patch.object(
+                ap,
+                "run_semgrep",
+                return_value=(ap.ScannerStatus(name="semgrep", status="skipped"), []),
+            ),
+            patch.object(
+                ap,
+                "_gh_get",
+                return_value={"truncated": False, "tree": tree},
+            ),
+        ):
+            return ap.audit_repository(
+                "https://github.com/owner/syncthing",
+                policy=ap._default_policy(),
+                exceptions=[],
+                skip_cache=True,
+            )
+
+    def test_scanner_precision_fixture_keeps_only_intended_survivors(self):
+        report = self._run_scanner_precision_fixture()
+        rule_ids = [finding.rule_id for finding in report.findings]
+        self.assertEqual(
+            rule_ids,
+            [
+                "SENSITIVE_ENV_HARVEST",
+                "EXEC_SUBPROCESS_RUN",
+                "SECRET_GITHUB_TOKEN",
+            ],
+        )
+        self.assertNotIn("PRIVILEGE_MOUNT", rule_ids)
+        self.assertNotIn("MODIFIED_SOURCE_FILE", rule_ids)
+        env_finding = next(
+            finding
+            for finding in report.findings
+            if finding.rule_id == "SENSITIVE_ENV_HARVEST"
+        )
+        self.assertEqual(env_finding.classification, "PASS_WITH_WARNINGS")
+        self.assertEqual(report.final_classification, "BLOCK")
+        self.assertEqual(report.plugin_name, "Syncthing")
+        self.assertEqual(
+            report.archive_stats.static_scan_skipped_extensions,
+            {".json": 2, ".map": 1},
+        )
+
+    def test_generated_json_skip_does_not_bypass_metadata_checks(self):
+        report = self._run_scanner_precision_fixture(plugin_flags=["root"])
+        self.assertIn("ROOT_ACCESS", {finding.rule_id for finding in report.findings})
 
     def test_clean_plugin_passes(self):
         zip_data = self._make_simple_zip()
