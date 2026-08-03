@@ -1,0 +1,22 @@
+{
+  "date": "2026-08-03",
+  "task_objective": "Extract shared release-selection logic into plugin_release_utils.py and fix testing-channel semver selection",
+  "files_modified": [
+    "plugin_release_utils.py",
+    "generate_json.py",
+    "tests/test_plugin_release_utils.py"
+  ],
+  "tests_added": [
+    "tests/test_plugin_release_utils.py"
+  ],
+  "design_decisions": [
+    "Extracted normalize_version, parse_semver, version_sort_key, has_exactly_one_zip, get_zip_asset, and select_best_release into plugin_release_utils.py.",
+    "Fixed select_best_release to rank purely by version_sort_key so higher semver prereleases (e.g. 2.0.0-beta.1) take precedence over lower stable releases (e.g. 1.0.0) when allow_prerelease=True.",
+    "Updated generate_json.py to import and delegate to plugin_release_utils while re-exporting parse_semver for external callers."
+  ],
+  "results": {
+    "pytest": "25 passed",
+    "quality_gates": "passed",
+    "round_complete_marker": "/tmp/decky-plugins-extended/release-utils_finished"
+  }
+}
