@@ -1,0 +1,60 @@
+{
+  "date": "2026-08-03",
+  "task_objective": "Enforce the placeholder-pattern named-group invariant and refresh stale verdict audit context hashes without disturbing verdict timestamps or unchanged-store determinism.",
+  "branch": "feat/audit-invariants",
+  "plan_commit": "c6d415c",
+  "implementation_commits": [
+    "215fa58",
+    "8f05c6e"
+  ],
+  "setup": {
+    "baseline": "231 passed.",
+    "remote_dev_pull": "Attempted git pull --ff-only origin dev and captured the failure at /tmp/decky-plugins-extended-audit-invariants-setup.log; origin has no dev ref, so the clean local dev tip c6d415c was used as the required base.",
+    "plan_history": "The plan was already committed at the dev tip as c6d415c, so feat/audit-invariants inherited the required plan-first commit instead of creating a duplicate empty commit.",
+    "tooling": "The repository has no run.sh. XDG_CACHE_HOME was isolated under /tmp because the sandboxed global uv cache was read-only."
+  },
+  "implementation": {
+    "placeholder_invariant": "A biconditional test now requires every secret pattern with a named value group to be placeholder-enabled and every placeholder-enabled pattern to define that group.",
+    "context_refresh": "When classification, blocking rule IDs, and artifact hash are unchanged but audit_context_hash differs, _record_verdict updates only audit_context_hash and writes the store.",
+    "determinism": "When all stable fields and audit_context_hash are unchanged, _record_verdict performs no write and preserves byte-identical output. Context-only refreshes preserve the existing audited_at; changed verdicts still replace the record and timestamp."
+  },
+  "files_modified": [
+    "audit_plugins.py",
+    "tests/test_secret_rule_precision.py",
+    "tests/test_verdict_publication.py",
+    "docs/agent_conversations/2026-08-03_audit-invariants.json"
+  ],
+  "verification_evidence": {
+    "tdd_red": "Before the production fix, the focused suite reported 1 failed and 12 passed; the context-only record retained audit_context_hash=context instead of new-context.",
+    "invariant_extra_member_failure": "Temporarily adding github_token to _PLACEHOLDER_SECRET_PATTERNS made the biconditional test fail 1 test with AssertionError: github_token.",
+    "scanner_crash_reproduction": "With github_token temporarily placeholder-enabled, scanning a matching ghp_ token exited 1 with IndexError: no such group.",
+    "invariant_missing_group_failure": "Temporarily removing generic_api_key's named value group made the biconditional test fail 1 test with AssertionError: generic_api_key, proving the opposite direction.",
+    "verdict_controls": "3 passed: identical verdict and context performed no write and preserved bytes; context-only change updated exactly audit_context_hash and preserved audited_at; classification change updated audited_at.",
+    "context_branch_mutation": "Removing Task 2's context-refresh branch made the context-only test fail 1 test because the old hash remained.",
+    "invariant_test_removal": "Removing Task 1's test and selecting its keyword collected no tests: 5 deselected, pytest exit 5.",
+    "protected_suites": "31 passed across catalog-gate, audit-verdicts, verdict-publication, and secret-rule-precision.",
+    "full_suite": "234 passed.",
+    "quality_gates": "Ruff check passed; 32 files already formatted; 234 passed and 21 subtests passed; no deleted review notes."
+  },
+  "test_adjustment_rationale": "The verdict-publication determinism test previously treated a changed context hash as fully unchanged. The plan explicitly changes that behavior, so it was split into unchanged-context, context-only, and changed-verdict cases without weakening any stable-field or timestamp guarantee.",
+  "not_verified": [
+    "The placeholder crash requires a future edit that breaks the coupling; the invariant test prevents that edit but does not prove the current pattern set is otherwise correct.",
+    "No classification or catalog-output behavior depends on audit_context_hash today, so this plan did not re-audit plugins or compare catalog output."
+  ],
+  "temporary_logs": [
+    "/tmp/decky-plugins-extended-audit-invariants-setup.log",
+    "/tmp/decky-plugins-extended-audit-invariants-baseline.log",
+    "/tmp/decky-plugins-extended-audit-invariants-tdd-red.log",
+    "/tmp/decky-plugins-extended-audit-invariants-targeted-green.log",
+    "/tmp/decky-plugins-extended/audit-invariants-invariant-extra-member-red.log",
+    "/tmp/decky-plugins-extended/audit-invariants-scanner-crash.log",
+    "/tmp/decky-plugins-extended/audit-invariants-invariant-missing-member-red.log",
+    "/tmp/decky-plugins-extended/audit-invariants-verdict-controls-green.log",
+    "/tmp/decky-plugins-extended/audit-invariants-context-branch-mutation-red.log",
+    "/tmp/decky-plugins-extended/audit-invariants-invariant-test-removed.log",
+    "/tmp/decky-plugins-extended/audit-invariants-protected-suites-green.log",
+    "/tmp/decky-plugins-extended/audit-invariants-full-suite-green.log",
+    "/tmp/decky-plugins-extended/audit-invariants-quality-gates-pre-session-log.log"
+  ],
+  "unrelated_improvements_deferred": []
+}

@@ -1,0 +1,125 @@
+{
+  "date": "2026-08-03",
+  "task_objective": "Vet the fork's thirteen candidate plugin repositories with the configured audit policy and add only unique repositories whose newest eligible release is neither AUDIT_ERROR nor BLOCK.",
+  "branch": "feat/plugin-additions",
+  "plan_commit": "f05cc29",
+  "implementation_commit": "918b857",
+  "setup": {
+    "baseline": "219 passed",
+    "remote_dev_pull": "Attempted git pull --ff-only origin dev; origin has no dev ref, so the clean local dev tip f05cc29 was used as the required base.",
+    "fork_reference": "zany130/decky-plugins-extended at 77cc3ca",
+    "candidate_count": 13,
+    "audit_tooling": "Trivy 0.73.0 and ClamAV 1.4.5 with packaged signature databases were staged under /tmp; no host packages were installed.",
+    "required_scanners": "Every candidate report recorded trivy=passed and clamav=passed; source-artifact-diff was passed or found_issue, and disabled Semgrep was skipped as configured."
+  },
+  "files_modified": [
+    "additional_plugins.txt",
+    "docs/agent_conversations/2026-08-03_plugin-additions.json"
+  ],
+  "retained_plugins": [
+    {
+      "repository": "rsore/decky-bootnext",
+      "release": "v1.0.0",
+      "classification": "MANUAL_REVIEW",
+      "rule_ids": ["PERSIST_LD_PRELOAD", "PRIVILEGE_SUDO", "PRIVILEGE_SUDO_SHELL", "PRIVILEGE_SYSTEMCTL", "PRIVILEGE_SYSTEMCTL_SHELL", "ROOT_ACCESS"],
+      "disposition": "Expected root plugin deployment/restart behavior and child-environment LD_PRELOAD removal; no blocking finding."
+    },
+    {
+      "repository": "snoein/decky-insignia",
+      "release": "v0.1.2",
+      "classification": "MANUAL_REVIEW",
+      "rule_ids": ["NATIVE_BINARY", "PRIVILEGE_MOUNT", "PRIVILEGE_SUDO", "PRIVILEGE_SUDO_SHELL", "PRIVILEGE_SYSTEMCTL", "PRIVILEGE_SYSTEMCTL_SHELL", "SENSITIVE_ENV_HARVEST", "SENSITIVE_SSH_KEY", "ZIP_ONLY_EXECUTABLE", "ZIP_ONLY_SCRIPT"],
+      "disposition": "Bundled Python dependencies/native wheels plus README deployment examples and requests/urllib3 matches; no blocking finding."
+    },
+    {
+      "repository": "xXJSONDeruloXx/Decky-bionic-fg",
+      "release": "v0.1.6",
+      "classification": "MANUAL_REVIEW",
+      "rule_ids": ["NATIVE_BINARY", "ZIP_ONLY_EXECUTABLE"],
+      "disposition": "The release intentionally bundles three platform native libraries as build artifacts; no blocking finding."
+    },
+    {
+      "repository": "Teppichseite/RetroDECKY",
+      "release": "v1.1.0",
+      "classification": "MANUAL_REVIEW",
+      "rule_ids": ["EXEC_EXEC", "EXEC_FUNCTION_CTOR", "EXEC_SUBPROCESS_RUN", "OBFUSCATION_LARGE_BASE64", "OBFUSCATION_MARSHAL", "PACKAGE_LIFECYCLE_SCRIPT", "PRIVILEGE_MOUNT", "PRIVILEGE_SUDO", "PRIVILEGE_SUDO_SHELL", "ZIP_ONLY_SCRIPT"],
+      "disposition": "pdf.js/WASM and xmltodict package metadata dominate the matches, with an explicit dependency build script and emulator mount arguments; no blocking finding."
+    },
+    {
+      "repository": "zany130/RSM-Decky",
+      "release": "v1.0.1",
+      "classification": "MANUAL_REVIEW",
+      "rule_ids": ["EXEC_EXEC", "EXEC_SUBPROCESS_RUN", "NETWORK_DISABLED_TLS", "PERSIST_LD_PRELOAD"],
+      "disposition": "Regex exec calls, git subprocess/environment sanitization, and explicit unverified shader-manager download contexts were reviewed; no blocking finding."
+    },
+    {
+      "repository": "Rayekkk/LeGoTDP",
+      "release": "1.6.0",
+      "classification": "MANUAL_REVIEW",
+      "rule_ids": ["EXEC_SUBPROCESS_POPEN", "PERSIST_PROFILE_MOD", "PRIVILEGE_MOUNT", "PRIVILEGE_SUDO_SHELL", "PRIVILEGE_SYSTEMCTL", "PRIVILEGE_SYSTEMCTL_SHELL", "ROOT_ACCESS"],
+      "disposition": "Expected root hardware-control subprocess plus README deployment commands and frontend wording matches; no blocking finding."
+    },
+    {
+      "repository": "Rayekkk/LeGo-Vibe-Control",
+      "release": "1.5.0",
+      "classification": "MANUAL_REVIEW",
+      "rule_ids": ["PERSIST_PROFILE_MOD", "PRIVILEGE_MOUNT", "PRIVILEGE_SUDO", "PRIVILEGE_SUDO_SHELL", "PRIVILEGE_SYSTEMCTL", "PRIVILEGE_SYSTEMCTL_SHELL", "ROOT_ACCESS"],
+      "disposition": "Expected root sysfs/HID control, README deployment commands, and vendored pyudev documentation matches; no blocking finding."
+    },
+    {
+      "repository": "Rayekkk/LeGo2BrightnessFix",
+      "release": "1.0.1",
+      "classification": "MANUAL_REVIEW",
+      "rule_ids": ["EXEC_SUBPROCESS_RUN", "PERSIST_LD_PRELOAD", "PRIVILEGE_SYSTEMCTL"],
+      "disposition": "Expected user-session systemctl/subprocess operations and loader-environment sanitization; no blocking finding."
+    },
+    {
+      "repository": "cwtechshiz/nordvpn-decky",
+      "release": "v1.1.0",
+      "classification": "MANUAL_REVIEW",
+      "rule_ids": ["PRIVILEGE_SUDO"],
+      "disposition": "Expected sudo user-switch wrapper for NordVPN commands; no blocking finding."
+    }
+  ],
+  "excluded_plugins": [
+    {
+      "repository": "lopesleo/DeckTools",
+      "reason": "BLOCK",
+      "blocking_rule_ids": ["SECRET_BEARER_TOKEN"]
+    },
+    {
+      "repository": "Rayekkk/DeckyVibranceHDR",
+      "reason": "BLOCK",
+      "blocking_rule_ids": ["SECRET_BEARER_TOKEN"]
+    },
+    {
+      "repository": "parvagans/achievement-companion",
+      "reason": "BLOCK",
+      "blocking_rule_ids": ["SECRET_GENERIC_API_KEY"]
+    },
+    {
+      "repository": "zany130/decky-notifications",
+      "reason": "Already present upstream at version 1.0.1; the candidate repository's newest audited release was older at 1.0, so retaining the redundant URL failed the exact-count negative control."
+    }
+  ],
+  "verification_evidence": {
+    "final_audit": "9 reports; MANUAL_REVIEW=9; AUDIT_ERROR=0; BLOCK=0.",
+    "catalog_negative_control": "Against an isolated dev catalog generated from the same live sources, stable count increased 136 to 145 and testing count increased 120 to 129, exactly +9 in both.",
+    "catalog_versions": "All nine retained plugin names appeared in stable and testing with at least one version.",
+    "full_suite": "219 passed.",
+    "quality_gates": "ruff check passed; 25 files already formatted; 219 passed and 21 subtests passed; no deleted review notes."
+  },
+  "not_verified": [
+    "Static analysis does not prove any retained plugin safe or evaluate runtime behavior.",
+    "Only each repository's newest eligible release was audited; historical releases were not audited."
+  ],
+  "temporary_logs": [
+    "/tmp/decky-plugins-extended/plugin-additions-audit.log",
+    "/tmp/decky-plugins-extended/plugin-additions-retained-audit.log",
+    "/tmp/decky-plugins-extended/plugin-additions-baseline-generate.log",
+    "/tmp/decky-plugins-extended/plugin-additions-generate.log",
+    "/tmp/decky-plugins-extended/plugin-additions-full-pytest.log",
+    "/tmp/decky-plugins-extended/plugin-additions-quality-gates-precommit.log"
+  ],
+  "unrelated_improvements_deferred": []
+}

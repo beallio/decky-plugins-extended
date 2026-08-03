@@ -1,0 +1,61 @@
+# Security audit policy configuration.
+# This file controls which checks run, what thresholds are used, and
+# whether findings block CI or are reported only.
+version: "1"
+
+enforcement:
+  # "report-only": findings are surfaced in the job summary but do NOT
+  #                fail the PR (exit 0 on security findings).
+  # "enforce":     BLOCK findings exit 2; MANUAL_REVIEW exits 3.
+  # Internal infrastructure failures always fail CI regardless of mode.
+  # Switch to "enforce" once false-positive rates have been evaluated.
+  mode: report-only
+
+archive:
+  # Maximum number of files allowed in a single release ZIP.
+  max_files: 10000
+  # Maximum total uncompressed size (bytes) across all archive members.
+  max_uncompressed_bytes: 1073741824     # 1 GiB
+  # Maximum uncompressed size of a single archive member (bytes).
+  max_single_file_bytes: 536870912      # 512 MiB
+  # Maximum allowed compression ratio (uncompressed / compressed).
+  # Ratios above this limit indicate a potential zip-bomb.
+  max_compression_ratio: 200
+  # Maximum depth of nested directories inside the archive.
+  max_path_depth: 30
+
+vulnerabilities:
+  # Minimum CVSSv3-equivalent severity that triggers a BLOCK classification.
+  # Accepted values: "critical", "high", "medium", "low"
+  block_severity: critical
+  # Minimum severity that triggers MANUAL_REVIEW.
+  review_severity: high
+
+scanners:
+  # enabled: false → scanner is skipped (status "skipped") and never blocks.
+  # required: true → if the scanner is enabled and exits with anything other
+  #                   than "passed" or "found_issue" the audit becomes
+  #                   AUDIT_ERROR; "unsupported" → at least MANUAL_REVIEW.
+  clamav:
+    enabled: true
+    required: true
+  trivy:
+    enabled: true
+    required: true
+  semgrep:
+    enabled: false
+    required: false
+  osv_scanner:
+    enabled: false
+    required: false
+  source_artifact_diff:
+    enabled: true
+    required: true
+
+# Future integration point for catalog generation:
+# catalog_generation:
+#   require_classifications:
+#     - PASS
+#     - PASS_WITH_WARNINGS
+#   # MANUAL_REVIEW requires an explicit unexpired allowlist entry keyed by
+#   # artifact SHA-256, not just repository name or mutable release tag.

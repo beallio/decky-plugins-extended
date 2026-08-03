@@ -27,3 +27,14 @@ https://github.com/kungaa/DS5-Linux-Decky
 https://github.com/Hooandee/panel-de-control
 https://github.com/AG69075/steamOS_plugin_achievements
 https://github.com/beallio/Decky-SteamAchievements
+https://github.com/rsore/decky-bootnext
+https://github.com/snoein/decky-insignia
+https://github.com/xXJSONDeruloXx/Decky-bionic-fg
+https://github.com/Teppichseite/RetroDECKY
+https://github.com/zany130/RSM-Decky
+https://github.com/Rayekkk/LeGoTDP
+https://github.com/Rayekkk/LeGo-Vibe-Control
+https://github.com/Rayekkk/LeGo2BrightnessFix
+https://github.com/cwtechshiz/nordvpn-decky
+https://github.com/Rayekkk/DeckyVibranceHDR
+https://github.com/parvagans/achievement-companion

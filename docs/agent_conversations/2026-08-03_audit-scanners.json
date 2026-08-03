@@ -1,0 +1,40 @@
+{
+  "date": "2026-08-03",
+  "task_objective": "Fix auditor redaction leak, remove dead entropy detector, add source/artifact content comparison, and address review findings for audit-scanners plan.",
+  "files_modified": [
+    "audit_plugins.py",
+    "tests/test_audit_plugins.py",
+    "docs/agent_conversations/2026-08-03_audit-scanners.json"
+  ],
+  "tests_added": [
+    "tests/test_audit_plugins.py::TestStaticRules::test_finding_post_init_redacts_evidence",
+    "tests/test_audit_plugins.py::TestStaticRules::test_redaction_end_to_end_report_surfaces",
+    "tests/test_audit_plugins.py::TestStaticAnalysis::test_static_rules_redact_secrets_in_evidence",
+    "tests/test_audit_plugins.py::TestStaticAnalysis::test_shannon_entropy_removed",
+    "tests/test_audit_plugins.py::TestSourceArtifactDiff::test_modified_same_path_file_detected",
+    "tests/test_audit_plugins.py::TestSourceArtifactDiff::test_normal_plugin_compiled_assets_no_false_positives"
+  ],
+  "design_decisions": [
+    "Centralized evidence redaction directly in Finding.__post_init__ hook so all 31 evidence construction sites automatically redact secrets.",
+    "Completely removed unused _shannon_entropy function and added test_shannon_entropy_removed to pin its removal.",
+    "Implemented Git blob SHA-1 hashing in git_blob_sha1() and content comparison in compare_source_and_artifact() with CRLF normalization fallback to avoid false positives on Windows line endings.",
+    "Added end-to-end report surface redaction test verifying token absence across JSON report, Markdown report, and GitHub step summary surfaces.",
+    "Added direct unit test pinning Finding.__post_init__ redaction behavior.",
+    "Fixed inverted docstring and assertion message in TestGitHubAuthHeader."
+  ],
+  "verification_evidence": {
+    "step_1_redaction_leak": "PASS: token ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA redacted in security-report.json, security-report.md, and GITHUB_STEP_SUMMARY; verified leak on unredacted code",
+    "step_2_modified_same_path_file": "PASS: modified same-path file detected via Git blob SHA-1 content comparison",
+    "step_3_no_false_positives_normal_plugin": "PASS: dist/ assets, sourcemaps, and PNGs in archive but missing from source cause no false positives",
+    "step_4_entropy_detector_removed": "PASS: _shannon_entropy symbol completely removed (0 occurrences in codebase)",
+    "step_5_mutation_testing": {
+      "finding_post_init_disabled": "MUTATION VERIFIED: disabling Finding.__post_init__ causes test_finding_post_init_redacts_evidence to fail with AssertionError: token unexpectedly found in evidence",
+      "redact_secrets_neutered": "MUTATION VERIFIED: neutering redact_secrets causes test_redaction_end_to_end_report_surfaces to fail with AssertionError: Token leaked in report surface"
+    }
+  },
+  "results": {
+    "pytest": "190 passed, 17 subtests passed",
+    "quality_gates": "passed",
+    "round_complete_marker": "/tmp/decky-plugins-extended/audit-scanners_finished"
+  }
+}
