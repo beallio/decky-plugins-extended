@@ -60,6 +60,27 @@ class WorkflowSecurityTests(unittest.TestCase):
 
         self.assertIn("security-allowlist.yml", cache_key_command)
 
+    def test_scheduled_audit_publishes_only_changed_verdict_store(self):
+        workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
+        scheduled_job = workflow.split("  scheduled-audit:\n", maxsplit=1)[1]
+
+        self.assertIn("    permissions:\n      contents: write", scheduled_job)
+        self.assertIn(
+            "git diff --quiet -- security-verdicts.json",
+            scheduled_job,
+        )
+        self.assertIn("git add -- security-verdicts.json", scheduled_job)
+        self.assertNotIn("git add -A", scheduled_job)
+        self.assertIn("${changed_count} changed verdicts", scheduled_job)
+        self.assertEqual(
+            2,
+            scheduled_job.count('git pull --rebase origin "$GITHUB_REF_NAME"'),
+        )
+        self.assertEqual(
+            2,
+            scheduled_job.count('git push origin "HEAD:${GITHUB_REF_NAME}"'),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

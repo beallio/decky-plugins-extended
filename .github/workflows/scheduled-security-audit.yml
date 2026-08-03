@@ -32,6 +32,8 @@ jobs:
     name: Scheduled Audit (all plugins)
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -96,6 +98,9 @@ jobs:
           }
         timeout-minutes: 10
 
+      - name: Snapshot published verdicts
+        run: cp security-verdicts.json "$RUNNER_TEMP/security-verdicts-before.json"
+
       - name: Run audit on all configured repositories
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -106,6 +111,51 @@ jobs:
             --output-dir security-reports \
             --cache-dir .audit-cache
         timeout-minutes: 45
+
+      - name: Publish updated verdicts
+        env:
+          BEFORE_VERDICTS: ${{ runner.temp }}/security-verdicts-before.json
+        run: |
+          if git diff --quiet -- security-verdicts.json; then
+            echo "No verdict changes to publish."
+            exit 0
+          fi
+
+          changed_count=$(uv run python - "$BEFORE_VERDICTS" security-verdicts.json <<'PY'
+          import json
+          import sys
+
+          def flatten(path):
+              with open(path, encoding="utf-8") as verdict_file:
+                  verdicts = json.load(verdict_file)
+              return {
+                  (repository, release_id): verdict
+                  for repository, releases in verdicts.items()
+                  for release_id, verdict in releases.items()
+              }
+
+          before = flatten(sys.argv[1])
+          after = flatten(sys.argv[2])
+          changed = sum(
+              before.get(key) != after.get(key) for key in before.keys() | after.keys()
+          )
+          print(changed)
+          PY
+          )
+
+          git config user.name "decky-plugins-extended audit bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- security-verdicts.json
+          git commit -m "chore(security): publish ${changed_count} changed verdicts"
+
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            exit 0
+          fi
+
+          echo "Initial verdict push raced with another update; rebasing and retrying once."
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Save audit cache
         # Save cache after scanning so updated entries persist on the next run.
