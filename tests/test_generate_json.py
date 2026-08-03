@@ -57,16 +57,27 @@ class GenerateJsonTests(unittest.TestCase):
     def test_resolve_plugin_name_prefers_plugin_json(self):
         # Decky matches installed plugins on the plugin.json name, so it wins.
         self.assertEqual(
-            generate_json.resolve_plugin_name({"name": "SDH-Ludusavi"}, {"name": "sdh-ludusavi"}),
+            generate_json.resolve_plugin_name(
+                {"name": "SDH-Ludusavi"}, {"name": "sdh-ludusavi"}
+            ),
             "SDH-Ludusavi",
         )
-        self.assertEqual(generate_json.resolve_plugin_name(None, {"name": "sdh-ludusavi"}), "sdh-ludusavi")
-        self.assertEqual(generate_json.resolve_plugin_name({}, {"name": "sdh-ludusavi"}), "sdh-ludusavi")
+        self.assertEqual(
+            generate_json.resolve_plugin_name(None, {"name": "sdh-ludusavi"}),
+            "sdh-ludusavi",
+        )
+        self.assertEqual(
+            generate_json.resolve_plugin_name({}, {"name": "sdh-ludusavi"}),
+            "sdh-ludusavi",
+        )
         self.assertIsNone(generate_json.resolve_plugin_name(None, {}))
 
     def test_resolve_tags_promotes_the_root_flag(self):
         # The store card shows its root warning off a 'root' tag, not off flags.
-        plugin_json = {"publish": {"tags": ["vpn", "network"]}, "flags": ["root", "_root", "debug"]}
+        plugin_json = {
+            "publish": {"tags": ["vpn", "network"]},
+            "flags": ["root", "_root", "debug"],
+        }
 
         self.assertEqual(
             generate_json.resolve_tags(plugin_json, {"keywords": ["ignored"]}),
@@ -75,10 +86,14 @@ class GenerateJsonTests(unittest.TestCase):
 
     def test_resolve_tags_falls_back_to_keywords(self):
         self.assertEqual(
-            generate_json.resolve_tags({"publish": {}}, {"keywords": ["deck", "plugin"]}),
+            generate_json.resolve_tags(
+                {"publish": {}}, {"keywords": ["deck", "plugin"]}
+            ),
             ["deck", "plugin"],
         )
-        self.assertEqual(generate_json.resolve_tags(None, {"keywords": "utility"}), ["utility"])
+        self.assertEqual(
+            generate_json.resolve_tags(None, {"keywords": "utility"}), ["utility"]
+        )
         self.assertEqual(generate_json.resolve_tags(None, {}), [])
         # A root plugin with no tags at all still gets the marker.
         self.assertEqual(generate_json.resolve_tags({"flags": ["root"]}, {}), ["root"])
@@ -88,9 +103,17 @@ class GenerateJsonTests(unittest.TestCase):
         pkg = {"description": "Developer copy"}
         repo_info = {"description": "Repo copy"}
 
-        self.assertEqual(generate_json.resolve_description(plugin_json, pkg, repo_info), "Store copy")
-        self.assertEqual(generate_json.resolve_description({"publish": {}}, pkg, repo_info), "Developer copy")
-        self.assertEqual(generate_json.resolve_description(None, {"description": "  "}, repo_info), "Repo copy")
+        self.assertEqual(
+            generate_json.resolve_description(plugin_json, pkg, repo_info), "Store copy"
+        )
+        self.assertEqual(
+            generate_json.resolve_description({"publish": {}}, pkg, repo_info),
+            "Developer copy",
+        )
+        self.assertEqual(
+            generate_json.resolve_description(None, {"description": "  "}, repo_info),
+            "Repo copy",
+        )
         self.assertEqual(generate_json.resolve_description(None, {}, {}), "")
 
     def test_resolve_image_url_prefers_publish_image(self):
@@ -106,15 +129,28 @@ class GenerateJsonTests(unittest.TestCase):
         fallback = "https://opengraph.githubassets.com/1/owner/repo"
         template = "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
 
-        with patch.object(generate_json, "image_is_usable", return_value=True) as usable:
+        with patch.object(
+            generate_json, "image_is_usable", return_value=True
+        ) as usable:
             # Missing, empty, and the unedited template placeholder.
-            self.assertEqual(generate_json.resolve_image_url(None, "owner", "repo"), fallback)
-            self.assertEqual(generate_json.resolve_image_url({"publish": {}}, "owner", "repo"), fallback)
             self.assertEqual(
-                generate_json.resolve_image_url({"publish": {"image": "  "}}, "owner", "repo"), fallback
+                generate_json.resolve_image_url(None, "owner", "repo"), fallback
             )
             self.assertEqual(
-                generate_json.resolve_image_url({"publish": {"image": template}}, "owner", "repo"), fallback
+                generate_json.resolve_image_url({"publish": {}}, "owner", "repo"),
+                fallback,
+            )
+            self.assertEqual(
+                generate_json.resolve_image_url(
+                    {"publish": {"image": "  "}}, "owner", "repo"
+                ),
+                fallback,
+            )
+            self.assertEqual(
+                generate_json.resolve_image_url(
+                    {"publish": {"image": template}}, "owner", "repo"
+                ),
+                fallback,
             )
             usable.assert_not_called()
 
@@ -122,7 +158,9 @@ class GenerateJsonTests(unittest.TestCase):
         with patch.object(generate_json, "image_is_usable", return_value=False):
             self.assertEqual(
                 generate_json.resolve_image_url(
-                    {"publish": {"image": "https://example.invalid/gone.png"}}, "owner", "repo"
+                    {"publish": {"image": "https://example.invalid/gone.png"}},
+                    "owner",
+                    "repo",
                 ),
                 fallback,
             )
@@ -138,24 +176,40 @@ class GenerateJsonTests(unittest.TestCase):
 
         cases = [
             (Response(200), True),
-            (Response(200, "text/html"), False),   # a 404 page served as 200
+            (Response(200, "text/html"), False),  # a 404 page served as 200
             (Response(404, "text/plain"), False),
-            (Response(429, "text/html"), True),    # rate limited, not proof of a dead link
+            (
+                Response(429, "text/html"),
+                True,
+            ),  # rate limited, not proof of a dead link
             (Response(503, "text/html"), True),
         ]
         for response, expected in cases:
-            with self.subTest(status=response.status_code, ctype=response.headers["content-type"]):
+            with self.subTest(
+                status=response.status_code, ctype=response.headers["content-type"]
+            ):
                 with (
-                    patch.object(generate_json.anon_session, "head", return_value=response),
-                    patch.object(generate_json.anon_session, "get", return_value=response),
+                    patch.object(
+                        generate_json.anon_session, "head", return_value=response
+                    ),
+                    patch.object(
+                        generate_json.anon_session, "get", return_value=response
+                    ),
                 ):
-                    self.assertIs(generate_json.image_is_usable("https://example.invalid/x.png"), expected)
+                    self.assertIs(
+                        generate_json.image_is_usable("https://example.invalid/x.png"),
+                        expected,
+                    )
 
     def test_image_is_usable_keeps_url_on_network_error(self):
         with patch.object(
-            generate_json.anon_session, "head", side_effect=generate_json.requests.RequestException("boom")
+            generate_json.anon_session,
+            "head",
+            side_effect=generate_json.requests.RequestException("boom"),
         ):
-            self.assertTrue(generate_json.image_is_usable("https://example.invalid/x.png"))
+            self.assertTrue(
+                generate_json.image_is_usable("https://example.invalid/x.png")
+            )
 
     def test_get_plugin_json_returns_none_when_absent(self):
         class Response:
@@ -227,7 +281,9 @@ class GenerateJsonTests(unittest.TestCase):
 
         generate_json.merge_plugin_versions(plugin, new_versions)
 
-        self.assertEqual([version["name"] for version in plugin["versions"]], ["2.0.0", "1.0.0"])
+        self.assertEqual(
+            [version["name"] for version in plugin["versions"]], ["2.0.0", "1.0.0"]
+        )
         self.assertEqual(plugin["versions"][1]["hash"], "b" * 64)
         self.assertEqual(plugin["versions"][1]["downloads"], 10)
         self.assertEqual(plugin["versions"][1]["updates"], 4)
@@ -244,47 +300,64 @@ class GenerateJsonTests(unittest.TestCase):
             copied = generate_json.copy_static_files(str(source), str(destination))
 
             self.assertEqual(copied, ["index.html"])
-            self.assertEqual((destination / "index.html").read_text(encoding="utf-8"), "<h1>hi</h1>")
+            self.assertEqual(
+                (destination / "index.html").read_text(encoding="utf-8"), "<h1>hi</h1>"
+            )
 
     def test_copy_static_files_without_a_static_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             self.assertEqual(
-                generate_json.copy_static_files(str(Path(temp_dir) / "missing"), temp_dir), []
+                generate_json.copy_static_files(
+                    str(Path(temp_dir) / "missing"), temp_dir
+                ),
+                [],
             )
 
     def test_validate_plugin_schema_rejects_bad_hash(self):
-        plugins = [{
-            "id": 1,
-            "name": "Example",
-            "versions": [{
-                "name": "1.0.0",
-                "hash": "too-short",
-                "artifact": "https://example.invalid/plugin.zip",
-            }],
-        }]
+        plugins = [
+            {
+                "id": 1,
+                "name": "Example",
+                "versions": [
+                    {
+                        "name": "1.0.0",
+                        "hash": "too-short",
+                        "artifact": "https://example.invalid/plugin.zip",
+                    }
+                ],
+            }
+        ]
 
         with self.assertRaisesRegex(AssertionError, "Invalid hash length"):
             generate_json.validate_plugin_schema(plugins, "stable")
 
     def test_main_separates_stable_and_testing_releases_and_ids(self):
-        base_stable = [{
-            "id": 7,
-            "name": "OfficialStable",
-            "versions": [{
-                "name": "1.0.0",
-                "hash": "a" * 64,
-                "artifact": "https://example.invalid/official-stable.zip",
-            }],
-        }]
-        base_testing = [{
-            "id": 11,
-            "name": "OfficialTesting",
-            "versions": [{
-                "name": "1.0.0",
-                "hash": "b" * 64,
-                "artifact": "https://example.invalid/official-testing.zip",
-            }],
-        }]
+        base_stable = [
+            {
+                "id": 7,
+                "name": "OfficialStable",
+                "versions": [
+                    {
+                        "name": "1.0.0",
+                        "hash": "a" * 64,
+                        "artifact": "https://example.invalid/official-stable.zip",
+                    }
+                ],
+            }
+        ]
+        base_testing = [
+            {
+                "id": 11,
+                "name": "OfficialTesting",
+                "versions": [
+                    {
+                        "name": "1.0.0",
+                        "hash": "b" * 64,
+                        "artifact": "https://example.invalid/official-testing.zip",
+                    }
+                ],
+            }
+        ]
         repo_info = {
             "default_branch": "main",
             "description": "Repository description",
@@ -331,26 +404,46 @@ class GenerateJsonTests(unittest.TestCase):
                 os.chdir(workdir)
                 with (
                     patch.object(generate_json, "fetch_json", side_effect=fetch_json),
-                    patch.object(generate_json, "get_repo_info", return_value=repo_info),
-                    patch.object(generate_json, "get_package_json", return_value=package),
-                    patch.object(generate_json, "get_plugin_json", return_value=plugin_json),
+                    patch.object(
+                        generate_json, "get_repo_info", return_value=repo_info
+                    ),
+                    patch.object(
+                        generate_json, "get_package_json", return_value=package
+                    ),
+                    patch.object(
+                        generate_json, "get_plugin_json", return_value=plugin_json
+                    ),
                     patch.object(generate_json, "get_releases", return_value=releases),
-                    patch.object(generate_json, "build_version_object", side_effect=build_version_object),
+                    patch.object(
+                        generate_json,
+                        "build_version_object",
+                        side_effect=build_version_object,
+                    ),
                 ):
                     generate_json.main()
             finally:
                 os.chdir(old_cwd)
 
-            stable = json.loads((workdir / "public/plugins.json").read_text(encoding="utf-8"))
-            testing = json.loads((workdir / "public/testing_plugins.json").read_text(encoding="utf-8"))
+            stable = json.loads(
+                (workdir / "public/plugins.json").read_text(encoding="utf-8")
+            )
+            testing = json.loads(
+                (workdir / "public/testing_plugins.json").read_text(encoding="utf-8")
+            )
 
-        stable_plugin = next(plugin for plugin in stable if plugin["name"] == "Custom Plugin")
-        testing_plugin = next(plugin for plugin in testing if plugin["name"] == "Custom Plugin")
+        stable_plugin = next(
+            plugin for plugin in stable if plugin["name"] == "Custom Plugin"
+        )
+        testing_plugin = next(
+            plugin for plugin in testing if plugin["name"] == "Custom Plugin"
+        )
         self.assertEqual(stable_plugin["id"], 8)
         # Testing IDs are synced to their stable counterpart, so this is 8 and
         # not the 12 that the independent testing ID space would have assigned.
         self.assertEqual(testing_plugin["id"], stable_plugin["id"])
-        self.assertEqual([version["name"] for version in stable_plugin["versions"]], ["1.0.0"])
+        self.assertEqual(
+            [version["name"] for version in stable_plugin["versions"]], ["1.0.0"]
+        )
         self.assertEqual(
             [version["name"] for version in testing_plugin["versions"]],
             ["2.0.0-beta.1", "1.0.0"],
@@ -359,7 +452,8 @@ class GenerateJsonTests(unittest.TestCase):
         self.assertEqual(testing_plugin["tags"], ["utility"])
         # No publish.image in this plugin.json, so both entries get the repo card.
         self.assertEqual(
-            stable_plugin["image_url"], "https://opengraph.githubassets.com/1/example/custom-plugin"
+            stable_plugin["image_url"],
+            "https://opengraph.githubassets.com/1/example/custom-plugin",
         )
         self.assertEqual(testing_plugin["image_url"], stable_plugin["image_url"])
 

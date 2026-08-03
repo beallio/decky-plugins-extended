@@ -25,7 +25,9 @@ LIVE_URL = os.environ.get(
 
 
 def version_index(plugins):
-    return {p["name"]: {v.get("name") for v in p.get("versions") or []} for p in plugins}
+    return {
+        p["name"]: {v.get("name") for v in p.get("versions") or []} for p in plugins
+    }
 
 
 def report(missing, label):
@@ -60,11 +62,16 @@ def check_custom_repos(live):
                 g.get_plugin_json(owner, repo, branch),
                 g.get_package_json(owner, repo, branch),
             )
-            versions = g.sort_versions([
-                {"name": g.normalize_version(r.get("tag_name", "")), "created": r.get("published_at") or ""}
-                for r in g.get_releases(owner, repo)
-                if not r.get("prerelease")
-            ])
+            versions = g.sort_versions(
+                [
+                    {
+                        "name": g.normalize_version(r.get("tag_name", "")),
+                        "created": r.get("published_at") or "",
+                    }
+                    for r in g.get_releases(owner, repo)
+                    if not r.get("prerelease")
+                ]
+            )
         except Exception as e:
             # An unreachable repo is not evidence of a change, and the build
             # itself tolerates these, so never rebuild on one.

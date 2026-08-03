@@ -21,21 +21,27 @@ if not GITHUB_TOKEN:
 
 def get_session():
     session = requests.Session()
-    retry = Retry(total=3, backoff_factor=1, status_forcelist=[403, 429, 500, 502, 503, 504])
+    retry = Retry(
+        total=3, backoff_factor=1, status_forcelist=[403, 429, 500, 502, 503, 504]
+    )
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
-    session.headers.update({
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "X-GitHub-Api-Version": "2022-11-28"
-    })
+    session.headers.update(
+        {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+    )
     return session
 
 
 def get_anon_session():
     session = requests.Session()
-    retry = Retry(total=3, backoff_factor=1, status_forcelist=[403, 429, 500, 502, 503, 504])
+    retry = Retry(
+        total=3, backoff_factor=1, status_forcelist=[403, 429, 500, 502, 503, 504]
+    )
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
@@ -60,7 +66,9 @@ def get_repo_info(owner, repo):
 
 
 def get_repo_json(owner, repo, branch, filename, required=True):
-    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{filename}?ref={branch}"
+    url = (
+        f"https://api.github.com/repos/{owner}/{repo}/contents/{filename}?ref={branch}"
+    )
     resp = session.get(url, timeout=10)
     if resp.status_code == 404 and not required:
         return None
@@ -113,7 +121,9 @@ def image_is_usable(url):
         return resp.headers.get("content-type", "").startswith("image/")
     if resp.status_code in (404, 403, 410):
         return False
-    print(f"    Warning: image check for {url} returned {resp.status_code}. Keeping it.")
+    print(
+        f"    Warning: image check for {url} returned {resp.status_code}. Keeping it."
+    )
     return True
 
 
@@ -143,7 +153,11 @@ def resolve_description(plugin_json, pkg, repo_info):
     """publish.description is the store-facing copy; package.json's description
     is aimed at developers and is sometimes not even in English."""
     publish = (plugin_json or {}).get("publish") or {}
-    for candidate in (publish.get("description"), (pkg or {}).get("description"), (repo_info or {}).get("description")):
+    for candidate in (
+        publish.get("description"),
+        (pkg or {}).get("description"),
+        (repo_info or {}).get("description"),
+    ):
         if candidate and candidate.strip():
             return candidate.strip()
     return ""
@@ -161,10 +175,14 @@ def resolve_image_url(plugin_json, owner, repo):
     if not candidate:
         return fallback
     if TEMPLATE_IMAGE_REPO in candidate and f"{owner}/{repo}" != TEMPLATE_IMAGE_REPO:
-        print(f"    Note: {owner}/{repo} still has the template placeholder image. Using its repo card.")
+        print(
+            f"    Note: {owner}/{repo} still has the template placeholder image. Using its repo card."
+        )
         return fallback
     if not image_is_usable(candidate):
-        print(f"    Note: {owner}/{repo} publish.image is unreachable. Using its repo card.")
+        print(
+            f"    Note: {owner}/{repo} publish.image is unreachable. Using its repo card."
+        )
         return fallback
     return candidate
 
@@ -211,9 +229,13 @@ def normalize_version(tag_name):
 def build_version_object(release, existing_plugin=None):
     tag_name = normalize_version(release.get("tag_name", "1.0.0"))
 
-    zip_assets = [a for a in release.get("assets", []) if a.get("name", "").endswith(".zip")]
+    zip_assets = [
+        a for a in release.get("assets", []) if a.get("name", "").endswith(".zip")
+    ]
     if len(zip_assets) != 1:
-        print(f"    Warning: Expected exactly 1 zip asset for {tag_name}, found {len(zip_assets)}. Skipping.")
+        print(
+            f"    Warning: Expected exactly 1 zip asset for {tag_name}, found {len(zip_assets)}. Skipping."
+        )
         return None
 
     download_url = zip_assets[0].get("browser_download_url")
@@ -222,17 +244,21 @@ def build_version_object(release, existing_plugin=None):
     known_hash = None
     if existing_plugin:
         for v in existing_plugin.get("versions", []):
-            if v.get("name") == tag_name and v.get("artifact") == download_url and v.get("hash"):
+            if (
+                v.get("name") == tag_name
+                and v.get("artifact") == download_url
+                and v.get("hash")
+            ):
                 known_hash = v.get("hash")
                 break
 
     final_hash = None
-    
+
     # Check if GitHub natively provided the SHA-256 (recent GitHub feature)
     github_digest = zip_assets[0].get("digest")
     if github_digest and github_digest.startswith("sha256:"):
         final_hash = github_digest.split(":")[1]
-        
+
     if not final_hash:
         final_hash = known_hash if known_hash else calculate_hash(download_url)
 
@@ -242,11 +268,13 @@ def build_version_object(release, existing_plugin=None):
         "artifact": download_url,
         "created": release.get("published_at") or release.get("created_at"),
         "downloads": 0,
-        "updates": 0
+        "updates": 0,
     }
 
 
-SEMVER = re.compile(r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.\-]+))?(?:\+[0-9A-Za-z.\-]+)?$")
+SEMVER = re.compile(
+    r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.\-]+))?(?:\+[0-9A-Za-z.\-]+)?$"
+)
 
 
 def parse_semver(name):
@@ -291,11 +319,17 @@ def merge_plugin_versions(existing_plugin, new_versions):
 
     for nv in new_versions:
         # Update if it doesn't exist or if the hash has changed
-        if nv["name"] not in existing_versions or existing_versions[nv["name"]].get("hash") != nv.get("hash"):
+        if nv["name"] not in existing_versions or existing_versions[nv["name"]].get(
+            "hash"
+        ) != nv.get("hash"):
             if nv["name"] in existing_versions:
                 idx = existing_plugin["versions"].index(existing_versions[nv["name"]])
                 # Preserve existing fields we don't strictly overwrite
-                preserved_fields = {k: v for k, v in existing_versions[nv["name"]].items() if k not in ["name", "hash", "artifact", "created"]}
+                preserved_fields = {
+                    k: v
+                    for k, v in existing_versions[nv["name"]].items()
+                    if k not in ["name", "hash", "artifact", "created"]
+                }
                 nv.update(preserved_fields)
                 existing_plugin["versions"][idx] = nv
             else:
@@ -333,11 +367,17 @@ def validate_plugin_schema(plugins, list_type, artifact_required_names=None):
     for p in plugins:
         assert "id" in p, f"Missing id in {list_type}"
         assert "name" in p, f"Missing name in {list_type}"
-        assert p.get("versions"), f"Plugin {p['name']} has empty versions array in {list_type}"
+        assert p.get("versions"), (
+            f"Plugin {p['name']} has empty versions array in {list_type}"
+        )
         for v in p.get("versions", []):
             assert "name" in v, f"Missing version name in {p['name']} ({list_type})"
-            assert v.get("hash"), f"Missing or empty hash in {p['name']} version {v['name']} ({list_type})"
-            assert len(v["hash"]) == 64, f"Invalid hash length in {p['name']} version {v['name']} ({list_type})"
+            assert v.get("hash"), (
+                f"Missing or empty hash in {p['name']} version {v['name']} ({list_type})"
+            )
+            assert len(v["hash"]) == 64, (
+                f"Invalid hash length in {p['name']} version {v['name']} ({list_type})"
+            )
 
 
 def main():
@@ -351,7 +391,9 @@ def main():
 
     # Maintain independent ID spaces
     max_stable_id = max([p.get("id", 0) for p in plugins]) if plugins else 0
-    max_testing_id = max([p.get("id", 0) for p in testing_plugins]) if testing_plugins else 0
+    max_testing_id = (
+        max([p.get("id", 0) for p in testing_plugins]) if testing_plugins else 0
+    )
 
     repo_urls = read_repo_urls()
 
@@ -361,7 +403,7 @@ def main():
     for url in repo_urls:
         try:
             print(f"Processing {url}...")
-            parts = url.rstrip('/').split('/')
+            parts = url.rstrip("/").split("/")
             owner, repo = parts[-2], parts[-1]
 
             repo_info = get_repo_info(owner, repo)
@@ -373,10 +415,26 @@ def main():
             if not plugin_name:
                 raise ValueError(f"No 'name' in plugin.json or package.json for {url}")
             if plugin_json is None:
-                print(f"  Warning: no plugin.json on {default_branch}; falling back to the package.json name '{plugin_name}'.")
+                print(
+                    f"  Warning: no plugin.json on {default_branch}; falling back to the package.json name '{plugin_name}'."
+                )
 
-            existing_stable = next((p for p in plugins if p.get("name", "").lower() == plugin_name.lower()), None)
-            existing_testing = next((p for p in testing_plugins if p.get("name", "").lower() == plugin_name.lower()), None)
+            existing_stable = next(
+                (
+                    p
+                    for p in plugins
+                    if p.get("name", "").lower() == plugin_name.lower()
+                ),
+                None,
+            )
+            existing_testing = next(
+                (
+                    p
+                    for p in testing_plugins
+                    if p.get("name", "").lower() == plugin_name.lower()
+                ),
+                None,
+            )
 
             releases = get_releases(owner, repo)
 
@@ -395,7 +453,9 @@ def main():
                     stable_versions.append(v_obj.copy())
 
             if not testing_versions:
-                print(f"  Warning: No valid releases found for {plugin_name}. Skipping.")
+                print(
+                    f"  Warning: No valid releases found for {plugin_name}. Skipping."
+                )
                 continue
 
             sort_versions(stable_versions)
@@ -433,7 +493,7 @@ def main():
                     "downloads": 0,
                     "updates": 0,
                     "created": repo_info.get("created_at"),
-                    "updated": repo_info.get("updated_at")
+                    "updated": repo_info.get("updated_at"),
                 }
                 testing_plugins.append(new_testing)
 
@@ -457,11 +517,13 @@ def main():
                         "downloads": 0,
                         "updates": 0,
                         "created": repo_info.get("created_at"),
-                        "updated": repo_info.get("updated_at")
+                        "updated": repo_info.get("updated_at"),
                     }
                     plugins.append(new_stable)
             else:
-                print(f"  No stable releases found for {plugin_name}. Skipping stable plugins.")
+                print(
+                    f"  No stable releases found for {plugin_name}. Skipping stable plugins."
+                )
 
         except Exception as e:
             errors.append(f"Failed to process {url}: {e}")
@@ -475,11 +537,20 @@ def main():
         if not custom_plugin_names:
             print("No plugins resolved successfully. Aborting.")
             sys.exit(1)
-        print(f"Continuing with {len(custom_plugin_names)} successfully processed plugin(s).")
+        print(
+            f"Continuing with {len(custom_plugin_names)} successfully processed plugin(s)."
+        )
 
     # Ensure all testing plugin IDs match their stable counterparts exactly
     for testing_plugin in testing_plugins:
-        stable_plugin = next((p for p in plugins if p.get("name", "").lower() == testing_plugin.get("name", "").lower()), None)
+        stable_plugin = next(
+            (
+                p
+                for p in plugins
+                if p.get("name", "").lower() == testing_plugin.get("name", "").lower()
+            ),
+            None,
+        )
         if stable_plugin:
             testing_plugin["id"] = stable_plugin["id"]
 
@@ -492,10 +563,12 @@ def main():
         json.dump(plugins, f, indent=2)
     with open("public/testing_plugins.json", "w") as f:
         json.dump(testing_plugins, f, indent=2)
-        
+
     # Write Cloudflare Pages _headers file for Decky Loader CORS preflight
     with open("public/_headers", "w") as f:
-        f.write("/*\n  Access-Control-Allow-Origin: *\n  Access-Control-Allow-Methods: GET, OPTIONS\n  Access-Control-Allow-Headers: X-Decky-Version\n")
+        f.write(
+            "/*\n  Access-Control-Allow-Origin: *\n  Access-Control-Allow-Methods: GET, OPTIONS\n  Access-Control-Allow-Headers: X-Decky-Version\n"
+        )
 
     copy_static_files()
 
