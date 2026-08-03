@@ -15,3 +15,24 @@ dependencies = [
 # "Multiple top-level packages discovered in a flat-layout: ['static', 'functions']".
 [tool.setuptools]
 py-modules = []
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+# The scripts live at the repo root and are imported by name (`import generate_json`).
+# Without this, bare `pytest` collects nothing because the root is not on sys.path;
+# only `python -m pytest` happens to work, which is a trap.
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+# Pin the rule set explicitly. Without this the gate inherits whatever the
+# installed ruff defaults to and silently changes meaning on upgrade.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+# The generator deliberately catches broad exceptions per repository so one bad
+# plugin cannot abort the whole catalog build; BLE001 is therefore not selected.
