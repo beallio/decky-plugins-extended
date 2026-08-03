@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 public/
 .wrangler/
+security-reports/
+.audit-cache/

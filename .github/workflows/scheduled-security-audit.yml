@@ -1,0 +1,140 @@
+# Scheduled Plugin Security Audit
+#
+# Re-audits every configured plugin repository on a schedule to detect
+# new releases or updated artifacts that may introduce security issues.
+#
+# Cache results by artifact SHA-256 so unchanged releases are not re-audited.
+# Never automatically approves allowlist entries or modifies the allowlist.
+#
+# Cache key design:
+#   - Restore key: audit-cache-v{POLICY_VERSION}-{hash(policy+impl)}
+#   - Save key: audit-cache-v{POLICY_VERSION}-{hash(policy+impl)}-{run_id}
+# This allows cache hits for compatible policy versions while writing a new
+# entry after each run (so changes propagate on the next run).
+
+name: Scheduled Security Audit
+
+on:
+  schedule:
+    # Every 6 hours — matches the existing catalog-refresh schedule.
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "scheduled-security-audit"
+  cancel-in-progress: false
+
+jobs:
+  scheduled-audit:
+    name: Scheduled Audit (all plugins)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install uv
+        # astral-sh/setup-uv v9.0.0
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        # actions/setup-python v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version-file: "pyproject.toml"
+
+      - name: Compute audit cache key
+        id: cache-key
+        run: |
+          # Incorporate policy version, implementation, and allowlist into the
+          # cache key so the cache is invalidated when any of them change.
+          POLICY_HASH=$(sha256sum security-policy.yml security-allowlist.yml audit_plugins.py plugin_release_utils.py pyproject.toml | sha256sum | cut -c1-16)
+          echo "restore_key=audit-cache-v1-${POLICY_HASH}" >> "$GITHUB_OUTPUT"
+          echo "save_key=audit-cache-v1-${POLICY_HASH}-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore audit cache
+        # actions/cache v4.2.3
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: .audit-cache
+          key: ${{ steps.cache-key.outputs.save_key }}
+          restore-keys: |
+            ${{ steps.cache-key.outputs.restore_key }}
+
+      - name: Install optional security scanners
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb \
+            $(lsb_release -sc) main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends trivy || echo "::warning::trivy install failed"
+          sudo apt-get install -y --no-install-recommends clamav || {
+            echo "::error::clamav install failed"
+            exit 1
+          }
+          # Stop the auto-updater daemon so freshclam can run without lock conflicts.
+          sudo systemctl stop clamav-freshclam || true
+          # Update signature databases; fail loudly on error.
+          sudo freshclam
+          # Verify that usable signature databases are present.
+          clamscan --version || { echo "::error::clamscan unavailable after install"; exit 1; }
+          ls /var/lib/clamav/*.c?d 2>/dev/null || {
+            echo "::error::No ClamAV signature databases found after freshclam"
+            exit 1
+          }
+        timeout-minutes: 10
+
+      - name: Run audit on all configured repositories
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p security-reports
+          uv run python audit_plugins.py \
+            --all \
+            --output-dir security-reports \
+            --cache-dir .audit-cache
+        timeout-minutes: 45
+
+      - name: Save audit cache
+        # Save cache after scanning so updated entries persist on the next run.
+        # A cache-save failure must not be interpreted as a passing audit.
+        if: always()
+        # actions/cache v4.2.3
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: .audit-cache
+          key: ${{ steps.cache-key.outputs.save_key }}
+
+      - name: Add audit summary to job summary
+        if: always()
+        run: |
+          if [[ -f security-reports/security-report.md ]]; then
+            cat security-reports/security-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Scheduled Security Audit" >> "$GITHUB_STEP_SUMMARY"
+            echo "⚠️ No report generated." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload audit reports
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: scheduled-security-audit-reports
+          path: |
+            security-reports/security-report.json
+            security-reports/security-report.md
+          retention-days: 90
+          if-no-files-found: warn

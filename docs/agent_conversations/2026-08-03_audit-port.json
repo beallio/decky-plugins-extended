@@ -1,0 +1,45 @@
+{
+  "date": "2026-08-03",
+  "task_objective": "Port audit_plugins.py, security-policy.yml, and security-allowlist.yml with cache invalidation fixes, required cache parameter signatures, and tag resolution failure handling.",
+  "files_modified": [
+    "audit_plugins.py",
+    "security-policy.yml",
+    "security-allowlist.yml",
+    "pyproject.toml",
+    "uv.lock",
+    ".gitignore",
+    ".github/workflows/scheduled-security-audit.yml",
+    "tests/test_audit_plugins.py",
+    "tests/test_audit_cache_invalidation.py",
+    "docs/agent_conversations/2026-08-03_audit-port.json"
+  ],
+  "tests_added": [
+    "tests/test_audit_cache_invalidation.py::TestAuditCacheInvalidation::test_cache_prevents_download_on_second_run",
+    "tests/test_audit_cache_invalidation.py::TestAuditCacheInvalidation::test_allowlist_edits_bust_local_cache",
+    "tests/test_audit_cache_invalidation.py::TestAuditCacheInvalidation::test_moved_tag_busts_cache",
+    "tests/test_audit_cache_invalidation.py::TestAuditCacheInvalidation::test_auditor_executes_nothing",
+    "tests/test_audit_cache_invalidation.py::TestAuditCacheInvalidation::test_failed_tag_resolution_returns_error_and_does_not_cache"
+  ],
+  "design_decisions": [
+    "Ported audit_plugins.py (~2.7k lines) keeping enforcement in advisory mode: report-only.",
+    "Restructured audit_repository cache check to run load_cached_report_predownload before download_zip, eliminating unnecessary ZIP downloads on cache hits.",
+    "Required audit_context_hash and resolved_tag_commit_sha parameters in _cache_key, load_cached_report, and save_cached_report to prevent silent fallback to un-contextualized cache keys.",
+    "Added check for commit_sha resolution failure in audit_repository: if tag_name cannot be resolved to a commit SHA, audit_repository sets report.final_classification = 'AUDIT_ERROR' and returns immediately without reading or writing cache.",
+    "Included security-allowlist.yml in workflow cache key hash in .github/workflows/scheduled-security-audit.yml.",
+    "Patched _resolve_ref_to_commit_and_tree_sha in TestAuditRepositoryMocked setUp to ensure all network calls remain mocked."
+  ],
+  "verification_evidence": {
+    "step_1_dependency_and_lock": "PASS: dependency added, lock options intact (PyYAML added to pyproject.toml and uv.lock; exclude-newer, exclude-newer-span, pyludusavi preserved)",
+    "step_2_cache_prevents_download": "PASS: run 1 downloaded zip (count=1), run 2 loaded from cache (count=1), run 3 after cache delete downloaded zip (count=2)",
+    "step_3_workflow_cache_key_allowlist": "RED-GREEN VERIFIED: fork workflow hash without allowlist stayed unchanged at be4a01379547500a; fixed workflow hash shifted 6efca805eb38578e -> 30f7705ad7eb54f2 when allowlist was edited",
+    "step_4_local_cache_allowlist_edit": "PASS: audit run 1 downloaded zip, run 2 with same exceptions hit cache (count=1), run 3 with modified exceptions busted cache (count=2)",
+    "step_5_tag_moved_cache_bust": "PASS: audit run 1 at commit_v1 downloaded zip (count=1), run 2 after tag moved to commit_v2 busted cache and downloaded zip (count=2)",
+    "step_6_negative_control_executes_nothing": "PASS: sentinel file not created after auditing malicious setup.py and package.json postinstall hooks",
+    "step_7_tag_resolution_failure": "PASS: tag resolution returning (None, None, 'boom') produces AUDIT_ERROR report without writing cache files"
+  },
+  "results": {
+    "pytest": "184 passed, 17 subtests passed",
+    "quality_gates": "passed",
+    "round_complete_marker": "/tmp/decky-plugins-extended/audit-port_finished"
+  }
+}
