@@ -58,6 +58,7 @@ DEFAULT_POLICY_FILE = "security-policy.yml"
 DEFAULT_ALLOWLIST_FILE = "security-allowlist.yml"
 DEFAULT_OUTPUT_DIR = "security-reports"
 CACHE_DIR = ".audit-cache"
+VERDICTS_FILE = "verdicts.json"
 REQUEST_TIMEOUT = 30  # seconds per HTTP request
 DOWNLOAD_TIMEOUT = 120  # seconds for ZIP downloads
 MAX_RETRIES = 3
@@ -199,6 +200,13 @@ class AuditReport:
     source_artifact_diff: dict[str, Any] = field(default_factory=dict)
     allowlist_decisions: list[dict[str, Any]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+
+
+@dataclass
+class VerdictResult:
+    effective_classification: str
+    audit_classification: str
+    blocking_rule_ids: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -2592,6 +2600,122 @@ def save_cached_report(
         log.debug("Cache save failed: %s", exc)
 
 
+def load_verdicts(cache_dir: str = CACHE_DIR) -> dict[str, dict[str, dict[str, Any]]]:
+    """Load durable per-release verdicts, returning an empty store when absent."""
+    path = os.path.join(cache_dir, VERDICTS_FILE)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            verdicts = json.load(f)
+        if not isinstance(verdicts, dict):
+            raise ValueError("verdict store root must be a JSON object")
+        return verdicts
+    except (OSError, ValueError) as exc:
+        log.warning("Failed to load verdict store %s: %s", path, exc)
+        return {}
+
+
+def _write_verdicts_atomic(
+    cache_dir: str, verdicts: dict[str, dict[str, dict[str, Any]]]
+) -> None:
+    """Atomically replace verdicts.json without exposing a partial JSON write."""
+    os.makedirs(cache_dir, exist_ok=True)
+    destination = os.path.join(cache_dir, VERDICTS_FILE)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{VERDICTS_FILE}.", suffix=".tmp", dir=cache_dir
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(verdicts, f, indent=2, sort_keys=True)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _blocking_rule_ids(report: AuditReport) -> list[str]:
+    return sorted(
+        {
+            finding.rule_id
+            for finding in report.findings
+            if finding.classification == "BLOCK" and not finding.allowlisted
+        }
+    )
+
+
+def _record_verdict(cache_dir: str, report: AuditReport) -> None:
+    """Persist a real audit verdict without replacing one with AUDIT_ERROR."""
+    if report.final_classification == "AUDIT_ERROR" or not report.release_id:
+        return
+
+    verdicts = load_verdicts(cache_dir)
+    repository = report.repository.rstrip("/")
+    repository_verdicts = verdicts.setdefault(repository, {})
+    repository_verdicts[report.release_id] = {
+        "classification": report.final_classification,
+        "blocking_rule_ids": _blocking_rule_ids(report),
+        "artifact_sha256": report.artifact_sha256,
+        "audit_context_hash": report.audit_context_hash,
+        "audited_at": report.audit_timestamp,
+    }
+    _write_verdicts_atomic(cache_dir, verdicts)
+
+
+def _release_id(release: dict[str, Any]) -> str:
+    zip_assets = [
+        asset
+        for asset in (release.get("assets") or [])
+        if asset.get("name", "").lower().endswith(".zip")
+    ]
+    if len(zip_assets) != 1:
+        return ""
+    return f"{release.get('tag_name', '')}@{zip_assets[0].get('id', '')}"
+
+
+def classification_for(
+    repository: str,
+    release: AuditReport | dict[str, Any],
+    verdicts: dict[str, dict[str, dict[str, Any]]],
+) -> VerdictResult:
+    """Return the current and effective classifications for one release.
+
+    An AuditReport represents an immediate attempt and can therefore expose an
+    AUDIT_ERROR while falling back to a prior durable verdict.  A release
+    mapping represents a catalog lookup and reports the durable verdict itself.
+    """
+    repository_verdicts = verdicts.get(repository.rstrip("/"), {})
+
+    if isinstance(release, AuditReport):
+        audit_classification = release.final_classification
+        prior = repository_verdicts.get(release.release_id, {})
+        if audit_classification != "AUDIT_ERROR":
+            return VerdictResult(
+                effective_classification=audit_classification,
+                audit_classification=audit_classification,
+                blocking_rule_ids=_blocking_rule_ids(release),
+            )
+        prior_classification = prior.get("classification", "AUDIT_ERROR")
+        if prior_classification != "AUDIT_ERROR":
+            return VerdictResult(
+                effective_classification=prior_classification,
+                audit_classification="AUDIT_ERROR",
+                blocking_rule_ids=list(prior.get("blocking_rule_ids") or []),
+            )
+        return VerdictResult("AUDIT_ERROR", "AUDIT_ERROR", [])
+
+    entry = repository_verdicts.get(_release_id(release), {})
+    classification = entry.get("classification", "AUDIT_ERROR")
+    return VerdictResult(
+        effective_classification=classification,
+        audit_classification=classification,
+        blocking_rule_ids=list(entry.get("blocking_rule_ids") or []),
+    )
+
+
 def _dict_to_report(data: dict[str, Any]) -> AuditReport:
     report = AuditReport(
         **{
@@ -2916,11 +3040,7 @@ def audit_repository(
     policy_path: Optional[str] = DEFAULT_POLICY_FILE,
     allowlist_path: Optional[str] = DEFAULT_ALLOWLIST_FILE,
 ) -> AuditReport:
-    """Audit one plugin repository.  Static inspection only; no code execution.
-
-    This is the reusable core; it accepts a URL string and can be
-    called independently of CLI argument parsing or git diffs.
-    """
+    """Select the best release for a repository and audit that exact release."""
     report = AuditReport(
         audit_timestamp=datetime.datetime.now(datetime.UTC)
         .isoformat()
@@ -2950,11 +3070,6 @@ def audit_repository(
         report.final_classification = "AUDIT_ERROR"
         return report
 
-    if meta.get("archived"):
-        report.errors.append(f"Repository {owner}/{repo} is archived.")
-        # Archived repos are not necessarily bad; treat as warning but continue
-
-    # --- Releases ---
     try:
         releases = get_releases(owner, repo)
     except Exception as exc:
@@ -2976,8 +3091,79 @@ def audit_repository(
         report.final_classification = "AUDIT_ERROR"
         return report
 
+    return audit_release(
+        repo_url,
+        release,
+        policy,
+        exceptions,
+        cache_dir,
+        skip_cache,
+        _repo_metadata=meta,
+        _policy_path=policy_path,
+        _allowlist_path=allowlist_path,
+    )
+
+
+def audit_release(
+    repo_url: str,
+    release: dict[str, Any],
+    policy: dict[str, Any],
+    exceptions: list[dict[str, Any]],
+    cache_dir: str = CACHE_DIR,
+    skip_cache: bool = False,
+    *,
+    _repo_metadata: Optional[dict[str, Any]] = None,
+    _policy_path: Optional[str] = DEFAULT_POLICY_FILE,
+    _allowlist_path: Optional[str] = DEFAULT_ALLOWLIST_FILE,
+) -> AuditReport:
+    """Audit exactly one supplied plugin release without selecting another."""
+    report = AuditReport(
+        audit_timestamp=datetime.datetime.now(datetime.UTC)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        repository=repo_url.rstrip("/"),
+    )
+
+    try:
+        owner, repo = parse_owner_repo(repo_url)
+    except ValueError as exc:
+        report.errors.append(str(exc))
+        return report
+
     tag_name = release.get("tag_name", "")
     report.release = tag_name
+
+    zips = [
+        asset
+        for asset in (release.get("assets") or [])
+        if asset.get("name", "").lower().endswith(".zip")
+    ]
+    if len(zips) != 1:
+        report.errors.append(f"Expected exactly one ZIP asset; found {len(zips)}.")
+        return report
+
+    asset = zips[0]
+    report.release_id = f"{tag_name}@{asset.get('id', '')}"
+    report.artifact_url = asset.get("browser_download_url", "")
+
+    try:
+        meta = (
+            _repo_metadata
+            if _repo_metadata is not None
+            else get_repo_metadata(owner, repo)
+        )
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            report.errors.append(f"Repository {owner}/{repo} not found.")
+        else:
+            report.errors.append(f"Failed to fetch repository metadata: {exc}")
+        return report
+    except Exception as exc:
+        report.errors.append(f"Failed to fetch repository metadata: {exc}")
+        return report
+
+    if meta.get("archived"):
+        report.errors.append(f"Repository {owner}/{repo} is archived.")
 
     commit_sha, _tree_sha, tag_err = _resolve_ref_to_commit_and_tree_sha(
         owner, repo, tag_name
@@ -2991,20 +3177,7 @@ def audit_repository(
 
     resolved_tag_commit_sha = commit_sha
     report.resolved_tag_commit_sha = resolved_tag_commit_sha
-
-    zips = [
-        a
-        for a in (release.get("assets") or [])
-        if a.get("name", "").lower().endswith(".zip")
-    ]
-    if len(zips) != 1:
-        report.errors.append(f"Expected exactly one ZIP asset; found {len(zips)}.")
-        report.final_classification = "AUDIT_ERROR"
-        return report
-
-    asset = zips[0]
-    artifact_url = asset.get("browser_download_url", "")
-    report.artifact_url = artifact_url
+    artifact_url = report.artifact_url
 
     # --- Metadata from exact release tag ---
     tag_plugin_json = get_repo_file_raw(owner, repo, tag_name, "plugin.json")
@@ -3017,11 +3190,13 @@ def audit_repository(
     report.plugin_name = repo
 
     # --- Cache check ---
-    release_id = f"{tag_name}@{asset.get('id', '')}"
-    report.release_id = release_id
+    release_id = report.release_id
 
     audit_ctx_hash = compute_audit_context_hash(
-        policy, exceptions, policy_path=policy_path, allowlist_path=allowlist_path
+        policy,
+        exceptions,
+        policy_path=_policy_path,
+        allowlist_path=_allowlist_path,
     )
     report.audit_context_hash = audit_ctx_hash
 
@@ -3034,6 +3209,7 @@ def audit_repository(
             resolved_tag_commit_sha=resolved_tag_commit_sha,
         )
         if cached:
+            _record_verdict(cache_dir, cached)
             return cached
 
     # --- Download ZIP ---
@@ -3063,6 +3239,7 @@ def audit_repository(
                 resolved_tag_commit_sha=resolved_tag_commit_sha,
             )
             if cached:
+                _record_verdict(cache_dir, cached)
                 return cached
 
         # --- ZIP inspection ---
@@ -3262,14 +3439,16 @@ def audit_repository(
         )
 
         # --- Cache result ---
-        if not skip_cache and report.final_classification != "AUDIT_ERROR":
-            save_cached_report(
-                cache_dir,
-                report,
-                release_id,
-                audit_context_hash=audit_ctx_hash,
-                resolved_tag_commit_sha=resolved_tag_commit_sha,
-            )
+        if report.final_classification != "AUDIT_ERROR":
+            if not skip_cache:
+                save_cached_report(
+                    cache_dir,
+                    report,
+                    release_id,
+                    audit_context_hash=audit_ctx_hash,
+                    resolved_tag_commit_sha=resolved_tag_commit_sha,
+                )
+            _record_verdict(cache_dir, report)
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
