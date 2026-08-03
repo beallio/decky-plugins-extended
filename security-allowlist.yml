@@ -1,0 +1,37 @@
+# Security audit allowlist.
+# Each entry explicitly permits a specific audit finding for a specific
+# release artifact.  Exceptions must be narrowly scoped.
+#
+# Required fields:
+#   repository   - "owner/repo" (lowercase GitHub repo path)
+#   release      - exact version string matching the catalog entry
+#   artifact_sha256 - exact SHA-256 of the release ZIP (preferred; use "any"
+#                 only when the hash is genuinely unavailable and the rule is
+#                 not MALWARE, ARCHIVE_TRAVERSAL, or CREDENTIAL_THEFT)
+#   rule         - exact rule_id being allowlisted (no wildcards)
+#   reason       - human-readable explanation
+#   approved_by  - GitHub username of the reviewer who approved this entry
+#   expires      - ISO 8601 date after which the entry is no longer valid
+#
+# Prohibited: no entry may allowlist MALWARE, ARCHIVE_TRAVERSAL, or
+# CREDENTIAL_THEFT using repository-only scope (artifact_sha256 must be set).
+# No global "ignore all" switch exists.
+version: "1"
+
+exceptions: []
+
+# Example entry (commented out):
+# exceptions:
+#   - repository: owner/example-plugin
+#     release: "1.2.3"
+#     artifact_sha256: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+#     rule: ROOT_ACCESS
+#     reason: >
+#       Hardware-control plugin requires a documented privileged helper binary
+#       to access GPU registers.  The binary is audited separately.
+#     approved_by: zany130
+#     expires: "2026-12-31"
+# test comment
+# test comment
+# test comment
+# temporary comment
