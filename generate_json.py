@@ -2,13 +2,22 @@ import base64
 import hashlib
 import json
 import os
-import re
 import shutil
 import sys
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+from plugin_release_utils import (
+    get_zip_asset,
+    has_exactly_one_zip,
+    normalize_version,
+    version_sort_key,
+)
+from plugin_release_utils import (
+    parse_semver as parse_semver,  # re-export for external callers of generate_json.parse_semver
+)
 
 # Source URLs
 PLUGINS_URL = "https://plugins.deckbrew.xyz/plugins"
@@ -209,36 +218,24 @@ def calculate_hash(download_url):
     return h.hexdigest()
 
 
-# Matches the version inside a release tag: "v1.2.3", "Release-0.7.1",
-# "decky-romm-sync-v0.29.0" all yield the bare version.
-VERSION_IN_TAG = re.compile(r"\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.\-]+)?")
-
-
-def normalize_version(tag_name):
-    """Decky runs store version strings through compare-versions' validate()
-    before offering an update, and anything that is not semver-shaped is
-    discarded -- a plugin tagged "Release-0.7.1" can never show an update. Pull
-    the version out of the tag, falling back to the bare tag when it holds
-    nothing version-shaped."""
-    match = VERSION_IN_TAG.search(tag_name)
-    if match:
-        return match.group(0)
-    return tag_name.lstrip("v")
-
-
 def build_version_object(release, existing_plugin=None):
     tag_name = normalize_version(release.get("tag_name", "1.0.0"))
 
-    zip_assets = [
-        a for a in release.get("assets", []) if a.get("name", "").endswith(".zip")
-    ]
-    if len(zip_assets) != 1:
+    if not has_exactly_one_zip(release):
+        zips = [
+            a
+            for a in release.get("assets", [])
+            if a.get("name", "").lower().endswith(".zip")
+        ]
         print(
-            f"    Warning: Expected exactly 1 zip asset for {tag_name}, found {len(zip_assets)}. Skipping."
+            f"    Warning: Expected exactly 1 zip asset for {tag_name}, found {len(zips)}. Skipping."
         )
         return None
 
-    download_url = zip_assets[0].get("browser_download_url")
+    zip_asset = get_zip_asset(release)
+    if zip_asset is None:
+        return None
+    download_url = zip_asset.get("browser_download_url")
 
     # Performance Optimization: Avoid re-hashing if we already know this version
     known_hash = None
@@ -255,7 +252,7 @@ def build_version_object(release, existing_plugin=None):
     final_hash = None
 
     # Check if GitHub natively provided the SHA-256 (recent GitHub feature)
-    github_digest = zip_assets[0].get("digest")
+    github_digest = zip_asset.get("digest")
     if github_digest and github_digest.startswith("sha256:"):
         final_hash = github_digest.split(":")[1]
 
@@ -272,45 +269,11 @@ def build_version_object(release, existing_plugin=None):
     }
 
 
-SEMVER = re.compile(
-    r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.\-]+))?(?:\+[0-9A-Za-z.\-]+)?$"
-)
-
-
-def parse_semver(name):
-    """Returns (major, minor, patch, prerelease_identifiers) or None. Prerelease
-    identifiers are compared per semver: numeric ones numerically, so beta.10
-    outranks beta.9. Build metadata is ignored, as compare-versions ignores it."""
-    match = SEMVER.match((name or "").strip())
-    if not match:
-        return None
-
-    major, minor, patch, prerelease = match.groups()
-    identifiers = []
-    for part in (prerelease or "").split(".") if prerelease else []:
-        identifiers.append((0, int(part), "") if part.isdigit() else (1, 0, part))
-    return int(major), int(minor or 0), int(patch or 0), identifiers
-
-
-def version_sort_key(version):
-    """Decky only ever reads versions[0] -- checkForPluginUpdates compares it
-    against the installed version and the install dropdown defaults to it -- so
-    the highest version has to sort first. Ordering by release date instead puts
-    a late hotfix to an old branch on top, and floats rolling tags ("nightly",
-    "dev-build") above every real release, where validate() then rejects them and
-    no update is ever offered. Versions with no parseable number sort last."""
-    parsed = parse_semver(version.get("name", ""))
-    created = version.get("created") or ""
-    if parsed is None:
-        return (0, 0, 0, 0, 0, [], created)
-
-    major, minor, patch, prerelease = parsed
-    # A prerelease ranks below the release it leads to: 1.0.0 > 1.0.0-beta.1.
-    return (1, major, minor, patch, 0 if prerelease else 1, prerelease, created)
-
-
 def sort_versions(versions):
-    versions.sort(key=version_sort_key, reverse=True)
+    versions.sort(
+        key=lambda v: version_sort_key(v.get("name", ""), v.get("created") or ""),
+        reverse=True,
+    )
     return versions
 
 
