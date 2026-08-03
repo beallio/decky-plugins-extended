@@ -1,0 +1,40 @@
+{
+  "date": "2026-08-03",
+  "task_objective": "Add an exact-release audit entry point, durable per-release verdict persistence, and the classification adapter required by catalog gating; then address round-01 review findings.",
+  "files_modified": [
+    "audit_plugins.py",
+    "tests/test_audit_verdicts.py",
+    "docs/agent_conversations/2026-08-03_audit-verdicts.json"
+  ],
+  "tests_added": [
+    "tests/test_audit_verdicts.py::test_audit_release_audits_the_exact_release_passed",
+    "tests/test_audit_verdicts.py::test_audit_repository_selects_then_delegates",
+    "tests/test_audit_verdicts.py::test_audit_error_preserves_good_verdict_and_reports_both_states",
+    "tests/test_audit_verdicts.py::test_completed_audit_error_does_not_overwrite_good_verdict",
+    "tests/test_audit_verdicts.py::test_first_seen_audit_error_is_not_laundered_into_pass",
+    "tests/test_audit_verdicts.py::test_blocking_rule_ids_survive_verdict_round_trip",
+    "tests/test_audit_verdicts.py::test_atomic_write_failure_preserves_prior_verdict_file",
+    "tests/test_audit_verdicts.py::test_two_release_round_trip_negative_control"
+  ],
+  "design_decisions": [
+    "Kept _record_verdict as the sole enforcement point for rejecting AUDIT_ERROR persistence so every current and future caller gets the invariant.",
+    "Made the completed audit path call _record_verdict unconditionally while retaining the separate non-error condition only for cached report writes.",
+    "Pinned the persistence invariant through a completed audit with a required Trivy scanner status of failed, avoiding the unrelated early return from download failures."
+  ],
+  "verification_evidence": {
+    "step_1_exact_release": "PASS: 1 passed; audit_release returned release v1.0.0 and release_id v1.0.0@1 for the supplied non-selected release.",
+    "step_2_repository_delegation_regression": "PASS: 165 passed, 3 subtests passed across tests/test_audit_plugins.py, tests/test_audit_cache_invalidation.py, and the delegation test; existing auditor behavior remained green.",
+    "step_3_error_preserves_good_verdict": "PASS: 2 passed; both the early download-error path and the completed required-scanner-failure path preserved the seeded PASS verdict. classification_for reported effective PASS and attempted AUDIT_ERROR for the early-error case.",
+    "step_3_guard_mutation": "MUTATION VERIFIED: removing the sole AUDIT_ERROR check from _record_verdict caused test_completed_audit_error_does_not_overwrite_good_verdict to fail because verdicts.json changed from the seeded PASS entry to the completed attempt's AUDIT_ERROR entry. Failure output captured in /tmp/decky-plugins-extended/audit-verdicts-mutation.log.",
+    "step_4_first_seen_error": "PASS: 1 passed; effective_classification and audit_classification both remained AUDIT_ERROR without a prior verdict.",
+    "step_5_blocking_rule_ids": "PASS: 1 passed; ARCHIVE_TRAVERSAL survived in VerdictResult and in verdicts.json after reload.",
+    "step_6_atomic_write": "PASS: 1 passed; a forced os.replace failure left the prior verdicts.json parseable and unchanged.",
+    "step_7_negative_control": "PASS: 1 passed; two clean releases were audited and reloaded with PASS classifications and empty rule-ID lists.",
+    "step_8_full_suite": "PASS: scripts/orchestration/run-quality-gates reported ruff check clean, ruff format --check with 22 files already formatted, and 198 passed with 17 subtests passed."
+  },
+  "results": {
+    "pytest": "198 passed, 17 subtests passed",
+    "quality_gates": "passed",
+    "review_note": "docs/review/audit-verdicts-review-01.md committed at f0b3cf4"
+  }
+}
