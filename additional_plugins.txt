@@ -27,3 +27,4 @@ https://github.com/kungaa/DS5-Linux-Decky
 https://github.com/Hooandee/panel-de-control
 https://github.com/AG69075/steamOS_plugin_achievements
 https://github.com/beallio/Decky-SteamAchievements
+https://github.com/beallio/decky-audit-negative-control
