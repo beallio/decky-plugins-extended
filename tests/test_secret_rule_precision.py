@@ -1,6 +1,13 @@
 import audit_plugins as ap
 
 
+def test_placeholder_pattern_membership_matches_named_value_group():
+    for name, pattern in ap._SECRET_PATTERNS:
+        assert ("value" in pattern.groupindex) == (
+            name in ap._PLACEHOLDER_SECRET_PATTERNS
+        ), name
+
+
 def _single_finding(line: str):
     findings = ap.scan_for_secrets(line + "\n", "main.py")
     assert len(findings) == 1
