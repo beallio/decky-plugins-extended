@@ -1,0 +1,81 @@
+{
+  "date": "2026-08-03",
+  "task_objective": "Publish durable audit verdicts in the tracked repository so fresh Cloudflare builds enforce the catalog gate, while avoiding unchanged-state commits.",
+  "branch": "feat/verdict-publication",
+  "plan_commit": "c2b968d",
+  "implementation_commits": [
+    "5f05e97",
+    "74fe874",
+    "0ea85dd",
+    "8b728ac"
+  ],
+  "setup": {
+    "baseline": "224 passed and 21 subtests passed.",
+    "remote_dev_pull": "Attempted git pull --ff-only origin dev and recorded the failure at /tmp/decky-plugins-extended/pull-dev-error.log; origin has no dev ref, so the clean local dev tip 42c3526 was used as the required base.",
+    "plan_history": "The plan was already committed in dev ancestry as c2b968d, so feat/verdict-publication inherited the required plan commit instead of creating a duplicate empty commit.",
+    "tooling": "The repository has no run.sh. XDG_CACHE_HOME was isolated under /tmp/decky-plugins-extended/uv-cache because the sandboxed global uv cache was read-only."
+  },
+  "implementation": {
+    "tracked_store": "audit_plugins.load_verdicts reads repository-root security-verdicts.json first and falls back to .audit-cache/verdicts.json only when the tracked file is absent. Verdict writes atomically replace the tracked file; report cache files remain under the still-gitignored .audit-cache directory.",
+    "determinism": "The atomic writer emits recursively sorted, two-space-indented JSON with a trailing newline. A verdict whose classification, blocking rule IDs, and artifact hash are unchanged preserves the entire existing record, including audited_at, so repeated audits produce identical bytes.",
+    "scheduled_publication": "The scheduled audit job has job-scoped contents: write permission, snapshots the prior tracked store, exits when git diff --quiet finds no change, stages only security-verdicts.json, includes the number of changed verdict records in the bot-authored commit message, rebases before pushing, and rebases plus retries one time if the first push races.",
+    "production_shape": "The catalog regression test runs generate_json.main from a fresh-clone-shaped temporary root containing security-verdicts.json and no .audit-cache directory. It verifies the blocked normalized version and artifact hash are absent from both catalogs and the fallback release is first.",
+    "test_isolation": "A suite-wide autouse fixture redirects tracked verdict writes into each test's temporary directory. The full suite now proves security-verdicts.json remains byte-unchanged after all auditor tests run."
+  },
+  "files_modified": [
+    ".github/workflows/scheduled-security-audit.yml",
+    "audit_plugins.py",
+    "security-verdicts.json",
+    "tests/test_audit_verdicts.py",
+    "tests/test_catalog_gate.py",
+    "tests/test_verdict_publication.py",
+    "tests/test_workflow_security.py",
+    "docs/agent_conversations/2026-08-03_verdict-publication.json"
+  ],
+  "verification_evidence": {
+    "pre_fix_reproduction": "The fresh-clone test failed 1 test before implementation. Its catalog contained both ('2.0.0', bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) and the fallback ('1.0.0', aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa), proving the BLOCK verdict was ignored.",
+    "tracked_load_without_cache": "1 passed; the test creates and then removes .audit-cache before loading the tracked store.",
+    "determinism_and_change": "1 passed; a later audit timestamp and context hash with the same classification, rule IDs, and artifact hash produced byte-identical output and preserved the old audited_at, while a classification change changed the bytes and timestamp.",
+    "workflow_diff_probe": "1 passed; git diff --quiet -- security-verdicts.json returned 0 for unchanged tracked bytes and 1 after a verdict change.",
+    "fresh_clone_negative_control": "1 passed, run last after the failure-case checks; the blocked version and hash were absent from plugins.json and testing_plugins.json, and the fallback release was versions[0].",
+    "core_targeted": "23 passed.",
+    "workflow_targeted": "9 passed; an additional executable YAML inspection reported 7 workflow behavior checks passed.",
+    "quality_gates": "ruff check passed; 30 files already formatted; 231 passed and 21 subtests passed; no deleted review notes; security-verdicts.json remained unchanged during the full suite."
+  },
+  "review_round_01": {
+    "review_note": "Committed review verdict bf5ca6d requested changes because the suite-wide fixture used an absolute verdict path that masked the dev failure, and the atomic-write preservation test asserted against a legacy file the writer no longer touched.",
+    "fixture_repair": "The autouse fixture now changes into each test's temporary directory and keeps VERDICTS_FILE equal to the relative security-verdicts.json production filename. This retains isolation without changing dev's legacy cache-relative lookup semantics.",
+    "atomic_test_repair": "The seed and final assertion now both use Path(ap.VERDICTS_FILE), the exact destination used by _write_verdicts_atomic.",
+    "dev_failure_control": "Against detached dev commit 42c3526 with the repaired tests, the fresh-clone test failed 1 test and deselected 9; blocked version 2.0.0 and its b-prefixed artifact hash remained present.",
+    "legacy_lookup_mutation": "Forcing load_verdicts to read only .audit-cache/verdicts.json made the fresh-clone test fail 1 test and deselect 9. Production code was restored immediately afterward.",
+    "atomic_write_mutation": "Replacing temp-file publication with destination truncation before the monkeypatched replace failure made the preservation test fail 1 test and deselect 7. Production code was restored immediately afterward.",
+    "feature_branch_control": "The repaired fresh-clone test passed 1 test and deselected 9 on the feature branch after both failure controls.",
+    "targeted_tests": "27 passed across audit verdicts, catalog gate, verdict publication, and workflow security tests.",
+    "quality_gates": "ruff check passed; 31 files already formatted; 231 passed and 21 subtests passed; no deleted review notes."
+  },
+  "test_adjustment_rationale": "No existing expected behavior was weakened. Existing audit-verdict tests now isolate the tracked verdict path so their cache directories remain independent.",
+  "not_verified": [
+    "The GitHub Actions push/rebase path was structurally and locally tested but was not executed against GitHub, because the plan forbids pushing.",
+    "A live Cloudflare Pages build was not triggered; the production-shaped generator test exercises the same fresh-clone file availability boundary locally."
+  ],
+  "temporary_logs": [
+    "/tmp/decky-plugins-extended/pull-dev-error.log",
+    "/tmp/decky-plugins-extended/baseline-pytest-retry.log",
+    "/tmp/decky-plugins-extended/before-fresh-clone-test.log",
+    "/tmp/decky-plugins-extended/core-targeted-tests-final.log",
+    "/tmp/decky-plugins-extended/workflow-targeted-tests-final.log",
+    "/tmp/decky-plugins-extended/verify-2-tracked-load.log",
+    "/tmp/decky-plugins-extended/verify-3-determinism.log",
+    "/tmp/decky-plugins-extended/verify-4-diff-probe.log",
+    "/tmp/decky-plugins-extended/verify-5-fresh-clone-negative-control.log",
+    "/tmp/decky-plugins-extended/quality-gates-pre-session-log.log",
+    "/tmp/decky-plugins-extended/quality-gates-isolated-tests.log",
+    "/tmp/decky-plugins-extended/review-01-dev-fresh-clone-red.log",
+    "/tmp/decky-plugins-extended/review-01-fresh-clone-mutation-red.log",
+    "/tmp/decky-plugins-extended/review-01-atomic-mutation-red.log",
+    "/tmp/decky-plugins-extended/review-01-fresh-clone-green.log",
+    "/tmp/decky-plugins-extended/review-01-targeted-green.log",
+    "/tmp/decky-plugins-extended/review-01-quality-gates-final.log"
+  ],
+  "unrelated_improvements_deferred": []
+}

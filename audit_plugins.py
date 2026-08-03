@@ -58,7 +58,8 @@ DEFAULT_POLICY_FILE = "security-policy.yml"
 DEFAULT_ALLOWLIST_FILE = "security-allowlist.yml"
 DEFAULT_OUTPUT_DIR = "security-reports"
 CACHE_DIR = ".audit-cache"
-VERDICTS_FILE = "verdicts.json"
+VERDICTS_FILE = "security-verdicts.json"
+LEGACY_VERDICTS_FILE = "verdicts.json"
 REQUEST_TIMEOUT = 30  # seconds per HTTP request
 DOWNLOAD_TIMEOUT = 120  # seconds for ZIP downloads
 MAX_RETRIES = 3
@@ -2795,8 +2796,10 @@ def save_cached_report(
 
 
 def load_verdicts(cache_dir: str = CACHE_DIR) -> dict[str, dict[str, dict[str, Any]]]:
-    """Load durable per-release verdicts, returning an empty store when absent."""
-    path = os.path.join(cache_dir, VERDICTS_FILE)
+    """Load tracked verdicts, falling back to the legacy cache location."""
+    path = VERDICTS_FILE
+    if not os.path.exists(path):
+        path = os.path.join(cache_dir, LEGACY_VERDICTS_FILE)
     if not os.path.exists(path):
         return {}
     try:
@@ -2811,13 +2814,15 @@ def load_verdicts(cache_dir: str = CACHE_DIR) -> dict[str, dict[str, dict[str, A
 
 
 def _write_verdicts_atomic(
-    cache_dir: str, verdicts: dict[str, dict[str, dict[str, Any]]]
+    verdicts: dict[str, dict[str, dict[str, Any]]], destination: str | None = None
 ) -> None:
-    """Atomically replace verdicts.json without exposing a partial JSON write."""
-    os.makedirs(cache_dir, exist_ok=True)
-    destination = os.path.join(cache_dir, VERDICTS_FILE)
+    """Atomically replace the tracked verdict store with deterministic JSON."""
+    destination = destination or VERDICTS_FILE
+    destination_dir = os.path.dirname(os.path.abspath(destination))
+    os.makedirs(destination_dir, exist_ok=True)
+    filename = os.path.basename(destination)
     fd, temporary = tempfile.mkstemp(
-        prefix=f".{VERDICTS_FILE}.", suffix=".tmp", dir=cache_dir
+        prefix=f".{filename}.", suffix=".tmp", dir=destination_dir
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -2849,14 +2854,21 @@ def _record_verdict(cache_dir: str, report: AuditReport) -> None:
     verdicts = load_verdicts(cache_dir)
     repository = report.repository.rstrip("/")
     repository_verdicts = verdicts.setdefault(repository, {})
-    repository_verdicts[report.release_id] = {
+    current = repository_verdicts.get(report.release_id, {})
+    updated = {
         "classification": report.final_classification,
         "blocking_rule_ids": _blocking_rule_ids(report),
         "artifact_sha256": report.artifact_sha256,
         "audit_context_hash": report.audit_context_hash,
         "audited_at": report.audit_timestamp,
     }
-    _write_verdicts_atomic(cache_dir, verdicts)
+    stable_fields = ("classification", "blocking_rule_ids", "artifact_sha256")
+    if all(current.get(field) == updated[field] for field in stable_fields):
+        if not os.path.exists(VERDICTS_FILE):
+            _write_verdicts_atomic(verdicts)
+        return
+    repository_verdicts[report.release_id] = updated
+    _write_verdicts_atomic(verdicts)
 
 
 def _release_id(release: dict[str, Any]) -> str:

@@ -157,6 +157,65 @@ def test_gate_removes_blocked_existing_version_and_uses_fallback(
     assert "STATIC_EVAL" in output
 
 
+def test_fresh_clone_reads_tracked_verdicts_and_blocks_release(monkeypatch, tmp_path):
+    releases = [
+        _release("v2.0.0", 2, BLOCKED_HASH),
+        _release("v1.0.0", 1, FALLBACK_HASH),
+    ]
+    base_plugin = _plugin(
+        [_version("v2.0.0", BLOCKED_HASH), _version("v1.0.0", FALLBACK_HASH)]
+    )
+
+    monkeypatch.setattr(
+        generate_json, "fetch_json", lambda _url: [copy.deepcopy(base_plugin)]
+    )
+    monkeypatch.setattr(
+        generate_json,
+        "get_repo_info",
+        lambda *_args: {
+            "default_branch": "main",
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        generate_json,
+        "get_package_json",
+        lambda *_args: {"name": "plugin", "author": "Owner"},
+    )
+    monkeypatch.setattr(
+        generate_json, "get_plugin_json", lambda *_args: {"name": "Plugin"}
+    )
+    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: releases)
+
+    (tmp_path / "additional_plugins.txt").write_text(
+        f"{REPOSITORY}\n", encoding="utf-8"
+    )
+    (tmp_path / "security-verdicts.json").write_text(
+        json.dumps(_verdicts(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    audit_cache = tmp_path / ".audit-cache"
+    if audit_cache.exists():
+        audit_cache.rmdir()
+
+    monkeypatch.chdir(tmp_path)
+    generate_json.main()
+
+    for filename in ("plugins.json", "testing_plugins.json"):
+        catalog = json.loads(
+            (tmp_path / "public" / filename).read_text(encoding="utf-8")
+        )
+        plugin = next(item for item in catalog if item["name"] == "Plugin")
+        identities = {
+            (version["name"], version["hash"]) for version in plugin["versions"]
+        }
+        assert ("2.0.0", BLOCKED_HASH) not in identities
+        assert "2.0.0" not in {version["name"] for version in plugin["versions"]}
+        assert BLOCKED_HASH not in {version["hash"] for version in plugin["versions"]}
+        assert plugin["versions"][0]["name"] == "1.0.0"
+        assert plugin["versions"][0]["hash"] == FALLBACK_HASH
+
+
 def test_gate_loads_verdicts_only_once(monkeypatch, tmp_path):
     calls = 0
 
