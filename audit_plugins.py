@@ -2864,7 +2864,10 @@ def _record_verdict(cache_dir: str, report: AuditReport) -> None:
     }
     stable_fields = ("classification", "blocking_rule_ids", "artifact_sha256")
     if all(current.get(field) == updated[field] for field in stable_fields):
-        if not os.path.exists(VERDICTS_FILE):
+        if current.get("audit_context_hash") != updated["audit_context_hash"]:
+            current["audit_context_hash"] = updated["audit_context_hash"]
+            _write_verdicts_atomic(verdicts)
+        elif not os.path.exists(VERDICTS_FILE):
             _write_verdicts_atomic(verdicts)
         return
     repository_verdicts[report.release_id] = updated

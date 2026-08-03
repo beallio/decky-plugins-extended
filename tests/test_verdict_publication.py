@@ -7,28 +7,38 @@ import audit_plugins as ap
 REPOSITORY = "https://github.com/owner/plugin"
 
 
-def _verdict(*, classification="PASS", audited_at="2026-08-03T00:00:00Z"):
+def _verdict(
+    *,
+    classification="PASS",
+    audit_context_hash="context",
+    audited_at="2026-08-03T00:00:00Z",
+):
     return {
         REPOSITORY: {
             "v1.0.0@1": {
                 "classification": classification,
                 "blocking_rule_ids": [],
                 "artifact_sha256": "a" * 64,
-                "audit_context_hash": "context",
+                "audit_context_hash": audit_context_hash,
                 "audited_at": audited_at,
             }
         }
     }
 
 
-def _report(*, classification="PASS", audited_at="2026-08-03T00:00:00Z"):
+def _report(
+    *,
+    classification="PASS",
+    audit_context_hash="context",
+    audited_at="2026-08-03T00:00:00Z",
+):
     return ap.AuditReport(
         audit_timestamp=audited_at,
         repository=REPOSITORY,
         release="v1.0.0",
         release_id="v1.0.0@1",
         artifact_sha256="a" * 64,
-        audit_context_hash="context",
+        audit_context_hash=audit_context_hash,
         final_classification=classification,
     )
 
@@ -71,7 +81,7 @@ def test_legacy_cache_is_fallback_when_tracked_store_is_absent(monkeypatch, tmp_
     assert ap.load_verdicts(str(cache_dir)) == legacy
 
 
-def test_unchanged_verdict_preserves_identical_bytes_and_timestamp(
+def test_unchanged_verdict_preserves_identical_bytes_without_writing(
     monkeypatch, tmp_path
 ):
     tracked = tmp_path / "security-verdicts.json"
@@ -80,14 +90,57 @@ def test_unchanged_verdict_preserves_identical_bytes_and_timestamp(
 
     ap._record_verdict(str(cache_dir), _report())
     initial_bytes = tracked.read_bytes()
+    write_calls = 0
+    original_write = ap._write_verdicts_atomic
 
-    unchanged = _report(audited_at="2026-08-03T06:00:00Z")
-    unchanged.audit_context_hash = "new-context"
-    ap._record_verdict(str(cache_dir), unchanged)
+    def track_write(verdicts):
+        nonlocal write_calls
+        write_calls += 1
+        original_write(verdicts)
+
+    monkeypatch.setattr(ap, "_write_verdicts_atomic", track_write)
+
+    ap._record_verdict(
+        str(cache_dir),
+        _report(audited_at="2026-08-03T06:00:00Z"),
+    )
 
     assert tracked.read_bytes() == initial_bytes
+    assert write_calls == 0
     persisted = json.loads(tracked.read_text(encoding="utf-8"))
     assert persisted[REPOSITORY]["v1.0.0@1"]["audited_at"] == ("2026-08-03T00:00:00Z")
+
+
+def test_context_only_change_updates_hash_and_preserves_timestamp(
+    monkeypatch, tmp_path
+):
+    tracked = tmp_path / "security-verdicts.json"
+    cache_dir = tmp_path / ".audit-cache"
+    monkeypatch.setattr(ap, "VERDICTS_FILE", str(tracked))
+
+    ap._record_verdict(str(cache_dir), _report())
+    initial = json.loads(tracked.read_text(encoding="utf-8"))[REPOSITORY]["v1.0.0@1"]
+
+    ap._record_verdict(
+        str(cache_dir),
+        _report(
+            audit_context_hash="new-context",
+            audited_at="2026-08-03T06:00:00Z",
+        ),
+    )
+
+    persisted = json.loads(tracked.read_text(encoding="utf-8"))[REPOSITORY]["v1.0.0@1"]
+    assert persisted == {**initial, "audit_context_hash": "new-context"}
+    assert persisted["audited_at"] == "2026-08-03T00:00:00Z"
+
+
+def test_changed_verdict_updates_timestamp(monkeypatch, tmp_path):
+    tracked = tmp_path / "security-verdicts.json"
+    cache_dir = tmp_path / ".audit-cache"
+    monkeypatch.setattr(ap, "VERDICTS_FILE", str(tracked))
+
+    ap._record_verdict(str(cache_dir), _report())
+    initial_bytes = tracked.read_bytes()
 
     ap._record_verdict(
         str(cache_dir),
@@ -97,6 +150,7 @@ def test_unchanged_verdict_preserves_identical_bytes_and_timestamp(
     assert tracked.read_bytes() != initial_bytes
     assert tracked.read_bytes().endswith(b"\n")
     changed = json.loads(tracked.read_text(encoding="utf-8"))
+    assert changed[REPOSITORY]["v1.0.0@1"]["classification"] == "MANUAL_REVIEW"
     assert changed[REPOSITORY]["v1.0.0@1"]["audited_at"] == ("2026-08-03T12:00:00Z")
 
 
