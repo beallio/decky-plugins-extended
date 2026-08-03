@@ -1,0 +1,48 @@
+{
+  "date": "2026-08-03",
+  "task_objective": "Wire the existing plugin security-audit workflows into live CI, harden generate.yml with least privilege and immutable action pins, and document the effective BLOCK-only catalog gate and pre-download audit cache accurately.",
+  "files_modified": [
+    ".github/workflows/generate.yml",
+    "README.md",
+    "tests/test_workflow_security.py",
+    "docs/agent_conversations/2026-08-03_audit-ci.json"
+  ],
+  "tests_added": [
+    "tests/test_workflow_security.py::WorkflowSecurityTests::test_all_actions_are_pinned_to_full_commit_shas",
+    "tests/test_workflow_security.py::WorkflowSecurityTests::test_no_secret_is_interpolated_directly_into_a_run_command",
+    "tests/test_workflow_security.py::WorkflowSecurityTests::test_scheduled_audit_cache_key_covers_the_allowlist"
+  ],
+  "design_decisions": [
+    "The two audit workflows were already inherited from audit-port: plugin-security-audit.yml was byte-for-byte identical to fork commit 77cc3ca, and scheduled-security-audit.yml already contained the required security-allowlist.yml cache-key fix. They were retained without churn.",
+    "Resolved the existing action tags through GitHub before pinning: actions/checkout v7 to 3d3c42e5aac5ba805825da76410c181273ba90b1, astral-sh/setup-uv v9.0.0 to c771a70e6277c0a99b617c7a806ffedaca235ff9, and actions/setup-python v7 to 5fda3b95a4ea91299a34e894583c3862153e4b97.",
+    "Moved generate.yml's identical per-job contents: read permissions to one top-level least-privilege declaration while preserving its existing concurrency and env-based secret handling.",
+    "Kept the production catalog URL and deployment ownership unchanged and ported no content from fork commit 58435fc.",
+    "The README distinguishes report-only pull-request audit behavior from the durable BLOCK-only catalog gate and states that MANUAL_REVIEW, AUDIT_ERROR, and unknown releases remain fail-open.",
+    "The plan was already committed on dev in d838f34, so the implementation branch inherited it instead of creating a duplicate empty plan commit.",
+    "The required origin/dev pull could not be performed because GitHub exposes only main; the branch was created from clean local dev at 4a13aef, which contains the finalized catalog-gate dependency.",
+    "Draft PR 1 was opened against main only to exercise pull_request CI because no remote dev branch exists. The negative-control fixture URL was committed for one run and then reverted from the final catalog inputs.",
+    "The isolated beallio/decky-audit-negative-control repository and v1.0.0 release remain as a reproducible inert static-analysis fixture; its suspicious command is text and was never executed."
+  ],
+  "verification_evidence": {
+    "baseline": "PASS: 207 tests passed before implementation.",
+    "failure_first": "EXPECTED RED: the new workflow policy suite reported 1 failed and 2 passed, listing all 6 tag-pinned uses entries in generate.yml.",
+    "workflow_policy": "PASS: 3 targeted tests passed; the plan's grep probe printed PASS: all actions SHA-pinned and PASS: no run line interpolates a secret.",
+    "workflow_yaml": "PASS: PyYAML parsed all three workflow files.",
+    "readme_claims": "PASS: test_gate_removes_blocked_existing_version_and_uses_fallback and test_cache_prevents_download_on_second_run both passed; the README points to effective BLOCK exclusion and cache lookup before ZIP download.",
+    "normal_pull_request_run": "PASS: GitHub Actions run 30851127174 concluded success at c23bb0c; Security Audit, Unit Tests, and the SDH-Ludusavi smoke audit all passed.",
+    "negative_control": "PASS: GitHub Actions run 30851405678 concluded success in report-only mode and its uploaded report classified beallio/decky-audit-negative-control as BLOCK with rule DESTRUCTIVE_RM_RF. The Markdown report states This plugin is BLOCKED. Evidence is in /tmp/decky-plugins-extended/audit-ci-negative-run/.",
+    "final_pull_request_run": "PASS: GitHub Actions run 30851596879 concluded success at cleanup commit d7ede94; Security Audit, Unit Tests, and Smoke Audit all passed after the malicious fixture URL was removed.",
+    "full_suite": "PASS: scripts/orchestration/run-quality-gates reported Ruff clean, 24 files formatted, and 210 passed with 17 subtests passed."
+  },
+  "results": {
+    "pytest": "210 passed, 17 subtests passed",
+    "quality_gates": "passed",
+    "review_note": "none in the initial round",
+    "verification_pr": "https://github.com/beallio/decky-plugins-extended/pull/1"
+  },
+  "not_verified": [
+    "The six-hourly scheduled audit's Actions-minutes cost at full repository scale was not measured.",
+    "Workflow behavior on a fork-originated pull request where secrets are withheld was not exercised.",
+    "GitHub emitted Node.js 20 deprecation warnings for the fork-pinned actions/checkout v4.2.2 and actions/upload-artifact v4.6.2 used by the imported audit workflows; updating those imported action versions is outside this plan."
+  ]
+}
