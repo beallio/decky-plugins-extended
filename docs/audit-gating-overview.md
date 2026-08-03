@@ -20,6 +20,13 @@ already contains the earlier ones.
 | 7 | `scanner-precision` | Cut the false-positive rate on generated artifacts and build-stamped metadata | 6 |
 | 8 | `plugin-additions` | 9 of the 13 new plugin entries, vetted | 7 |
 | 9 | `secret-rule-precision` | Require quoted literals in the loose secret patterns; re-evaluate 3 wrongly excluded plugins | 8 |
+| 10 | `verdict-publication` | Make verdicts a tracked file so the Cloudflare build can see them; the gate is inert without this | 9 |
+
+**The gate does not fire in production until sub-plan 10.** The live catalog is built by
+Cloudflare Pages from a fresh clone, not by GitHub Actions; the verdict store lived in the
+gitignored `.audit-cache/`, so `load_verdicts()` found nothing there and every release read as
+unknown. Every `catalog-gate` test seeds verdicts directly, so the suite passed while
+production excluded nothing. Sub-plan 10 moves the store to a tracked file.
 
 The auditor is **advisory** until sub-plan 5. Sub-plans 2-4 deliberately land no gating, so a
 half-built scanner cannot empty the store.
