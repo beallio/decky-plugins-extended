@@ -6,7 +6,8 @@
   "implementation_commits": [
     "5f05e97",
     "74fe874",
-    "0ea85dd"
+    "0ea85dd",
+    "8b728ac"
   ],
   "setup": {
     "baseline": "224 passed and 21 subtests passed.",
@@ -41,6 +42,17 @@
     "workflow_targeted": "9 passed; an additional executable YAML inspection reported 7 workflow behavior checks passed.",
     "quality_gates": "ruff check passed; 30 files already formatted; 231 passed and 21 subtests passed; no deleted review notes; security-verdicts.json remained unchanged during the full suite."
   },
+  "review_round_01": {
+    "review_note": "Committed review verdict bf5ca6d requested changes because the suite-wide fixture used an absolute verdict path that masked the dev failure, and the atomic-write preservation test asserted against a legacy file the writer no longer touched.",
+    "fixture_repair": "The autouse fixture now changes into each test's temporary directory and keeps VERDICTS_FILE equal to the relative security-verdicts.json production filename. This retains isolation without changing dev's legacy cache-relative lookup semantics.",
+    "atomic_test_repair": "The seed and final assertion now both use Path(ap.VERDICTS_FILE), the exact destination used by _write_verdicts_atomic.",
+    "dev_failure_control": "Against detached dev commit 42c3526 with the repaired tests, the fresh-clone test failed 1 test and deselected 9; blocked version 2.0.0 and its b-prefixed artifact hash remained present.",
+    "legacy_lookup_mutation": "Forcing load_verdicts to read only .audit-cache/verdicts.json made the fresh-clone test fail 1 test and deselect 9. Production code was restored immediately afterward.",
+    "atomic_write_mutation": "Replacing temp-file publication with destination truncation before the monkeypatched replace failure made the preservation test fail 1 test and deselect 7. Production code was restored immediately afterward.",
+    "feature_branch_control": "The repaired fresh-clone test passed 1 test and deselected 9 on the feature branch after both failure controls.",
+    "targeted_tests": "27 passed across audit verdicts, catalog gate, verdict publication, and workflow security tests.",
+    "quality_gates": "ruff check passed; 31 files already formatted; 231 passed and 21 subtests passed; no deleted review notes."
+  },
   "test_adjustment_rationale": "No existing expected behavior was weakened. Existing audit-verdict tests now isolate the tracked verdict path so their cache directories remain independent.",
   "not_verified": [
     "The GitHub Actions push/rebase path was structurally and locally tested but was not executed against GitHub, because the plan forbids pushing.",
@@ -57,7 +69,13 @@
     "/tmp/decky-plugins-extended/verify-4-diff-probe.log",
     "/tmp/decky-plugins-extended/verify-5-fresh-clone-negative-control.log",
     "/tmp/decky-plugins-extended/quality-gates-pre-session-log.log",
-    "/tmp/decky-plugins-extended/quality-gates-isolated-tests.log"
+    "/tmp/decky-plugins-extended/quality-gates-isolated-tests.log",
+    "/tmp/decky-plugins-extended/review-01-dev-fresh-clone-red.log",
+    "/tmp/decky-plugins-extended/review-01-fresh-clone-mutation-red.log",
+    "/tmp/decky-plugins-extended/review-01-atomic-mutation-red.log",
+    "/tmp/decky-plugins-extended/review-01-fresh-clone-green.log",
+    "/tmp/decky-plugins-extended/review-01-targeted-green.log",
+    "/tmp/decky-plugins-extended/review-01-quality-gates-final.log"
   ],
   "unrelated_improvements_deferred": []
 }

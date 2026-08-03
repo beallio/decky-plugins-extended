@@ -42,7 +42,9 @@ prove it is green against `dev`.
 The cause is the new autouse fixture in `tests/conftest.py`:
 
 ```python
-monkeypatch.setattr(audit_plugins, "VERDICTS_FILE", str(tmp_path / "security-verdicts.json"))
+monkeypatch.setattr(
+    audit_plugins, "VERDICTS_FILE", str(tmp_path / "security-verdicts.json")
+)
 ```
 
 It sets `VERDICTS_FILE` to an **absolute** path. On `dev`, `load_verdicts()` computes
