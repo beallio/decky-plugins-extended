@@ -184,6 +184,34 @@ def test_audit_error_preserves_good_verdict_and_reports_both_states(
     assert result.audit_classification == "AUDIT_ERROR"
 
 
+def test_completed_audit_error_does_not_overwrite_good_verdict(monkeypatch, tmp_path):
+    release = _release("v1.0.0", 1)
+    prior = _seed_pass_verdict(tmp_path, "v1.0.0@1")
+    _configure_successful_audit(monkeypatch, _zip_bytes())
+    monkeypatch.setattr(
+        ap,
+        "run_trivy",
+        lambda *_args: (
+            ap.ScannerStatus(name="trivy", status="failed", detail="scanner failed"),
+            [],
+        ),
+    )
+    policy = _policy()
+    policy["scanners"]["trivy"]["required"] = True
+
+    report = ap.audit_release(
+        REPOSITORY,
+        release,
+        policy,
+        [],
+        cache_dir=str(tmp_path),
+        skip_cache=True,
+    )
+
+    assert report.final_classification == "AUDIT_ERROR"
+    assert ap.load_verdicts(str(tmp_path)) == prior
+
+
 def test_first_seen_audit_error_is_not_laundered_into_pass(monkeypatch, tmp_path):
     release = _release("v1.0.0", 1)
     _configure_successful_audit(monkeypatch, _zip_bytes())

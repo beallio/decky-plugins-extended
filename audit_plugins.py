@@ -3439,16 +3439,15 @@ def audit_release(
         )
 
         # --- Cache result ---
-        if report.final_classification != "AUDIT_ERROR":
-            if not skip_cache:
-                save_cached_report(
-                    cache_dir,
-                    report,
-                    release_id,
-                    audit_context_hash=audit_ctx_hash,
-                    resolved_tag_commit_sha=resolved_tag_commit_sha,
-                )
-            _record_verdict(cache_dir, report)
+        if report.final_classification != "AUDIT_ERROR" and not skip_cache:
+            save_cached_report(
+                cache_dir,
+                report,
+                release_id,
+                audit_context_hash=audit_ctx_hash,
+                resolved_tag_commit_sha=resolved_tag_commit_sha,
+            )
+        _record_verdict(cache_dir, report)
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
