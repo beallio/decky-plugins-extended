@@ -99,7 +99,7 @@ def _seed_pass_verdict(cache_dir: Path, release_id: str) -> dict:
         }
     }
     cache_dir.mkdir(exist_ok=True)
-    (cache_dir / "verdicts.json").write_text(json.dumps(verdicts), encoding="utf-8")
+    Path(ap.VERDICTS_FILE).write_text(json.dumps(verdicts), encoding="utf-8")
     return verdicts
 
 
@@ -278,7 +278,7 @@ def test_atomic_write_failure_preserves_prior_verdict_file(monkeypatch, tmp_path
     with pytest.raises(OSError):
         ap._write_verdicts_atomic(replacement)
 
-    assert json.loads((tmp_path / "verdicts.json").read_text(encoding="utf-8")) == prior
+    assert json.loads(Path(ap.VERDICTS_FILE).read_text(encoding="utf-8")) == prior
 
 
 def test_two_release_round_trip_negative_control(monkeypatch, tmp_path):
