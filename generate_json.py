@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import html
 import json
 import os
 import shutil
@@ -384,6 +385,213 @@ def copy_static_files(source="static", destination="public"):
     return copied
 
 
+def _public_audit_records(verdicts):
+    """Return only the verdict fields that are safe and useful to publish."""
+    records = []
+    for repository, release_verdicts in verdicts.items():
+        if not isinstance(release_verdicts, dict):
+            continue
+        for release, verdict in release_verdicts.items():
+            if not isinstance(verdict, dict):
+                continue
+
+            rule_ids = set()
+            for field in (
+                "blocking_rule_ids",
+                "review_rule_ids",
+                "warning_rule_ids",
+            ):
+                values = verdict.get(field) or []
+                if isinstance(values, list):
+                    rule_ids.update(str(value) for value in values if value)
+
+            records.append(
+                {
+                    "repository": str(repository),
+                    "release": str(release),
+                    "classification": str(verdict.get("classification") or "UNKNOWN"),
+                    "rule_ids": sorted(rule_ids),
+                    "audited_at": str(verdict.get("audited_at") or ""),
+                }
+            )
+
+    # BLOCK is the only tier that can remove a release, so it must always be
+    # visually first. Other tiers are labels, not a severity score.
+    records.sort(
+        key=lambda record: (
+            record["classification"] != "BLOCK",
+            record["classification"],
+            record["repository"].lower(),
+            record["release"].lower(),
+        )
+    )
+    return records
+
+
+def _audit_enforcement_copy(enforcement_mode):
+    escaped_mode = html.escape(str(enforcement_mode))
+    if enforcement_mode == "enforce":
+        return (
+            f"<strong>Current enforcement mode: {escaped_mode}.</strong> "
+            "Releases with a BLOCK verdict are excluded from the catalogs."
+        )
+    if enforcement_mode == "report-only":
+        return (
+            f"<strong>Current enforcement mode: {escaped_mode}.</strong> "
+            "No releases are currently excluded from the catalogs because of "
+            "audit verdicts; BLOCK results are reported only."
+        )
+    return (
+        f"<strong>Current enforcement mode: {escaped_mode}.</strong> "
+        "Consult the repository policy for how this mode affects the catalogs."
+    )
+
+
+def _render_audit_html(records, enforcement_mode):
+    cards = []
+    for record in records:
+        classification = html.escape(record["classification"])
+        classification_class = "block" if record["classification"] == "BLOCK" else ""
+        rule_ids = record["rule_ids"]
+        rendered_rules = (
+            " ".join(f"<code>{html.escape(rule_id)}</code>" for rule_id in rule_ids)
+            if rule_ids
+            else '<span class="none-recorded">None recorded</span>'
+        )
+        audited_at = html.escape(record["audited_at"] or "Not recorded")
+        cards.append(
+            f"""        <article class="verdict {classification_class}">
+            <div class="classification">{classification}</div>
+            <dl>
+                <dt>Repository</dt>
+                <dd>{html.escape(record["repository"])}</dd>
+                <dt>Release</dt>
+                <dd>{html.escape(record["release"])}</dd>
+                <dt>Rule IDs</dt>
+                <dd class="rules">{rendered_rules}</dd>
+                <dt>Audited</dt>
+                <dd>{audited_at}</dd>
+            </dl>
+        </article>"""
+        )
+
+    verdict_markup = "\n".join(cards)
+    if not verdict_markup:
+        verdict_markup = (
+            '        <p class="empty">No releases have been audited yet.</p>'
+        )
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plugin Audit Log — Decky Extended Plugins</title>
+    <style>
+        :root {{ color-scheme: dark; }}
+        * {{ box-sizing: border-box; }}
+        body {{
+            margin: 0;
+            background: #0d0d0d;
+            color: #f7f7f7;
+            font-family: system-ui, sans-serif;
+            line-height: 1.5;
+        }}
+        main {{ width: min(100% - 2rem, 960px); margin: 0 auto; padding: 3rem 0; }}
+        h1 {{ color: #00ffff; margin-bottom: 0.5rem; }}
+        h2 {{ color: #ffff00; margin-top: 2.5rem; }}
+        a {{ color: #00ffff; }}
+        .intro, .enforcement {{
+            padding: 1rem 1.25rem;
+            background: #191919;
+            border-left: 4px solid #00ffff;
+            border-radius: 0.35rem;
+        }}
+        .enforcement {{ border-color: #ffff00; }}
+        .tier-explanation {{ display: grid; gap: 0.75rem; }}
+        .tier-explanation p {{ margin: 0; }}
+        .verdict {{
+            margin: 1rem 0;
+            padding: 1.25rem;
+            background: #191919;
+            border: 2px solid #555;
+            border-radius: 0.5rem;
+        }}
+        .verdict.block {{
+            border: 4px solid #ff4d6d;
+            box-shadow: 0 0 18px rgba(255, 77, 109, 0.45);
+        }}
+        .classification {{
+            display: inline-block;
+            margin-bottom: 0.75rem;
+            padding: 0.25rem 0.55rem;
+            background: #333;
+            color: #fff;
+            font-weight: 800;
+            letter-spacing: 0.04em;
+        }}
+        .block .classification {{ background: #ff4d6d; color: #090909; }}
+        dl {{ display: grid; grid-template-columns: 8rem 1fr; gap: 0.4rem 1rem; margin: 0; }}
+        dt {{ font-weight: 700; color: #c9c9c9; }}
+        dd {{ margin: 0; overflow-wrap: anywhere; }}
+        code {{
+            display: inline-block;
+            margin: 0 0.3rem 0.3rem 0;
+            padding: 0.15rem 0.35rem;
+            background: #303030;
+            color: #ffff00;
+            border-radius: 0.2rem;
+        }}
+        .none-recorded, .empty {{ color: #bdbdbd; }}
+        .empty {{ padding: 2rem; text-align: center; border: 2px dashed #555; }}
+        @media (max-width: 600px) {{
+            dl {{ grid-template-columns: 1fr; }}
+            dt {{ margin-top: 0.45rem; }}
+        }}
+    </style>
+</head>
+<body>
+    <main>
+        <p><a href="index.html">&larr; Decky Extended Plugins</a></p>
+        <h1>Plugin Audit Log</h1>
+        <p class="intro">This page publishes the latest stored audit verdict for each audited release. It lists rule IDs only; private evidence and file contents are never published.</p>
+
+        <h2>What the tiers mean</h2>
+        <section class="tier-explanation" aria-label="Audit tier explanations">
+            <p><strong>BLOCK</strong> means a deterministic structural fact such as a malware signature, archive traversal, a setuid bit, or a zip bomb, with no innocent explanation. It is the only tier that can remove a release.</p>
+            <p><strong>MANUAL_REVIEW</strong> means a human should look; it does not mean the plugin is dangerous. Most Decky plugins trip these rules because SteamOS has a read-only root and useful plugins often need sudo, mount, or systemctl.</p>
+            <p><strong>Passing does not prove a plugin is safe.</strong> An automated audit can miss harmful behavior.</p>
+        </section>
+
+        <h2>Current policy</h2>
+        <p class="enforcement">{_audit_enforcement_copy(enforcement_mode)}</p>
+
+        <h2>Audited releases</h2>
+{verdict_markup}
+    </main>
+</body>
+</html>
+"""
+
+
+def write_audit_outputs(verdicts, enforcement_mode, destination="public"):
+    """Publish human- and machine-readable audit records without evidence."""
+    os.makedirs(destination, exist_ok=True)
+    records = _public_audit_records(verdicts)
+    payload = {
+        "enforcement_mode": str(enforcement_mode),
+        "releases": records,
+    }
+
+    with open(os.path.join(destination, "audit.json"), "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+    with open(os.path.join(destination, "audit.html"), "w", encoding="utf-8") as f:
+        f.write(_render_audit_html(records, enforcement_mode))
+
+    print(f"Published audit log with {len(records)} release(s).")
+
+
 def validate_plugin_schema(plugins, list_type, artifact_required_names=None):
     artifact_required_names = artifact_required_names or set()
     for p in plugins:
@@ -653,6 +861,7 @@ def main():
         )
 
     copy_static_files()
+    write_audit_outputs(verdicts, enforcement_mode)
 
     print("Successfully generated JSON files in the 'public' directory.")
 
