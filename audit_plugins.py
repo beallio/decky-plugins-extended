@@ -2883,6 +2883,16 @@ def _blocking_rule_ids(report: AuditReport) -> list[str]:
     )
 
 
+def _rationale_rule_ids(report: AuditReport, classification: str) -> list[str]:
+    return sorted(
+        {
+            finding.rule_id
+            for finding in report.findings
+            if finding.classification == classification and not finding.allowlisted
+        }
+    )
+
+
 def _record_verdict(cache_dir: str, report: AuditReport) -> None:
     """Persist a real audit verdict without replacing one with AUDIT_ERROR."""
     if report.final_classification == "AUDIT_ERROR" or not report.release_id:
@@ -2895,14 +2905,24 @@ def _record_verdict(cache_dir: str, report: AuditReport) -> None:
     updated = {
         "classification": report.final_classification,
         "blocking_rule_ids": _blocking_rule_ids(report),
+        # A MANUAL_REVIEW verdict can correctly have no blocking rules. Keep the
+        # review and warning rationale alongside it so that is not ambiguous.
+        "review_rule_ids": _rationale_rule_ids(report, "MANUAL_REVIEW"),
+        "warning_rule_ids": _rationale_rule_ids(report, "PASS_WITH_WARNINGS"),
         "artifact_sha256": report.artifact_sha256,
         "audit_context_hash": report.audit_context_hash,
         "audited_at": report.audit_timestamp,
     }
     stable_fields = ("classification", "blocking_rule_ids", "artifact_sha256")
     if all(current.get(field) == updated[field] for field in stable_fields):
-        if current.get("audit_context_hash") != updated["audit_context_hash"]:
-            current["audit_context_hash"] = updated["audit_context_hash"]
+        refresh_fields = (
+            "audit_context_hash",
+            "review_rule_ids",
+            "warning_rule_ids",
+        )
+        if any(current.get(field) != updated[field] for field in refresh_fields):
+            for field in refresh_fields:
+                current[field] = updated[field]
             _write_verdicts_atomic(verdicts)
         elif not os.path.exists(VERDICTS_FILE):
             _write_verdicts_atomic(verdicts)
