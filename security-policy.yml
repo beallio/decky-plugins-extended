@@ -11,6 +11,25 @@ enforcement:
   # Switch to "enforce" once false-positive rates have been evaluated.
   mode: report-only
 
+# Corpus-tuned escalation weights. Detection is unchanged: every finding still
+# appears in reports, but these platform-baseline rules no longer force review.
+rule_classifications:
+  # 21/42 releases (50.00%): mounting filesystems is routine system integration
+  # on SteamOS, including access around its read-only root filesystem.
+  PRIVILEGE_MOUNT: PASS_WITH_WARNINGS
+  # 18/42 releases (42.86%): systemctl is the standard interface for the
+  # services that system-integrating Decky plugins manage.
+  PRIVILEGE_SYSTEMCTL: PASS_WITH_WARNINGS
+  # 16/42 releases (38.10%): sudo is the expected route for plugin operations
+  # that must cross SteamOS's unprivileged plugin boundary.
+  PRIVILEGE_SUDO: PASS_WITH_WARNINGS
+  # 15/42 releases (35.71%): shell-based plugins use sudo for the same ordinary
+  # SteamOS integration work as Python plugins.
+  PRIVILEGE_SUDO_SHELL: PASS_WITH_WARNINGS
+  # 15/42 releases (35.71%): declaring Decky's root flag is common for plugins
+  # that integrate with the operating system rather than only the UI.
+  ROOT_ACCESS: PASS_WITH_WARNINGS
+
 archive:
   # Maximum number of files allowed in a single release ZIP.
   max_files: 10000

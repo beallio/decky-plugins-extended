@@ -36,6 +36,7 @@ import tempfile
 import time
 import unicodedata
 import zipfile
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Optional
@@ -83,6 +84,41 @@ CLASSIFICATION_ORDER = [
     "PASS_WITH_WARNINGS",
     "PASS",
 ]
+
+RULE_CLASSIFICATION_VALUES = {
+    "BLOCK",
+    "MANUAL_REVIEW",
+    "PASS_WITH_WARNINGS",
+    "PASS",
+}
+
+_NON_TABLE_RULE_IDS = {
+    "ARCHIVE_BOMB_RATIO",
+    "ARCHIVE_BOMB_SIZE",
+    "ARCHIVE_DEVICE_FILE",
+    "ARCHIVE_DUPLICATE_PATH",
+    "ARCHIVE_ESCAPE_SYMLINK",
+    "ARCHIVE_FILE_COUNT_EXCEEDED",
+    "ARCHIVE_NAMED_PIPE",
+    "ARCHIVE_SETUID_FILE",
+    "ARCHIVE_SINGLE_FILE_TOO_LARGE",
+    "ARCHIVE_TRAVERSAL",
+    "CORRUPT_ARCHIVE",
+    "INVALID_PACKAGE_JSON",
+    "INVALID_PLUGIN_JSON",
+    "MALWARE",
+    "MISSING_PLUGIN_JSON",
+    "MISSING_PLUGIN_NAME",
+    "MISSING_RELEASE_METADATA",
+    "MODIFIED_SOURCE_FILE",
+    "NATIVE_BINARY",
+    "OBFUSCATION_LARGE_BASE64",
+    "PACKAGE_LIFECYCLE_SCRIPT",
+    "ROOT_ACCESS",
+    "SOURCE_ARTIFACT_DIFF_INCOMPLETE",
+    "ZIP_ONLY_EXECUTABLE",
+    "ZIP_ONLY_SCRIPT",
+}
 
 
 _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
@@ -258,6 +294,7 @@ def load_policy(path: str = DEFAULT_POLICY_FILE) -> dict[str, Any]:
     # Merge with defaults so new fields are always present
     policy = _default_policy()
     _deep_merge(policy, data)
+    _validate_rule_classifications(policy, path)
     return policy
 
 
@@ -265,6 +302,7 @@ def _default_policy() -> dict[str, Any]:
     return {
         "version": "1",
         "enforcement": {"mode": "report-only"},
+        "rule_classifications": {},
         "archive": {
             "max_files": 10000,
             "max_uncompressed_bytes": 1073741824,
@@ -284,6 +322,46 @@ def _default_policy() -> dict[str, Any]:
             "source_artifact_diff": {"enabled": True, "required": True},
         },
     }
+
+
+def _known_policy_rule_ids() -> set[str]:
+    table_rule_ids = {
+        rule_id
+        for rules in (_PYTHON_RULES, _JS_RULES, _SHELL_RULES)
+        for rule_id, _severity, _classification, _message, _pattern in rules
+    }
+    secret_rule_ids = {f"SECRET_{name.upper()}" for name, _pattern in _SECRET_PATTERNS}
+    return table_rule_ids | secret_rule_ids | _NON_TABLE_RULE_IDS
+
+
+def _validate_rule_classifications(policy: dict[str, Any], path: str) -> None:
+    overrides = policy.get("rule_classifications", {})
+    if not isinstance(overrides, dict):
+        raise ValueError(f"rule_classifications must be a mapping in {path}.")
+
+    known_rule_ids = _known_policy_rule_ids()
+    unknown_rule_ids = sorted(set(overrides) - known_rule_ids)
+    if unknown_rule_ids:
+        raise ValueError(
+            f"Unknown rule ID(s) in rule_classifications for {path}: "
+            + ", ".join(str(rule_id) for rule_id in unknown_rule_ids)
+        )
+
+    invalid_values = {
+        rule_id: classification
+        for rule_id, classification in overrides.items()
+        if classification not in RULE_CLASSIFICATION_VALUES
+    }
+    if invalid_values:
+        rendered = ", ".join(
+            f"{rule_id}={classification!r}"
+            for rule_id, classification in sorted(invalid_values.items())
+        )
+        allowed = ", ".join(sorted(RULE_CLASSIFICATION_VALUES))
+        raise ValueError(
+            f"Invalid rule classification override(s) in {path}: {rendered}. "
+            f"Allowed values: {allowed}."
+        )
 
 
 def _deep_merge(base: dict, override: dict) -> None:
@@ -540,6 +618,18 @@ def classify_findings(
     if "PASS_WITH_WARNINGS" in classifications:
         return "PASS_WITH_WARNINGS", score
     return "PASS", score
+
+
+def apply_rule_classification_overrides(
+    findings: list[Finding], policy: dict[str, Any]
+) -> None:
+    """Apply policy weights to constructed findings without changing detection."""
+    _validate_rule_classifications(policy, "in-memory policy")
+    overrides = policy.get("rule_classifications", {})
+    for finding in findings:
+        classification = overrides.get(finding.rule_id)
+        if classification is not None:
+            finding.classification = classification
 
 
 # ---------------------------------------------------------------------------
@@ -3819,6 +3909,9 @@ def audit_release(
                     )
                 )
 
+        # Policy changes escalation weight only: findings and rule IDs remain intact.
+        apply_rule_classification_overrides(report.findings, policy)
+
         # --- Apply allowlist ---
         report.findings, report.allowlist_decisions = apply_allowlist(
             report.findings,
@@ -3857,6 +3950,50 @@ def audit_release(
 # ---------------------------------------------------------------------------
 # Report output
 # ---------------------------------------------------------------------------
+
+
+def _run_summary_stats(
+    reports: list[AuditReport],
+) -> tuple[Counter[str], list[tuple[str, int]]]:
+    classifications = Counter(report.final_classification for report in reports)
+    rule_counts: Counter[str] = Counter()
+    for report in reports:
+        rule_counts.update(
+            {finding.rule_id for finding in report.findings if finding.rule_id}
+        )
+    top_rules = sorted(rule_counts.items(), key=lambda item: (-item[1], item[0]))[:10]
+    return classifications, top_rules
+
+
+def generate_run_summary(reports: list[AuditReport]) -> str:
+    """Return aggregate counts and top rule firing rates without finding evidence."""
+    classifications, top_rules = _run_summary_stats(reports)
+    lines = [
+        "## Audit Run Summary",
+        "",
+        f"Total releases audited: **{len(reports)}**",
+        "",
+        "| Classification | Count |",
+        "|---|---:|",
+    ]
+    for classification in CLASSIFICATION_ORDER:
+        lines.append(f"| {classification} | {classifications[classification]} |")
+
+    lines.extend(
+        [
+            "",
+            "| Top rule ID | Releases | Firing rate |",
+            "|---|---:|---:|",
+        ]
+    )
+    total = len(reports)
+    for rule_id, count in top_rules:
+        rate = count / total * 100 if total else 0
+        lines.append(f"| {rule_id} | {count} | {rate:.2f}% |")
+    if not top_rules:
+        lines.append("| None | 0 | 0.00% |")
+
+    return "\n".join(lines) + "\n"
 
 
 def write_reports(
@@ -3898,6 +4035,8 @@ def write_reports(
             "",
             f"Generated: {agg['generated_at']}",
             f"Reports: {len(reports)}",
+            "",
+            generate_run_summary(reports).rstrip(),
             "",
             "---",
             "",
@@ -4065,6 +4204,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         cls_emoji = _CLASS_EMOJI.get(cls, "❓")
         log.info("%s %s → %s (score %d)", cls_emoji, url, cls, report.risk_score)
 
+    classifications, top_rules = _run_summary_stats(reports)
+    classification_tally = ", ".join(
+        f"{classification}={classifications[classification]}"
+        for classification in CLASSIFICATION_ORDER
+    )
+    top_rule_tally = ", ".join(
+        f"{rule_id}={count}/{len(reports)}" for rule_id, count in top_rules
+    )
+    log.info(
+        "Run summary: total=%d; classifications: %s; top rules: %s",
+        len(reports),
+        classification_tally,
+        top_rule_tally or "none",
+    )
+
     # Write reports
     try:
         json_path, md_path = write_reports(reports, args.output_dir)
@@ -4079,6 +4233,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     if summary_file:
         try:
             with open(summary_file, "a", encoding="utf-8") as f:
+                f.write(generate_run_summary(reports))
+                f.write("\n---\n\n")
                 for report in reports:
                     f.write(generate_markdown_report(report))
                     f.write("\n\n---\n\n")
