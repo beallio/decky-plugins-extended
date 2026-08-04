@@ -994,9 +994,7 @@ class TestRuleClassificationOverrides(unittest.TestCase):
             self._policy({"PRIVILEGE_SUDO": "PASS_WITH_WARNINGS"}),
         )
 
-        self.assertTrue(
-            all(f.classification == "MANUAL_REVIEW" for f in findings)
-        )
+        self.assertTrue(all(f.classification == "MANUAL_REVIEW" for f in findings))
         self.assertEqual(ap.classify_findings(findings)[0], "MANUAL_REVIEW")
 
 

@@ -87,9 +87,7 @@ def test_unknown_blockable_rule_is_rejected(tmp_path):
 def test_all_incident_rules_remain_findings_but_are_capped_at_manual_review():
     incident_findings = []
     for rule_id, make_findings in INCIDENT_FIXTURES.items():
-        matches = [
-            finding for finding in make_findings() if finding.rule_id == rule_id
-        ]
+        matches = [finding for finding in make_findings() if finding.rule_id == rule_id]
         assert len(matches) == 1, rule_id
         assert matches[0].classification == "BLOCK", rule_id
         incident_findings.extend(matches)
@@ -99,8 +97,7 @@ def test_all_incident_rules_remain_findings_but_are_capped_at_manual_review():
     assert _apply_policy(incident_findings) == "MANUAL_REVIEW"
     assert {finding.rule_id for finding in incident_findings} == observed_rule_ids
     assert all(
-        finding.classification == "MANUAL_REVIEW"
-        for finding in incident_findings
+        finding.classification == "MANUAL_REVIEW" for finding in incident_findings
     )
 
 
