@@ -240,8 +240,14 @@ does not certify a plugin.
 | `PASS` | No blocking or review-required findings. Archive safe. No unexplained binaries. |
 | `PASS_WITH_WARNINGS` | Minor issues such as low/medium vulnerabilities, ordinary network usage, or an unavailable optional scanner. |
 | `MANUAL_REVIEW` | Root flag, sudo, native binaries, systemd changes, obfuscated code, or a high-severity dependency vulnerability. |
-| `BLOCK` | Malware signature, archive traversal, zip bomb, credential in a release, undisclosed executable download, or explicitly destructive command. |
+| `BLOCK` | A structural artifact fact: a malware signature; archive traversal or an escaping symlink; a compression-ratio, total-size, file-count, or single-file-size archive bomb limit; a setuid/setgid member; a device file; or a named pipe. |
 | `AUDIT_ERROR` | Audit could not reach a conclusion because of a download failure, corrupt ZIP, or internal error. |
+
+`BLOCK` is restricted by `security-policy.yml` to the structural facts listed
+above. Behavioural findings such as privileged commands, shell downloads,
+destructive-looking text, or secret-shaped literals remain visible and inform
+the rarity-ranked review queue, but they classify no higher than
+`MANUAL_REVIEW` and never remove a plugin from the catalog.
 
 ### Report-only workflow mode and catalog gating
 
