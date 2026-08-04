@@ -43,7 +43,7 @@ scanners:
     enabled: true
     required: true
   semgrep:
-    enabled: false
+    enabled: true
     required: false
   osv_scanner:
     enabled: false

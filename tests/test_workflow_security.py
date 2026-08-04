@@ -59,6 +59,17 @@ class WorkflowSecurityTests(unittest.TestCase):
         )
 
         self.assertIn("security-allowlist.yml", cache_key_command)
+        self.assertIn("semgrep-rules.yml", cache_key_command)
+
+    def test_scheduled_audit_installs_and_verifies_semgrep(self):
+        workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
+
+        self.assertIn(
+            "uv tool install --python 3.12 --with setuptools==70.3.0 semgrep==1.132.0",
+            workflow,
+        )
+        self.assertIn('echo "$SEMGREP_BIN_DIR" >> "$GITHUB_PATH"', workflow)
+        self.assertIn("semgrep --version --disable-version-check", workflow)
 
     def test_scheduled_audit_publishes_only_changed_verdict_store(self):
         workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
