@@ -218,20 +218,51 @@ def test_rarity_stays_out_of_deterministic_verdict_store():
     )
 
 
-def test_committed_corpus_ranking_reproduces_prototype():
+def test_ranking_orders_rare_rules_above_common_ones():
+    """Rarity ranking must order by unusualness, not by finding count.
+
+    This deliberately asserts the property rather than a snapshot of the live
+    corpus. An earlier version pinned the exact top three and their scores, and
+    broke the first time a scheduled audit changed the corpus - rarity is
+    corpus-relative, so any fixed expectation is guaranteed to rot.
+    """
+    # Both flagged releases carry exactly two rules, so only rarity differs.
+    # COMMON_A and COMMON_B each appear in three releases; UNIQUE in one.
+    verdicts = {
+        "https://github.com/example/one-rare": {
+            "v1@1": _verdict("MANUAL_REVIEW", review=("COMMON_A", "UNIQUE"))
+        },
+        "https://github.com/example/all-common": {
+            "v1@1": _verdict("MANUAL_REVIEW", review=("COMMON_A", "COMMON_B"))
+        },
+        "https://github.com/example/also-common": {
+            "v1@1": _verdict("MANUAL_REVIEW", review=("COMMON_A", "COMMON_B"))
+        },
+        "https://github.com/example/third-common": {
+            "v1@1": _verdict("MANUAL_REVIEW", review=("COMMON_A", "COMMON_B"))
+        },
+        "https://github.com/example/clean": {"v1@1": _verdict("PASS")},
+    }
+    ranked = ap.rank_review_queue(verdicts)
+    names = [entry.repository.rsplit("/", 1)[-1] for entry in ranked]
+
+    assert names[0] == "one-rare", (
+        "a release carrying a unique rule must outrank one carrying more common rules"
+    )
+    assert names[-1] == "clean"
+    assert ranked[-1].score == 0
+    assert ranked[0].score > ranked[1].score
+
+
+def test_committed_corpus_ranks_and_is_ordered():
+    """The real store must rank without error and be sorted descending."""
     verdict_path = Path(ap.__file__).with_name("security-verdicts.json")
     ranked = ap.rank_review_queue(json.loads(verdict_path.read_text()))
 
-    assert [entry.repository.rsplit("/", 1)[-1] for entry in ranked[:3]] == [
-        "unifideck",
-        "decky-music",
-        "Friendeck",
-    ]
-    assert [entry.score for entry in ranked[:3]] == pytest.approx(
-        [56.01057773073402, 38.59259453343001, 22.14799103498428]
-    )
-    assert ranked[-1].repository.endswith("/CheatDeck")
-    assert ranked[-1].score == 0
+    assert ranked, "the committed corpus should produce a ranking"
+    scores = [entry.score for entry in ranked]
+    assert scores == sorted(scores, reverse=True)
+    assert min(scores) >= 0
 
 
 def test_run_summary_surfaces_ranked_releases_and_rarest_rules():
