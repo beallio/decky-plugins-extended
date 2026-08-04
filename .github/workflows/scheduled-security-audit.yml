@@ -148,6 +148,8 @@ jobs:
           git add -- security-verdicts.json
           git commit -m "chore(security): publish ${changed_count} changed verdicts"
 
+          git status --porcelain
+          git reset --hard HEAD
           git pull --rebase origin "$GITHUB_REF_NAME"
           if git push origin "HEAD:${GITHUB_REF_NAME}"; then
             exit 0

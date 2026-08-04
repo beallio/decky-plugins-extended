@@ -1,0 +1,52 @@
+{
+  "date": "2026-08-03",
+  "task_objective": "Make scheduled verdict publication survive unrelated unstaged runner changes while preserving narrow staging, the unchanged-verdict early exit, and the single rebase-and-retry race path.",
+  "branch": "feat/verdict-push-fix",
+  "plan_commit": "70335c1",
+  "implementation_commits": [
+    "0120999"
+  ],
+  "setup": {
+    "baseline": "242 passed and 21 subtests passed.",
+    "remote_dev_pull": "Attempted git pull --ff-only origin dev and recorded the failure at /tmp/decky-plugins-extended/verdict-push-fix-setup-error.log; origin exposes only main, so the clean local dev tip 70335c1 was used as the required base.",
+    "plan_history": "The plan was already committed as local dev tip 70335c1, so feat/verdict-push-fix inherited the required plan-first commit instead of creating a duplicate empty commit.",
+    "tooling": "The repository has no run.sh. XDG_CACHE_HOME was isolated under /tmp/decky-plugins-extended/uv-cache because the sandboxed global uv cache was read-only."
+  },
+  "implementation": {
+    "clean_tree_before_sync": "After the narrow verdict commit succeeds, the publish step prints git status --porcelain and runs git reset --hard HEAD before the first pull --rebase. Bash fail-fast ordering ensures a failed commit exits before the reset.",
+    "preserved_behavior": "The step still exits before committing when security-verdicts.json is unchanged, stages only security-verdicts.json, performs no force push, and retries exactly once by rebasing after a losing push race.",
+    "diagnostic_boundary": "The diagnostic emits porcelain status codes and paths only; it does not read or print third-party file contents."
+  },
+  "files_modified": [
+    ".github/workflows/scheduled-security-audit.yml",
+    "tests/test_verdict_push_workflow.py",
+    "tests/test_workflow_security.py",
+    "docs/agent_conversations/2026-08-03_verdict-push-fix.json"
+  ],
+  "verification_evidence": {
+    "pre_fix_reproduction": "1 failed before implementation with exit 128 and the exact error 'cannot pull with rebase: You have unstaged changes' after the verdict commit succeeded.",
+    "fixture_controls": "10 passed across the executable publish-step fixture and workflow security tests. Real temporary bare repositories and clones proved dirty-tree publication, verdict-only commit contents, unchanged-verdict no-op behavior, one losing-race rebase and retry, failed-commit preservation, status-only diagnostics, scoped write permission, action SHA pins, and no secret interpolation in run blocks.",
+    "failed_commit_control": "A git wrapper forced commit to exit 42; the shell step stopped and the modified security-verdicts.json bytes remained present, proving reset did not run after commit failure.",
+    "mutation_control": "Temporarily removing git reset --hard HEAD made the dirty-tree publication test fail with exit 128 and the original unstaged-changes error. Restoring the reset returned the same control to 1 passed.",
+    "local_real_audit": "A disposable clone audited the actual SDH-Ludusavi v0.4.3 release. The audit exited 1 as AUDIT_ERROR because local ClamAV and Trivy executables were unavailable. git status --porcelain was empty, so no unexpected tracked dirtying file was observed locally; the runner-specific source remains unidentified.",
+    "quality_gates": "ruff check passed; 36 files already formatted; 248 passed and 21 subtests passed; no deleted review notes."
+  },
+  "test_adjustment_rationale": "No existing expected behavior was weakened. The workflow security test now enforces commit-before-diagnostic-before-reset-before-rebase ordering, and the new behavior suite executes the workflow's actual publish shell block against real git repository fixtures.",
+  "not_verified": [
+    "No commit was pushed to GitHub and no scheduled or manually dispatched workflow run was triggered, as required by the plan.",
+    "The local real audit could not reproduce the scheduled runner's scanner environment because ClamAV and Trivy were unavailable; therefore it did not identify which tracked file dirtied the failed production runner.",
+    "The next scheduled run remains the first observation of the fix in GitHub Actions."
+  ],
+  "temporary_logs": [
+    "/tmp/decky-plugins-extended/verdict-push-fix-setup-error.log",
+    "/tmp/decky-plugins-extended/verdict-push-fix-baseline.log",
+    "/tmp/decky-plugins-extended/verdict-push-fix-tests-red.log",
+    "/tmp/decky-plugins-extended/verdict-push-fix-targeted.log",
+    "/tmp/decky-plugins-extended/verdict-push-fix-real-audit.log",
+    "/tmp/decky-plugins-extended/verdict-push-fix-real-audit-status.log",
+    "/tmp/decky-plugins-extended/verdict-push-fix-reset-mutation.log",
+    "/tmp/decky-plugins-extended/verdict-push-fix-reset-restored.log",
+    "/tmp/decky-plugins-extended/verdict-push-fix-quality-gates-pre-commit.log"
+  ],
+  "unrelated_improvements_deferred": []
+}

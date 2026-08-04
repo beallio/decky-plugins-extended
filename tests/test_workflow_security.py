@@ -72,6 +72,20 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("git add -- security-verdicts.json", scheduled_job)
         self.assertNotIn("git add -A", scheduled_job)
         self.assertIn("${changed_count} changed verdicts", scheduled_job)
+        self.assertIn("git status --porcelain", scheduled_job)
+        self.assertEqual(1, scheduled_job.count("git reset --hard HEAD"))
+        self.assertLess(
+            scheduled_job.index('git commit -m "chore(security): publish'),
+            scheduled_job.index("git status --porcelain"),
+        )
+        self.assertLess(
+            scheduled_job.index("git status --porcelain"),
+            scheduled_job.index("git reset --hard HEAD"),
+        )
+        self.assertLess(
+            scheduled_job.index("git reset --hard HEAD"),
+            scheduled_job.index('git pull --rebase origin "$GITHUB_REF_NAME"'),
+        )
         self.assertEqual(
             2,
             scheduled_job.count('git pull --rebase origin "$GITHUB_REF_NAME"'),
