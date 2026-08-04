@@ -1,0 +1,64 @@
+{
+  "date": "2026-08-03",
+  "task_objective": "Make Trivy scan exact-tag source dependencies as well as release artifacts, and enable Semgrep with a vendored advisory ruleset.",
+  "files_modified": [
+    "audit_plugins.py",
+    "semgrep-rules.yml",
+    "security-policy.yml",
+    ".github/workflows/scheduled-security-audit.yml",
+    "README.md",
+    "tests/test_audit_plugins.py",
+    "tests/test_audit_verdicts.py",
+    "tests/test_workflow_security.py",
+    "docs/agent_conversations/2026-08-03_dependency-and-static-analysis.json"
+  ],
+  "tests_added": [
+    "tests/test_audit_plugins.py::TestSemgrepSeverityMapping::test_uses_vendored_rules_without_registry_or_telemetry",
+    "tests/test_audit_plugins.py::TestTrivyStructuredFindings::test_scans_artifact_and_exact_commit_source_lockfile",
+    "tests/test_audit_plugins.py::TestTrivyStructuredFindings::test_failed_source_fetch_is_not_reported_as_passed",
+    "tests/test_audit_plugins.py::TestSourceTreeFetch::test_source_archive_is_materialized_without_executing_hooks",
+    "tests/test_audit_plugins.py::TestPolicyLoading::test_repository_policy_enables_semgrep_as_optional",
+    "tests/test_workflow_security.py::WorkflowSecurityTests::test_scheduled_audit_installs_and_verifies_semgrep"
+  ],
+  "design_decisions": [
+    "Trivy scans the safely extracted release artifact and a separately materialized GitHub tarball resolved by the already-known commit SHA.",
+    "Source tar members are copied as inert regular files without preserving executable modes; links and special files are skipped, and archive limits and traversal checks are enforced.",
+    "Trivy findings prefix their target with source: or artifact:, and any exact-source fetch failure makes the required Trivy scanner status failed even when the artifact scan succeeds.",
+    "The Semgrep registry presets were not used because they resolve mutable rule content over the network at scan time. Five local syntax-aware rules are vendored instead, and metrics plus version checks are disabled.",
+    "Semgrep 1.132.0 is installed as a Python 3.12 uv tool with setuptools 70.3.0 because live validation showed Python 3.14 and current setuptools were incompatible with that Semgrep release.",
+    "Semgrep remains optional and every Semgrep result is capped at MANUAL_REVIEW; security-policy enforcement remains report-only.",
+    "The Semgrep rules file participates in the workflow audit-cache key so rule edits force a new audit."
+  ],
+  "verification_evidence": {
+    "baseline": "250 passed in 0.88s.",
+    "failure_first": "Five targeted tests failed before implementation: --config auto remained, source fetch helpers and dual-scan behavior were absent, source hook inertness was unimplemented, and the workflow did not install Semgrep.",
+    "trivy_noop_reproduction": "RetroDECKY v1.1.0 release ZIP: Trivy exit 0, lockfiles 0, findings 0.",
+    "trivy_real_source": "RetroDECKY v1.1.0 exact commit b2c8e29316757e6999b1698ea57d4582efd6f87b: status found_issue; artifact 0 findings; source 6 findings.",
+    "trivy_known_vulnerability": "Trivy 0.73.0 with lodash 4.17.20 package-lock fixture: 5 findings (CVE-2020-28500, CVE-2021-23337, CVE-2025-13465, CVE-2026-2950, CVE-2026-4800).",
+    "source_fetch_failure": "Targeted regression test forces _fetch_source_tree to raise and asserts Trivy status failed, no pass, while the artifact scan still runs once.",
+    "nothing_executed": "Source tar fixture contains package.json postinstall and setup.py sentinel writers; both files are materialized and the sentinel remains absent.",
+    "semgrep_rules": "Semgrep 1.132.0 validated semgrep-rules.yml with 0 configuration errors and 5 rules; invocation excludes --config auto and includes --metrics=off and --disable-version-check.",
+    "semgrep_advisory": "Live eval fixture: status found_issue, 1 finding, finding classification MANUAL_REVIEW, aggregate classification MANUAL_REVIEW (never BLOCK).",
+    "semgrep_runtime": "RetroDECKY v1.1.0 0.92s; DeckTools v0.6.0 0.98s; Insignia v0.1.2 1.16s. Mean 1.020s; projected 41-plugin cost 41.82s (0.697m), far below doubling the prior approximately 13-minute runtime, so no cadence or timeout mitigation is required.",
+    "full_suite": "256 passed and 21 subtests passed in 0.92s.",
+    "quality_gates": "Ruff check passed; 37 files already formatted; 256 tests and 21 subtests passed; no deleted review notes.",
+    "catalog_gate": "Existing report-only catalog-gate tests remain unchanged; security-policy.yml still sets enforcement.mode to report-only."
+  },
+  "test_adjustment_rationale": "The audit-verdict test doubles were updated to accept the new source_repo keyword passed to run_trivy. Their scanner statuses and verdict expectations are unchanged; this only reflects the planned interface extension.",
+  "not_verified": [
+    "The live known-CVE assertion is kept out of the hermetic unit suite because Trivy's vulnerability database and installed CLI are external, time-varying inputs. The unit regression instead proves the source scan path contains a pinned lockfile; the live negative control was run separately.",
+    "Semgrep's false-positive rate across all 41 plugins remains unmeasured; only three real release artifacts were timed and one synthetic advisory finding was classified.",
+    "No claim is made that either scanner proves a plugin benign, detects undeclared vendored dependencies, or justifies enabling catalog enforcement."
+  ],
+  "temporary_logs": [
+    "/tmp/decky-plugins-extended/dependency-and-static-analysis-baseline.log",
+    "/tmp/decky-plugins-extended/dependency-and-static-analysis-tdd-red.log",
+    "/tmp/decky-plugins-extended/dependency-and-static-analysis-full-intermediate.log",
+    "/tmp/decky-plugins-extended/dependency-and-static-analysis-semgrep-validate.log",
+    "/tmp/decky-plugins-extended/dependency-and-static-analysis-semgrep-live-fixture.log",
+    "/tmp/decky-plugins-extended/dependency-and-static-analysis-trivy-noop.log",
+    "/tmp/decky-plugins-extended/dependency-and-static-analysis-trivy-known-vuln.log",
+    "/tmp/decky-plugins-extended/dependency-and-static-analysis-trivy-real-source.log"
+  ],
+  "unrelated_improvements_deferred": []
+}

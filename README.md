@@ -217,8 +217,14 @@ installs, or sources plugin code.
 - **Secrets**: private keys, GitHub tokens, and cloud-provider credentials,
   redacted in every report surface.
 - **Malware**: ClamAV signature scanning of safely extracted contents.
-- **Dependency vulnerabilities**: Trivy filesystem scan and Semgrep static
-  analysis where available.
+- **Dependency vulnerabilities**: Trivy scans both the shipped release ZIP and
+  the repository source at the release's exact commit, so source lockfiles are
+  checked even when they are omitted from the bundle. Findings identify whether
+  they came from the artifact or source tree.
+- **Syntax-aware static analysis**: Semgrep runs a small vendored ruleset with
+  registry access, telemetry, and version checks disabled at scan time. Semgrep
+  findings are advisory and can classify no higher than `MANUAL_REVIEW` while
+  their Decky-plugin false-positive rate is being measured.
 
 ### What is not guaranteed
 

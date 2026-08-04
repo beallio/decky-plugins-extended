@@ -68,7 +68,10 @@ def _configure_successful_audit(monkeypatch, zip_data: bytes) -> None:
     monkeypatch.setattr(
         ap,
         "run_trivy",
-        lambda *_args: (ap.ScannerStatus(name="trivy", status="passed"), []),
+        lambda *_args, **_kwargs: (
+            ap.ScannerStatus(name="trivy", status="passed"),
+            [],
+        ),
     )
     monkeypatch.setattr(
         ap,
@@ -191,7 +194,7 @@ def test_completed_audit_error_does_not_overwrite_good_verdict(monkeypatch, tmp_
     monkeypatch.setattr(
         ap,
         "run_trivy",
-        lambda *_args: (
+        lambda *_args, **_kwargs: (
             ap.ScannerStatus(name="trivy", status="failed", detail="scanner failed"),
             [],
         ),
