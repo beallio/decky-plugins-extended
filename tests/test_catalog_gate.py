@@ -85,7 +85,9 @@ def _plugin(versions):
     }
 
 
-def _run_generator(monkeypatch, tmp_path, releases, verdicts, base_versions):
+def _run_generator(
+    monkeypatch, tmp_path, releases, verdicts, base_versions, enforcement_mode="enforce"
+):
     base_plugin = _plugin(base_versions)
 
     def fetch_json(_url):
@@ -110,6 +112,13 @@ def _run_generator(monkeypatch, tmp_path, releases, verdicts, base_versions):
         generate_json, "get_plugin_json", lambda *_args: {"name": "Plugin"}
     )
     monkeypatch.setattr(generate_json, "get_releases", lambda *_args: releases)
+    if enforcement_mode is not None:
+        monkeypatch.setattr(
+            generate_json,
+            "load_policy",
+            lambda *_a, **_k: {"enforcement": {"mode": enforcement_mode}},
+            raising=False,
+        )
     monkeypatch.setattr(
         generate_json,
         "load_verdicts",
@@ -187,6 +196,12 @@ def test_fresh_clone_reads_tracked_verdicts_and_blocks_release(monkeypatch, tmp_
         generate_json, "get_plugin_json", lambda *_args: {"name": "Plugin"}
     )
     monkeypatch.setattr(generate_json, "get_releases", lambda *_args: releases)
+    monkeypatch.setattr(
+        generate_json,
+        "load_policy",
+        lambda *_a, **_k: {"enforcement": {"mode": "enforce"}},
+        raising=False,
+    )
 
     (tmp_path / "additional_plugins.txt").write_text(
         f"{REPOSITORY}\n", encoding="utf-8"
@@ -404,3 +419,59 @@ def test_two_consecutive_update_checks_stay_false_for_blocked_releases(
         "changed=false",
         "changed=false",
     ]
+
+
+def test_report_only_mode_ships_blocked_releases(monkeypatch, tmp_path, capsys):
+    """A BLOCK verdict must not exclude anything while the policy is report-only.
+
+    The first real audit run produced eight BLOCK verdicts, every one a false
+    positive, and removed those plugins from the live catalog. security-policy.yml
+    had said report-only since it landed; the catalog gate ignored it. This pins
+    the gate to the policy so the two cannot disagree again.
+    """
+    releases = [
+        _release("v2.0.0", 2, BLOCKED_HASH),
+        _release("v1.0.0", 1, FALLBACK_HASH),
+    ]
+    stable, testing = _run_generator(
+        monkeypatch,
+        tmp_path,
+        releases,
+        _verdicts(),
+        [_version("v2.0.0", BLOCKED_HASH), _version("v1.0.0", FALLBACK_HASH)],
+        enforcement_mode="report-only",
+    )
+
+    for catalog in (stable, testing):
+        plugin = next(item for item in catalog if item["name"] == "Plugin")
+        names = {version["name"] for version in plugin["versions"]}
+        hashes = {version["hash"] for version in plugin["versions"]}
+        assert "2.0.0" in names, "report-only must not exclude a BLOCKed release"
+        assert BLOCKED_HASH in hashes
+        assert plugin["versions"][0]["name"] == "2.0.0"
+
+    # The block is still reported, so tuning data is not lost.
+    assert "[report-only]" in capsys.readouterr().out
+
+
+def test_unreadable_policy_falls_back_to_report_only(monkeypatch, tmp_path, capsys):
+    """A broken policy file must not silently start excluding plugins."""
+    releases = [
+        _release("v2.0.0", 2, BLOCKED_HASH),
+        _release("v1.0.0", 1, FALLBACK_HASH),
+    ]
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("policy unreadable")
+
+    monkeypatch.setattr(generate_json, "load_policy", _boom, raising=False)
+    stable, _testing = _run_generator(
+        monkeypatch,
+        tmp_path,
+        releases,
+        _verdicts(),
+        [_version("v2.0.0", BLOCKED_HASH), _version("v1.0.0", FALLBACK_HASH)],
+        enforcement_mode=None,
+    )
+    plugin = next(item for item in stable if item["name"] == "Plugin")
+    assert "2.0.0" in {version["name"] for version in plugin["versions"]}

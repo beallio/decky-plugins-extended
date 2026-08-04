@@ -10,7 +10,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from audit_plugins import classification_for, load_verdicts
+from audit_plugins import classification_for, load_policy, load_verdicts
 from plugin_release_utils import (
     get_zip_asset,
     has_exactly_one_zip,
@@ -420,6 +420,27 @@ def main():
     repo_urls = read_repo_urls()
     verdicts = load_verdicts()
 
+    # The catalog gate honours security-policy.yml's enforcement mode. Under
+    # "report-only" a BLOCK verdict is reported and the release still ships;
+    # only "enforce" excludes it. Previously the gate excluded regardless, which
+    # contradicted a policy file that has said report-only since it landed, and
+    # removed eight legitimate plugins from the live catalog on the first real
+    # audit run - every one of them a false positive.
+    try:
+        enforcement_mode = (load_policy().get("enforcement") or {}).get(
+            "mode"
+        ) or "report-only"
+    except Exception as exc:  # a broken policy must not silently start blocking
+        print(
+            f"Warning: could not read enforcement mode ({exc}); assuming report-only."
+        )
+        enforcement_mode = "report-only"
+    gating_enforced = enforcement_mode == "enforce"
+    print(
+        f"Catalog gate: enforcement mode is {enforcement_mode!r}"
+        f" ({'excluding' if gating_enforced else 'reporting'} BLOCK verdicts)."
+    )
+
     errors = []
     custom_plugin_names = set()
 
@@ -474,7 +495,13 @@ def main():
                 valid_release_count += 1
 
                 verdict = classification_for(url, rel, verdicts)
-                if verdict.effective_classification == "BLOCK":
+                if verdict.effective_classification == "BLOCK" and not gating_enforced:
+                    rule_ids = ", ".join(verdict.blocking_rule_ids) or "unknown rule"
+                    print(
+                        f"  [report-only] {plugin_name} release "
+                        f"{rel.get('tag_name', '')} is BLOCK ({rule_ids}); shipping anyway."
+                    )
+                if verdict.effective_classification == "BLOCK" and gating_enforced:
                     blocked_release_count += 1
                     verdict_entry = _release_verdict_entry(url, rel, verdicts)
                     audited_hash = verdict_entry.get("artifact_sha256")
