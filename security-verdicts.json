@@ -1,4 +1,560 @@
 {
+  "https://github.com/0u73r-h34v3n/SDH-PlayTime": {
+    "v3.3.0@479170499": {
+      "artifact_sha256": "1d8a520b499bb365dfb9ca87b03aaa0ba1afb4f57a6b1fc3b7b6183b5b53399e",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:01:47.710422Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "EXEC_EXEC",
+        "PRIVILEGE_MOUNT"
+      ],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/AG69075/steamOS_plugin_achievements": {
+    "v1.2.3@492099436": {
+      "artifact_sha256": "4a698f9f7bf08e8f4e78c341009ac7003830ad43e071aaef770c1af61ee443e0",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:10:31.753172Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "MODIFIED_SOURCE_FILE",
+        "PRIVILEGE_MOUNT"
+      ],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/BrenticusMaximus/ThemeDeck": {
+    "v3.0.1@462278361": {
+      "artifact_sha256": "92610937d8fd91392aecf1a1a7613d9208fdb838dd934c7d262de759c10d7585",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:07:57.947758Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "EXEC_EXEC",
+        "NETWORK_DISABLED_TLS",
+        "PRIVILEGE_MOUNT",
+        "SENSITIVE_STEAM_AUTH"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_POPEN"
+      ]
+    }
+  },
+  "https://github.com/DeckFilter/DeckyZone": {
+    "v0.4.0@414302015": {
+      "artifact_sha256": "ab8975af4275f4ec5301f87b12d5c4093afdecfc2b0c01b14da5941ab47d5fe9",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:08:44.850268Z",
+      "blocking_rule_ids": [
+        "SHELL_CURL_PIPE"
+      ],
+      "classification": "BLOCK",
+      "review_rule_ids": [
+        "OBFUSCATION_LARGE_BASE64",
+        "PERSIST_PROFILE_MOD",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SYSTEMCTL",
+        "ROOT_ACCESS"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/Hooandee/panel-de-control": {
+    "panel-de-control-v0.32.0@500610102": {
+      "artifact_sha256": "23ec89327b7b614773a4d75dce2a18035e4a364342e32250cfcc2509704db60a",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:10:18.217341Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "NATIVE_BINARY",
+        "PERSIST_PROFILE_MOD",
+        "PRIVILEGE_MODPROBE",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SYSTEMCTL",
+        "ROOT_ACCESS",
+        "ZIP_ONLY_EXECUTABLE"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_POPEN",
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager": {
+    "v0.2.4@463810366": {
+      "artifact_sha256": "ccf121d099c1df70ca6bc8e19c9f125bd2bd73f2c6af9952dc5bc1279696bc74",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:08:21.590190Z",
+      "blocking_rule_ids": [
+        "DESTRUCTIVE_RM_RF",
+        "DESTRUCTIVE_RM_RF_SHELL"
+      ],
+      "classification": "BLOCK",
+      "review_rule_ids": [
+        "PERSIST_KERNEL_MODULE_SHELL",
+        "PRIVILEGE_MODPROBE",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_STEAMOS_READONLY",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL",
+        "PRIVILEGE_SYSTEMCTL_SHELL",
+        "ROOT_ACCESS",
+        "ZIP_ONLY_SCRIPT"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/MrWaip/vpn-deck": {
+    "v2.3.0@406725210": {
+      "artifact_sha256": "27936a0a822873f8653607fb90ec4b2d14d418343b22dc17acb92568eb6cb604",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:05:42.450356Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "NATIVE_BINARY",
+        "PRIVILEGE_IPTABLES",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL",
+        "PRIVILEGE_SYSTEMCTL_SHELL",
+        "ROOT_ACCESS",
+        "ZIP_ONLY_EXECUTABLE"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/Necrosiak/Steamcord": {
+    "v1.21.0@499645254": {
+      "artifact_sha256": "554f9cfb88303d2417af9a9013a87d8054df4cbef623f5bdf5c6d5dd2dce0286",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:06:22.322252Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "EXEC_EXEC",
+        "NATIVE_BINARY",
+        "PERSIST_LD_PRELOAD",
+        "PRIVILEGE_MODPROBE",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL",
+        "PRIVILEGE_SYSTEMCTL_SHELL",
+        "SENSITIVE_STEAM_AUTH",
+        "ZIP_ONLY_EXECUTABLE",
+        "ZIP_ONLY_SCRIPT"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_POPEN",
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/PixelAddictUnlocked/allycenter": {
+    "v1.2.0@338784671": {
+      "artifact_sha256": "a1059534de2a0e9556669adff3d933bcde802101faae7558f9b33db3a8e51bc7",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:08:10.538447Z",
+      "blocking_rule_ids": [
+        "SHELL_CURL_PIPE"
+      ],
+      "classification": "BLOCK",
+      "review_rule_ids": [
+        "PERSIST_PROFILE_MOD",
+        "ROOT_ACCESS",
+        "ZIP_ONLY_SCRIPT"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/Rayekkk/DeckyVibranceHDR": {
+    "1.0.0@493175217": {
+      "artifact_sha256": "c5fbde7be36a9212b85b8db87e495217b174b617a433385bd43ffec5a9aef159",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:12:46.483239Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "PERSIST_LD_PRELOAD"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/Rayekkk/LeGo-Vibe-Control": {
+    "1.5.0@489704420": {
+      "artifact_sha256": "adda3be351c14d1c8899fb0997565aa67e7439b988112340fad707cfe6be28b7",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:12:13.263158Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "PERSIST_PROFILE_MOD",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL",
+        "PRIVILEGE_SYSTEMCTL_SHELL",
+        "ROOT_ACCESS"
+      ],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/Rayekkk/LeGo2BrightnessFix": {
+    "1.0.1@493209825": {
+      "artifact_sha256": "bc8fbc89107893da33ca2bb446b2e8f92a4cdb27d2f56858b7c0295d40f40a0b",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:12:24.758723Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "PERSIST_LD_PRELOAD",
+        "PRIVILEGE_SYSTEMCTL"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/Rayekkk/LeGoTDP": {
+    "1.6.0@494141462": {
+      "artifact_sha256": "4b04b2e1bb980b312eb482f7a6da8af3c5cbcb7124b4d3c4322ba7cea9b8a805",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:12:02.335394Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "PERSIST_PROFILE_MOD",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL",
+        "PRIVILEGE_SYSTEMCTL_SHELL",
+        "ROOT_ACCESS"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_POPEN"
+      ]
+    }
+  },
+  "https://github.com/SavageCore/xone-decky-plugin": {
+    "v0.3.3@489791966": {
+      "artifact_sha256": "6c5acf103cd822b4f4c9c39be7e85e269f9788841889e5ac50f215eaf9e45cba",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:09:52.942770Z",
+      "blocking_rule_ids": [
+        "DESTRUCTIVE_RM_RF",
+        "DESTRUCTIVE_RM_RF_SHELL"
+      ],
+      "classification": "BLOCK",
+      "review_rule_ids": [
+        "PERSIST_KERNEL_MODULE_SHELL",
+        "PERSIST_LD_PRELOAD",
+        "PRIVILEGE_MODPROBE",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_STEAMOS_READONLY",
+        "PRIVILEGE_SUDO_JS",
+        "PRIVILEGE_SUDO_SHELL",
+        "ROOT_ACCESS",
+        "ZIP_ONLY_SCRIPT"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/SheffeyG/CheatDeck": {
+    "v1.2.1@381129595": {
+      "artifact_sha256": "83d1129939e6417fdface46c3a86fe925785509e78b09757839a9c6ea72029f9",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:02:08.519205Z",
+      "blocking_rule_ids": [],
+      "classification": "PASS",
+      "review_rule_ids": [],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/Teppichseite/RetroDECKY": {
+    "v1.1.0@497686500": {
+      "artifact_sha256": "344fb7a082022f492ff2fe8db243e5363e8a2be3757c5ea9fb99e55264d9b25d",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:11:33.744003Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "EXEC_EXEC",
+        "EXEC_FUNCTION_CTOR",
+        "OBFUSCATION_LARGE_BASE64",
+        "OBFUSCATION_MARSHAL",
+        "PACKAGE_LIFECYCLE_SCRIPT",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "ZIP_ONLY_SCRIPT"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/ayrshirepixels/game-roulette": {
+    "v1.04@486475667": {
+      "artifact_sha256": "3e3296cdfd68ae72364cabc7c12b38c545c31e7a39016f96fb28d16d1c06c358",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:07:32.829793Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "MODIFIED_SOURCE_FILE"
+      ],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/beallio/Decky-Metadata": {
+    "v0.3.5@489704465": {
+      "artifact_sha256": "0b8b80b7535ba696e123908ed99fea64bbf5258a244c7c1534dea261ce4e5e98",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:01:31.451255Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "OBFUSCATION_LARGE_BASE64",
+        "PRIVILEGE_MOUNT"
+      ],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/beallio/Decky-SteamAchievements": {
+    "v0.2.0@492928948": {
+      "artifact_sha256": "0c5e9cda3953aa0c563f8ec614f0b342a90762643cb935da42d8688c77c02b3a",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:10:42.497999Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "ZIP_ONLY_SCRIPT"
+      ],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/beallio/SDH-Ludusavi": {
+    "v0.4.3@489230188": {
+      "artifact_sha256": "28171f4a10398c75f228112aa607529691804547e8c85eb518e7f015f3a26355",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:01:11.144834Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "PRIVILEGE_SYSTEMCTL",
+        "SENSITIVE_ENV_HARVEST"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_POPEN",
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/chillibeaver/DeckSMB": {
+    "1.0.1@388387610": {
+      "artifact_sha256": "a613638936d024852b069a448a6172b6767b1b1a684c29b8160b7d017a548211",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:08:57.430596Z",
+      "blocking_rule_ids": [
+        "DESTRUCTIVE_RM_RF"
+      ],
+      "classification": "BLOCK",
+      "review_rule_ids": [
+        "PERSIST_LD_PRELOAD",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_STEAMOS_READONLY",
+        "PRIVILEGE_SYSTEMCTL",
+        "ROOT_ACCESS"
+      ],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/cwtechshiz/nordvpn-decky": {
+    "v1.1.0@478239619": {
+      "artifact_sha256": "00794e4fbf39883adcd4a6a391529e5e4a14f3b780773290532eca29ade73dd1",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:12:35.560303Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "PRIVILEGE_SUDO"
+      ],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/danielcopper/decky-romm-sync": {
+    "decky-romm-sync-v0.30.0@499861777": {
+      "artifact_sha256": "acbccb7585a0c77d9b7ed535e509a18fca06596fce3e918fed932ae1a9d31079",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:05:24.522207Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "ARCHIVE_DUPLICATE_PATH",
+        "EXEC_EXEC",
+        "MODIFIED_SOURCE_FILE",
+        "NATIVE_BINARY",
+        "PRIVILEGE_MOUNT",
+        "SENSITIVE_STEAM_AUTH"
+      ],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/dawidmpunkt/RumbleDeck": {
+    "v0.1@300742867": {
+      "artifact_sha256": "de6a58cd0ccb4e4f4f725479ffcea2fdd2dfd54a849952f252973c8aa2772cbb",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:09:08.949643Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "MODIFIED_SOURCE_FILE",
+        "NATIVE_BINARY",
+        "PACKAGE_LIFECYCLE_SCRIPT",
+        "PERSIST_KERNEL_MODULE_SHELL",
+        "PRIVILEGE_MODPROBE",
+        "PRIVILEGE_STEAMOS_READONLY",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "ROOT_ACCESS",
+        "ZIP_ONLY_EXECUTABLE"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_POPEN",
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/hostsrc/decky-prysm": {
+    "v0.2.0@393251184": {
+      "artifact_sha256": "516ada5cf2b9a6463eba8defbba0d1a1213b7a7a5e5dc63f0013a1429adf88eb",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:07:43.940226Z",
+      "blocking_rule_ids": [
+        "SHELL_CURL_PIPE"
+      ],
+      "classification": "BLOCK",
+      "review_rule_ids": [
+        "NATIVE_BINARY",
+        "ROOT_ACCESS",
+        "ZIP_ONLY_EXECUTABLE"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_POPEN",
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/hydralauncher/decky-hydra-launcher": {
+    "0.0.3@303392362": {
+      "artifact_sha256": "b8dc7be8e158f5bbd76b9e7ef1640a042230a82040b4651d503f9fa3ddef4bc3",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:05:54.691670Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "NATIVE_BINARY",
+        "PERSIST_PROFILE_MOD",
+        "ZIP_ONLY_EXECUTABLE"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/jinzhongjia/decky-music": {
+    "v0.8.0@450049210": {
+      "artifact_sha256": "1c94e1d06cc9e29de625ee48c3578f9122d224eb1f7aa9ea461193ceb7b6aa02",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:06:36.513797Z",
+      "blocking_rule_ids": [
+        "SECRET_PASSWORD_LITERAL",
+        "SECRET_PRIVATE_KEY_HEADER"
+      ],
+      "classification": "BLOCK",
+      "review_rule_ids": [
+        "EXEC_EVAL",
+        "EXEC_EXEC",
+        "EXEC_OS_SYSTEM",
+        "EXEC_SHELL_TRUE",
+        "NATIVE_BINARY",
+        "OBFUSCATION_LARGE_BASE64",
+        "OBFUSCATION_PICKLE",
+        "PERSIST_PROFILE_MOD",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL",
+        "PRIVILEGE_SYSTEMCTL_SHELL",
+        "SENSITIVE_ENV_HARVEST",
+        "ZIP_ONLY_EXECUTABLE",
+        "ZIP_ONLY_SCRIPT"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_CALL",
+        "EXEC_SUBPROCESS_POPEN",
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/jjuuzzii/decky-ha-mqtt-plugin": {
+    "v0.6.1@486295307": {
+      "artifact_sha256": "8f9e6ba262fd1a246e938718349b0dc49110a739530de4f235d38ef078e210d1",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:07:19.156242Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "EXEC_EVAL",
+        "EXEC_OS_SYSTEM",
+        "NATIVE_BINARY",
+        "OBFUSCATION_PICKLE",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_JS",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL",
+        "PRIVILEGE_SYSTEMCTL_SHELL"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_POPEN",
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/kungaa/DS5-Linux-Decky": {
+    "v0.2.0@450283325": {
+      "artifact_sha256": "92d584377815bfca6109b48905babb6e8537ac9f77b0f1ad51cea3d8027aff48",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:10:07.108179Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "PRIVILEGE_SUDO_JS",
+        "PRIVILEGE_SUDO_SHELL"
+      ],
+      "warning_rule_ids": []
+    }
+  },
   "https://github.com/lopesleo/DeckTools": {
     "v0.6.0@437908781": {
       "artifact_sha256": "5069f38eec9fba1fe80d882a74c104a377a223770ff8dd31cbc5eff734851029",
@@ -18,6 +574,234 @@
         "EXEC_SUBPROCESS_POPEN",
         "EXEC_SUBPROCESS_RUN",
         "SECRET_GENERIC_API_KEY"
+      ]
+    }
+  },
+  "https://github.com/mdeguzis/decky-proton-pulse": {
+    "v1.12.0@476155733": {
+      "artifact_sha256": "8596b841a8143bce107d875c561e2ae70b38720ec5e84ec2598197231fbabc13",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:06:07.192181Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "EXEC_EXEC",
+        "PERSIST_PROFILE_MOD",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SYSTEMCTL",
+        "ROOT_ACCESS",
+        "SENSITIVE_STEAM_AUTH"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_POPEN",
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/mimed95/decky-voxtype": {
+    "0.2.0@404526544": {
+      "artifact_sha256": "26edbd485fd78611a7a46db23aaa5faf376cf5f43448a58e1aa25521768dcde4",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:07:05.259857Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "MODIFIED_SOURCE_FILE",
+        "NATIVE_BINARY",
+        "ZIP_ONLY_EXECUTABLE"
+      ],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/mubaraknumann/unifideck": {
+    "Release-0.7.2@492013050": {
+      "artifact_sha256": "a313be924cabe15255d222742a402cd98cb510a35dfe4b2d06cf1e59366936de",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:02:22.502875Z",
+      "blocking_rule_ids": [
+        "SECRET_GENERIC_API_KEY",
+        "SECRET_PRIVATE_KEY_HEADER"
+      ],
+      "classification": "BLOCK",
+      "review_rule_ids": [
+        "EXEC_EVAL",
+        "EXEC_EXEC",
+        "EXEC_OS_POPEN",
+        "EXEC_OS_SYSTEM",
+        "EXEC_SHELL_TRUE",
+        "MODIFIED_SOURCE_FILE",
+        "NATIVE_BINARY",
+        "NETWORK_DISABLED_TLS",
+        "OBFUSCATION_LARGE_BASE64",
+        "OBFUSCATION_MARSHAL",
+        "OBFUSCATION_PICKLE",
+        "PERSIST_LD_PRELOAD",
+        "PERSIST_PROFILE_MOD",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_PKEXEC",
+        "PRIVILEGE_STEAMOS_READONLY",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL",
+        "SENSITIVE_ENV_HARVEST",
+        "SENSITIVE_SSH_KEY",
+        "SENSITIVE_STEAM_AUTH",
+        "ZIP_ONLY_EXECUTABLE",
+        "ZIP_ONLY_SCRIPT"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_POPEN",
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/panyiwei-home/Friendeck": {
+    "0.7.7@366028491": {
+      "artifact_sha256": "65465ff115e105912adf72b5461e17b697ac07100ce7061de2e962851e41c653",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:03:47.694179Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "EXEC_EVAL",
+        "EXEC_EVAL_JS",
+        "EXEC_EXEC",
+        "MODIFIED_SOURCE_FILE",
+        "OBFUSCATION_LARGE_BASE64",
+        "PERSIST_LD_PRELOAD",
+        "PRIVILEGE_IPTABLES",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SYSTEMCTL",
+        "PRIVILEGE_SYSTEMCTL_SHELL",
+        "ZIP_ONLY_SCRIPT"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_POPEN",
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/parvagans/achievement-companion": {
+    "v0.3.2@470196203": {
+      "artifact_sha256": "3f0260c0a5526a5d921e35c3cf0ca6e2d5a15d098ae1c0d9f6991711662a70ed",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:12:57.401259Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "MODIFIED_SOURCE_FILE",
+        "OBFUSCATION_LARGE_BASE64",
+        "PERSIST_PROFILE_MOD"
+      ],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/piyush-tyagi-13/ally-vibe-control": {
+    "v1.0.5@452778228": {
+      "artifact_sha256": "fd08937fc6d1d3df081486dcbf1ca321380536e784ae6622b50827c5f601aefc",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:08:33.394181Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL",
+        "PRIVILEGE_SYSTEMCTL_SHELL",
+        "ROOT_ACCESS"
+      ],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/rsore/decky-bootnext": {
+    "v1.0.0@498123941": {
+      "artifact_sha256": "dfb128f1ed15252f58b204f1a798662357c83c06c10eef1f16127362eeeed8fa",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:10:55.781388Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "PERSIST_LD_PRELOAD",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL",
+        "PRIVILEGE_SYSTEMCTL_SHELL",
+        "ROOT_ACCESS"
+      ],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/snoein/decky-insignia": {
+    "v0.1.2@500458887": {
+      "artifact_sha256": "b951968f1e89a92333c7ded9563997adaa41e30457b3f4ea7ed717880b80a65b",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:11:06.973134Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "NATIVE_BINARY",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL",
+        "PRIVILEGE_SYSTEMCTL_SHELL",
+        "SENSITIVE_ENV_HARVEST",
+        "SENSITIVE_SSH_KEY",
+        "ZIP_ONLY_EXECUTABLE",
+        "ZIP_ONLY_SCRIPT"
+      ],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/xXJSONDeruloXx/Decky-bionic-fg": {
+    "v0.1.6@499464645": {
+      "artifact_sha256": "d3758997fc9ba41b1441e82d3b7c2a67d283d247a09b9796065113f0525b335a",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:11:22.125041Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "NATIVE_BINARY",
+        "ZIP_ONLY_EXECUTABLE"
+      ],
+      "warning_rule_ids": []
+    }
+  },
+  "https://github.com/xXJSONDeruloXx/decky-lsfg-vk": {
+    "v0.12.8@500401567": {
+      "artifact_sha256": "322f6eec21a489ef9f12938ea2ec4e43c234093876f95b7245fbd260f882ce9c",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:09:21.136082Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "NATIVE_BINARY",
+        "PERSIST_PROFILE_MOD",
+        "PRIVILEGE_IPTABLES",
+        "PRIVILEGE_MOUNT",
+        "ZIP_ONLY_EXECUTABLE"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_RUN"
+      ]
+    }
+  },
+  "https://github.com/zany130/RSM-Decky": {
+    "v1.0.1@439796152": {
+      "artifact_sha256": "039a603b75ef5d7d5b8aac0b8172069e15e607e563256932ac36f8ed5c368a61",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T02:11:51.133160Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "EXEC_EXEC",
+        "NETWORK_DISABLED_TLS",
+        "PERSIST_LD_PRELOAD"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_RUN"
       ]
     }
   }
