@@ -1,3 +1,4 @@
+import hashlib
 import json
 import shutil
 import subprocess
@@ -31,6 +32,7 @@ def _report(
     classification="PASS",
     audit_context_hash="context",
     audited_at="2026-08-03T00:00:00Z",
+    findings=None,
 ):
     return ap.AuditReport(
         audit_timestamp=audited_at,
@@ -40,6 +42,27 @@ def _report(
         artifact_sha256="a" * 64,
         audit_context_hash=audit_context_hash,
         final_classification=classification,
+        findings=findings or [],
+    )
+
+
+def _finding(
+    rule_id,
+    classification,
+    *,
+    evidence="fixture evidence",
+    allowlisted=False,
+):
+    return ap.Finding(
+        rule_id=rule_id,
+        severity="medium",
+        classification=classification,
+        path="plugin/main.py",
+        line=1,
+        message="fixture finding",
+        evidence=evidence,
+        scanner="fixture",
+        allowlisted=allowlisted,
     )
 
 
@@ -79,6 +102,137 @@ def test_legacy_cache_is_fallback_when_tracked_store_is_absent(monkeypatch, tmp_
     monkeypatch.setattr(ap, "VERDICTS_FILE", str(tracked))
 
     assert ap.load_verdicts(str(cache_dir)) == legacy
+
+
+def test_verdict_records_sorted_deduplicated_rationale_rule_ids(monkeypatch, tmp_path):
+    tracked = tmp_path / "security-verdicts.json"
+    cache_dir = tmp_path / ".audit-cache"
+    monkeypatch.setattr(ap, "VERDICTS_FILE", str(tracked))
+    findings = [
+        _finding("BLOCK_Z", "BLOCK"),
+        _finding("BLOCK_A", "BLOCK"),
+        _finding("BLOCK_Z", "BLOCK"),
+        _finding("REVIEW_Z", "MANUAL_REVIEW"),
+        _finding("REVIEW_A", "MANUAL_REVIEW"),
+        _finding("REVIEW_Z", "MANUAL_REVIEW"),
+        _finding("WARNING_Z", "PASS_WITH_WARNINGS"),
+        _finding("WARNING_A", "PASS_WITH_WARNINGS"),
+        _finding("WARNING_Z", "PASS_WITH_WARNINGS"),
+    ]
+
+    ap._record_verdict(
+        str(cache_dir),
+        _report(classification="BLOCK", findings=findings),
+    )
+
+    record = json.loads(tracked.read_text(encoding="utf-8"))[REPOSITORY]["v1.0.0@1"]
+    assert record["blocking_rule_ids"] == ["BLOCK_A", "BLOCK_Z"]
+    assert record["review_rule_ids"] == ["REVIEW_A", "REVIEW_Z"]
+    assert record["warning_rule_ids"] == ["WARNING_A", "WARNING_Z"]
+
+
+def test_allowlisted_findings_are_excluded_from_rationale(monkeypatch, tmp_path):
+    tracked = tmp_path / "security-verdicts.json"
+    cache_dir = tmp_path / ".audit-cache"
+    monkeypatch.setattr(ap, "VERDICTS_FILE", str(tracked))
+    findings = [
+        _finding("REVIEW_ALLOWED", "MANUAL_REVIEW", allowlisted=True),
+        _finding("REVIEW_KEPT", "MANUAL_REVIEW"),
+        _finding("WARNING_ALLOWED", "PASS_WITH_WARNINGS", allowlisted=True),
+        _finding("WARNING_KEPT", "PASS_WITH_WARNINGS"),
+    ]
+
+    ap._record_verdict(
+        str(cache_dir),
+        _report(classification="MANUAL_REVIEW", findings=findings),
+    )
+
+    record = json.loads(tracked.read_text(encoding="utf-8"))[REPOSITORY]["v1.0.0@1"]
+    assert record["review_rule_ids"] == ["REVIEW_KEPT"]
+    assert record["warning_rule_ids"] == ["WARNING_KEPT"]
+
+
+def test_verdict_rationale_never_serializes_finding_evidence(monkeypatch, tmp_path):
+    tracked = tmp_path / "security-verdicts.json"
+    cache_dir = tmp_path / ".audit-cache"
+    monkeypatch.setattr(ap, "VERDICTS_FILE", str(tracked))
+    secret = "ZXQVJPRKNFLBGHCM"
+
+    ap._record_verdict(
+        str(cache_dir),
+        _report(
+            classification="MANUAL_REVIEW",
+            findings=[
+                _finding("REVIEW_FIXTURE", "MANUAL_REVIEW", evidence=secret),
+                _finding("WARNING_FIXTURE", "PASS_WITH_WARNINGS", evidence=secret),
+            ],
+        ),
+    )
+
+    serialized = tracked.read_text(encoding="utf-8")
+    assert secret not in serialized
+    assert all(secret[index : index + 4] not in serialized for index in range(13))
+    assert hashlib.sha256(secret.encode()).hexdigest() not in serialized
+
+
+def test_unchanged_old_shape_backfills_rationale_without_changing_timestamp(
+    monkeypatch, tmp_path
+):
+    tracked = tmp_path / "security-verdicts.json"
+    cache_dir = tmp_path / ".audit-cache"
+    monkeypatch.setattr(ap, "VERDICTS_FILE", str(tracked))
+    seed = _verdict(
+        classification="MANUAL_REVIEW",
+        audited_at="2026-08-02T00:00:00Z",
+    )
+    tracked.write_text(json.dumps(seed), encoding="utf-8")
+
+    ap._record_verdict(
+        str(cache_dir),
+        _report(
+            classification="MANUAL_REVIEW",
+            audited_at="2026-08-03T12:00:00Z",
+            findings=[
+                _finding("REVIEW_REASON", "MANUAL_REVIEW"),
+                _finding("WARNING_REASON", "PASS_WITH_WARNINGS"),
+            ],
+        ),
+    )
+
+    record = json.loads(tracked.read_text(encoding="utf-8"))[REPOSITORY]["v1.0.0@1"]
+    assert record["review_rule_ids"] == ["REVIEW_REASON"]
+    assert record["warning_rule_ids"] == ["WARNING_REASON"]
+    assert record["audited_at"] == "2026-08-02T00:00:00Z"
+
+
+def test_unchanged_verdict_repairs_stale_rationale_without_changing_timestamp(
+    monkeypatch, tmp_path
+):
+    tracked = tmp_path / "security-verdicts.json"
+    cache_dir = tmp_path / ".audit-cache"
+    monkeypatch.setattr(ap, "VERDICTS_FILE", str(tracked))
+    seed = _verdict(
+        classification="MANUAL_REVIEW",
+        audited_at="2026-08-02T00:00:00Z",
+    )
+    record = seed[REPOSITORY]["v1.0.0@1"]
+    record["review_rule_ids"] = ["STALE_REVIEW"]
+    record["warning_rule_ids"] = ["STALE_WARNING"]
+    tracked.write_text(json.dumps(seed), encoding="utf-8")
+
+    ap._record_verdict(
+        str(cache_dir),
+        _report(
+            classification="MANUAL_REVIEW",
+            audited_at="2026-08-03T12:00:00Z",
+            findings=[_finding("CURRENT_REVIEW", "MANUAL_REVIEW")],
+        ),
+    )
+
+    record = json.loads(tracked.read_text(encoding="utf-8"))[REPOSITORY]["v1.0.0@1"]
+    assert record["review_rule_ids"] == ["CURRENT_REVIEW"]
+    assert record["warning_rule_ids"] == []
+    assert record["audited_at"] == "2026-08-02T00:00:00Z"
 
 
 def test_unchanged_verdict_preserves_identical_bytes_without_writing(
