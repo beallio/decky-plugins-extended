@@ -1,0 +1,74 @@
+{
+  "date": "2026-08-04",
+  "task_objective": "Publish human-readable and machine-readable audit verdicts without evidence, explain audit tiers honestly, derive enforcement copy from policy, and link the audit from the landing page.",
+  "branch": "feat/audit-transparency",
+  "plan_commit": "6c7b6da",
+  "implementation_commits": [
+    "4d1cf0e feat(audit): publish transparent audit outputs",
+    "80fe178 feat(site): link the published audit log"
+  ],
+  "setup": {
+    "plan_state": "The plan was already committed as the tip of dev and therefore became the implementation branch point; no duplicate empty plan commit was created.",
+    "remote_dev_pull": "Attempted git pull --ff-only origin dev; origin has no dev ref. The clean local dev commit 6c7b6da was used as the required base.",
+    "baseline": "274 passed in 1.18s.",
+    "gap_before_change": "The live generator produced four public files and zero matches for audit-verdict fields or classifications. No audit.html or audit.json existed."
+  },
+  "implementation": [
+    "The normal generator build now writes public/audit.html and public/audit.json from the local verdict store without network access for audit rendering.",
+    "The public projection contains only repository, release, classification, combined sorted rule IDs, and audited-at time. Evidence, file contents, artifact hashes, and audit context hashes are not copied.",
+    "BLOCK releases sort before every other tier and receive the page's strongest visual treatment. Other classifications sort deterministically but are not scored by rule count.",
+    "The page explains BLOCK, MANUAL_REVIEW, and audit limitations in plain language and derives current enforcement copy from security-policy.yml through the same loaded mode used by catalog gating.",
+    "The existing landing page links to audit.html without broader restyling."
+  ],
+  "test_rationale": "The initial evidence-leak assertion rejected the explanatory sentence saying evidence is never published. It was narrowed before commit to reject evidence and file-content keys plus secret/file payload values; banning honest disclosure text was not required by the plan and would not test a leak.",
+  "verification_evidence": {
+    "tdd_red": "7 focused tests failed before implementation: five on the absent write_audit_outputs function, one on missing audit artifacts after main, and one on the missing landing link.",
+    "focused_green": "7 focused audit-transparency tests passed in 0.05s.",
+    "empty_store": "A live generator run exited 0, wrote valid audit HTML/JSON, and published 0 releases.",
+    "missing_store": "A live generator run with security-verdicts.json absent exited 0 and wrote valid plugins.json, testing_plugins.json, audit.html, and audit.json. The repository's legacy .audit-cache/verdicts.json fallback supplied 16 audit releases.",
+    "leak_safety": "A fixture carrying evidence, file_contents, a ghp-shaped secret, and private file text produced zero matches for all four forbidden keys/values across audit.html and audit.json.",
+    "block_ordering": "In a fixture containing one BLOCK and eight MANUAL_REVIEW releases, the BLOCK record was first in audit.json and appeared before every MANUAL_REVIEW record in audit.html.",
+    "policy_modes": "The report-only render contained zero exclusion claims and stated that no releases are currently excluded; the enforce render contained one exclusion claim and no report-only claim.",
+    "real_data": {
+      "total_releases": 42,
+      "classifications": {
+        "BLOCK": 8,
+        "MANUAL_REVIEW": 32,
+        "PASS": 2
+      },
+      "top_entries": [
+        "chillibeaver/DeckSMB 1.0.1@388387610 BLOCK",
+        "DeckFilter/DeckyZone v0.4.0@414302015 BLOCK",
+        "hostsrc/decky-prysm v0.2.0@393251184 BLOCK",
+        "jinzhongjia/decky-music v0.8.0@450049210 BLOCK",
+        "Kentronix57/Decky-Loader-XGMobile-Manager v0.2.4@463810366 BLOCK",
+        "mubaraknumann/unifideck Release-0.7.2@492013050 BLOCK",
+        "PixelAddictUnlocked/allycenter v1.2.0@338784671 BLOCK",
+        "SavageCore/xone-decky-plugin v0.3.3@489791966 BLOCK"
+      ],
+      "enforcement_mode": "report-only"
+    },
+    "mutation": "Replacing the audit writer with a no-op made the BLOCK-first control go red with FileNotFoundError while both catalog JSON files remained present and valid.",
+    "full_suite": "281 passed in 1.22s.",
+    "quality_gates": "Ruff lint clean; all 42 Python files formatted; 281 passed and 21 subtests passed in 1.31s; no deleted review notes; quality gates passed.",
+    "enforcement_posture": "security-policy.yml remains report-only."
+  },
+  "temporary_logs": [
+    "/tmp/decky-plugins-extended-audit-transparency-pull-error.log",
+    "/tmp/decky-plugins-extended-audit-transparency-baseline-tests.log",
+    "/tmp/decky-plugins-extended-audit-transparency-gap-generator.log",
+    "/tmp/decky-plugins-extended-audit-transparency-red-tests.log",
+    "/tmp/decky-plugins-extended-audit-transparency-focused-tests.log",
+    "/tmp/decky-plugins-extended-audit-transparency-empty-store.log",
+    "/tmp/decky-plugins-extended-audit-transparency-missing-store.log",
+    "/tmp/decky-plugins-extended-audit-transparency-verification.log",
+    "/tmp/decky-plugins-extended-audit-transparency-full-suite.log",
+    "/tmp/decky-plugins-extended-audit-transparency-quality-gates.log",
+    "/tmp/decky-plugins-extended-audit-transparency-review-integrity.log"
+  ],
+  "explicitly_not_verified": [
+    "No real Cloudflare deployment or browser rendering was exercised; generator output was checked only.",
+    "Plugin authors were not notified; external repository outreach remains out of scope.",
+    "The page reports stored verdicts and does not prove that those verdicts are correct. The eight historical BLOCK records remain known false positives."
+  ]
+}
