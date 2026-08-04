@@ -878,6 +878,125 @@ class TestPolicyLoading(unittest.TestCase):
             {"enabled": True, "required": False},
         )
 
+    def test_unknown_rule_classification_override_is_rejected(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+            f.write(
+                "version: '1'\n"
+                "rule_classifications:\n"
+                "  PRIVILEGE_SDUO: PASS_WITH_WARNINGS\n"
+            )
+            name = f.name
+        try:
+            with self.assertRaisesRegex(ValueError, "PRIVILEGE_SDUO"):
+                ap.load_policy(name)
+        finally:
+            os.unlink(name)
+
+    def test_invalid_rule_classification_tier_is_rejected(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+            f.write("version: '1'\nrule_classifications:\n  PRIVILEGE_SUDO: IGNORE\n")
+            name = f.name
+        try:
+            with self.assertRaisesRegex(ValueError, "IGNORE"):
+                ap.load_policy(name)
+        finally:
+            os.unlink(name)
+
+    def test_rule_classification_override_changes_context_hash(self):
+        first = ap._default_policy()
+        second = ap._default_policy()
+        first["rule_classifications"]["PRIVILEGE_SUDO"] = "PASS_WITH_WARNINGS"
+        second["rule_classifications"]["PRIVILEGE_SUDO"] = "MANUAL_REVIEW"
+
+        self.assertNotEqual(
+            ap.compute_audit_context_hash(first, []),
+            ap.compute_audit_context_hash(second, []),
+        )
+
+
+class TestRuleClassificationOverrides(unittest.TestCase):
+    def _policy(self, overrides: dict[str, str]) -> dict:
+        policy = ap._default_policy()
+        policy["rule_classifications"] = overrides
+        return policy
+
+    def test_demoted_rule_still_fires_as_warning(self):
+        findings = ap.scan_text_content(
+            'subprocess.run(["sudo", "systemctl", "restart", "service"])',
+            "main.py",
+            ".py",
+        )
+
+        ap.apply_rule_classification_overrides(
+            findings,
+            self._policy({"PRIVILEGE_SUDO": "PASS_WITH_WARNINGS"}),
+        )
+
+        sudo_finding = next(f for f in findings if f.rule_id == "PRIVILEGE_SUDO")
+        self.assertEqual(sudo_finding.classification, "PASS_WITH_WARNINGS")
+        self.assertEqual(ap.classify_findings(findings)[0], "MANUAL_REVIEW")
+
+        ap.apply_rule_classification_overrides(
+            findings,
+            self._policy(
+                {
+                    "PRIVILEGE_SUDO": "PASS_WITH_WARNINGS",
+                    "PRIVILEGE_SYSTEMCTL": "PASS_WITH_WARNINGS",
+                }
+            ),
+        )
+        self.assertEqual(ap.classify_findings(findings)[0], "PASS_WITH_WARNINGS")
+        self.assertEqual(
+            {f.rule_id for f in findings},
+            {"EXEC_SUBPROCESS_RUN", "PRIVILEGE_SUDO", "PRIVILEGE_SYSTEMCTL"},
+        )
+
+    def test_promoted_rule_escalates(self):
+        findings = ap.scan_text_content(
+            'subprocess.run(["true"])',
+            "main.py",
+            ".py",
+        )
+
+        ap.apply_rule_classification_overrides(
+            findings,
+            self._policy({"EXEC_SUBPROCESS_RUN": "MANUAL_REVIEW"}),
+        )
+
+        self.assertEqual(findings[0].classification, "MANUAL_REVIEW")
+        self.assertEqual(ap.classify_findings(findings)[0], "MANUAL_REVIEW")
+
+    def test_non_structural_block_rules_are_capped_at_manual_review(self):
+        block_rule_ids = {
+            "SHELL_CURL_PIPE",
+            "DESTRUCTIVE_RM_RF",
+            "DESTRUCTIVE_RM_RF_SHELL",
+            "SECRET_PRIVATE_KEY_HEADER",
+            "SECRET_PASSWORD_LITERAL",
+            "SECRET_GENERIC_API_KEY",
+        }
+        findings = [
+            ap.Finding(
+                rule_id=rule_id,
+                severity="critical",
+                classification="BLOCK",
+                path="fixture",
+                line=1,
+                message="fixture",
+                evidence="",
+                scanner="fixture",
+            )
+            for rule_id in block_rule_ids
+        ]
+
+        ap.apply_rule_classification_overrides(
+            findings,
+            self._policy({"PRIVILEGE_SUDO": "PASS_WITH_WARNINGS"}),
+        )
+
+        self.assertTrue(all(f.classification == "MANUAL_REVIEW" for f in findings))
+        self.assertEqual(ap.classify_findings(findings)[0], "MANUAL_REVIEW")
+
 
 # ---------------------------------------------------------------------------
 # Report generation
@@ -984,6 +1103,52 @@ class TestReportGeneration(unittest.TestCase):
             self.assertTrue(os.path.exists(md_path))
             data = json.loads(Path(json_path).read_text())
             self.assertEqual(data["report_count"], 1)
+
+    def test_run_summary_reports_classifications_and_top_rule_rates(self):
+        reports = [
+            ap.AuditReport(
+                repository="one",
+                final_classification="MANUAL_REVIEW",
+                findings=[
+                    ap.Finding(
+                        rule_id="PRIVILEGE_SUDO",
+                        severity="high",
+                        classification="MANUAL_REVIEW",
+                        path="one.py",
+                        line=line,
+                        message="sudo",
+                        evidence="",
+                        scanner="fixture",
+                    )
+                    for line in (1, 2)
+                ],
+            ),
+            ap.AuditReport(
+                repository="two",
+                final_classification="PASS_WITH_WARNINGS",
+                findings=[
+                    ap.Finding(
+                        rule_id="PRIVILEGE_SUDO",
+                        severity="high",
+                        classification="PASS_WITH_WARNINGS",
+                        path="two.py",
+                        line=1,
+                        message="sudo",
+                        evidence="",
+                        scanner="fixture",
+                    )
+                ],
+            ),
+            ap.AuditReport(repository="three", final_classification="PASS"),
+        ]
+
+        summary = ap.generate_run_summary(reports)
+
+        self.assertIn("Total releases audited: **3**", summary)
+        self.assertIn("| MANUAL_REVIEW | 1 |", summary)
+        self.assertIn("| PASS_WITH_WARNINGS | 1 |", summary)
+        self.assertIn("| PASS | 1 |", summary)
+        self.assertIn("| PRIVILEGE_SUDO | 2 | 66.67% |", summary)
 
 
 # ---------------------------------------------------------------------------
@@ -1663,7 +1828,13 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             if finding.rule_id == "SENSITIVE_ENV_HARVEST"
         )
         self.assertEqual(env_finding.classification, "PASS_WITH_WARNINGS")
-        self.assertEqual(report.final_classification, "BLOCK")
+        secret_finding = next(
+            finding
+            for finding in report.findings
+            if finding.rule_id == "SECRET_GITHUB_TOKEN"
+        )
+        self.assertEqual(secret_finding.classification, "MANUAL_REVIEW")
+        self.assertEqual(report.final_classification, "MANUAL_REVIEW")
         self.assertEqual(report.plugin_name, "Syncthing")
         self.assertEqual(
             report.archive_stats.static_scan_skipped_extensions,
@@ -1749,6 +1920,77 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             )
         finally:
             os.unlink(tf_path)
+
+    def test_policy_demotes_audited_finding_without_dropping_it(self):
+        zip_data = _make_zip(
+            [
+                _regular(
+                    "my-plugin/plugin.json",
+                    json.dumps({"name": "MyPlugin", "flags": []}),
+                ),
+                _regular(
+                    "my-plugin/main.py",
+                    'import subprocess\nsubprocess.run(["sudo", "true"])\n',
+                ),
+            ]
+        )
+        release = {
+            "tag_name": "v1.0.0",
+            "assets": [
+                {
+                    "name": "my-plugin.zip",
+                    "id": 1,
+                    "browser_download_url": "https://example.com/my-plugin.zip",
+                }
+            ],
+        }
+
+        def fake_download(_url, dest_path):
+            Path(dest_path).write_bytes(zip_data)
+            return hashlib.sha256(zip_data).hexdigest()
+
+        passed = ap.ScannerStatus(name="fixture", status="passed")
+        with (
+            patch.object(
+                ap,
+                "get_repo_metadata",
+                return_value={"default_branch": "main", "archived": False},
+            ),
+            patch.object(ap, "get_releases", return_value=[release]),
+            patch.object(ap, "get_repo_file_raw", return_value=None),
+            patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(ap, "run_clamav", return_value=(passed, [])),
+            patch.object(ap, "run_trivy", return_value=(passed, [])),
+            patch.object(ap, "run_semgrep", return_value=(passed, [])),
+            patch.object(
+                ap,
+                "compare_source_and_artifact",
+                return_value=(
+                    {},
+                    [],
+                    ap.ScannerStatus(name="source-artifact-diff", status="passed"),
+                ),
+            ),
+        ):
+            policy = ap._default_policy()
+            policy["rule_classifications"] = {"PRIVILEGE_SUDO": "PASS_WITH_WARNINGS"}
+            report = ap.audit_repository(
+                "https://github.com/owner/my-plugin",
+                policy=policy,
+                exceptions=[],
+                skip_cache=True,
+            )
+
+        sudo_finding = next(
+            finding
+            for finding in report.findings
+            if finding.rule_id == "PRIVILEGE_SUDO"
+        )
+        self.assertEqual(sudo_finding.classification, "PASS_WITH_WARNINGS")
+        self.assertEqual(report.final_classification, "PASS_WITH_WARNINGS")
+        self.assertIn(
+            "PRIVILEGE_SUDO", ap._rationale_rule_ids(report, "PASS_WITH_WARNINGS")
+        )
 
     def test_archive_traversal_blocks(self):
         buf = io.BytesIO()

@@ -8,8 +8,49 @@ enforcement:
   #                fail the PR (exit 0 on security findings).
   # "enforce":     BLOCK findings exit 2; MANUAL_REVIEW exits 3.
   # Internal infrastructure failures always fail CI regardless of mode.
-  # Switch to "enforce" once false-positive rates have been evaluated.
-  mode: report-only
+  # Switched to "enforce" on 2026-08-04 after restricting BLOCK to structural
+  # facts in structural-blocking (#17). Against the 42-release corpus this is
+  # inert: no audited release trips a blockable rule. The eight BLOCK verdicts
+  # that removed legitimate plugins on 2026-08-04 were all textual heuristics,
+  # which are now capped at MANUAL_REVIEW and can never exclude anything.
+  mode: enforce
+
+# Corpus-tuned escalation weights. Detection is unchanged: every finding still
+# appears in reports, but these platform-baseline rules no longer force review.
+rule_classifications:
+  # 21/42 releases (50.00%): mounting filesystems is routine system integration
+  # on SteamOS, including access around its read-only root filesystem.
+  PRIVILEGE_MOUNT: PASS_WITH_WARNINGS
+  # 18/42 releases (42.86%): systemctl is the standard interface for the
+  # services that system-integrating Decky plugins manage.
+  PRIVILEGE_SYSTEMCTL: PASS_WITH_WARNINGS
+  # 16/42 releases (38.10%): sudo is the expected route for plugin operations
+  # that must cross SteamOS's unprivileged plugin boundary.
+  PRIVILEGE_SUDO: PASS_WITH_WARNINGS
+  # 15/42 releases (35.71%): shell-based plugins use sudo for the same ordinary
+  # SteamOS integration work as Python plugins.
+  PRIVILEGE_SUDO_SHELL: PASS_WITH_WARNINGS
+  # 15/42 releases (35.71%): declaring Decky's root flag is common for plugins
+  # that integrate with the operating system rather than only the UI.
+  ROOT_ACCESS: PASS_WITH_WARNINGS
+
+# Only deterministic structural facts may remove a release from the catalog.
+# Overrides above run first: they may demote these rules, but rules outside this
+# list are capped at MANUAL_REVIEW even if their detector labels them BLOCK.
+# Duplicate normalised paths remain review-only because a legitimate release in
+# the audited corpus contains one. A corrupt archive is an AUDIT_ERROR because
+# the audit could not complete, not evidence that the artifact is malicious.
+blockable_rules:
+  - MALWARE
+  - ARCHIVE_TRAVERSAL
+  - ARCHIVE_ESCAPE_SYMLINK
+  - ARCHIVE_BOMB_RATIO
+  - ARCHIVE_BOMB_SIZE
+  - ARCHIVE_SETUID_FILE
+  - ARCHIVE_DEVICE_FILE
+  - ARCHIVE_NAMED_PIPE
+  - ARCHIVE_FILE_COUNT_EXCEEDED
+  - ARCHIVE_SINGLE_FILE_TOO_LARGE
 
 archive:
   # Maximum number of files allowed in a single release ZIP.

@@ -1,0 +1,80 @@
+{
+  "date": "2026-08-04",
+  "task_objective": "Restrict BLOCK to deterministic structural artifact facts and rank the review queue by inverse corpus rule frequency without changing classifications.",
+  "branch": "feat/structural-blocking",
+  "plan_commit": "733afb5",
+  "implementation_commit": "1994b7a",
+  "documentation_commit": "af93053",
+  "formatting_commit": "993d2bb",
+  "setup": {
+    "plan_state": "The plan was already committed as the tip of dev and therefore became the implementation branch point; no duplicate empty plan commit was created.",
+    "remote_dev_pull": "Attempted git pull --ff-only origin dev; origin has no dev ref. The clean local dev commit 733afb5 was used as the required base.",
+    "baseline": "264 passed in 1.10s",
+    "incident_before_change": "A direct SHELL_CURL_PIPE fixture produced one finding classified BLOCK and an aggregate release classification of BLOCK."
+  },
+  "policy_decisions": {
+    "blockable_rules": [
+      "MALWARE",
+      "ARCHIVE_TRAVERSAL",
+      "ARCHIVE_ESCAPE_SYMLINK",
+      "ARCHIVE_BOMB_RATIO",
+      "ARCHIVE_BOMB_SIZE",
+      "ARCHIVE_SETUID_FILE",
+      "ARCHIVE_DEVICE_FILE",
+      "ARCHIVE_NAMED_PIPE",
+      "ARCHIVE_FILE_COUNT_EXCEEDED",
+      "ARCHIVE_SINGLE_FILE_TOO_LARGE"
+    ],
+    "archive_duplicate_path": "Excluded from blockable_rules and retained as MANUAL_REVIEW because the audited corpus contains a legitimate normalized-path collision.",
+    "corrupt_archive": "Excluded from blockable_rules because it means inspection could not complete; required scanner failures preserve AUDIT_ERROR rather than treating corruption as proof of maliciousness.",
+    "precedence": "rule_classifications overrides run first, then the blockable_rules ceiling is applied. Overrides may demote a structural rule, but cannot promote a non-structural rule above MANUAL_REVIEW.",
+    "rarity_storage": "Rarity is computed from the verdict store at report time and is not persisted. Persisting a corpus-relative score would require rewriting unchanged records whenever N or a rule frequency changes.",
+    "test_expectation_changes": "Legacy expectations that behavioural secret and incident rules remained BLOCK were changed because the plan explicitly replaces that contract; findings and rule IDs remain present."
+  },
+  "implementation": [
+    "Policy loading validates blockable_rules as a list of known rule IDs and rejects unknown IDs.",
+    "One central policy application function applies per-rule overrides and then caps every non-blockable BLOCK finding at MANUAL_REVIEW.",
+    "The review queue sums log(N / frequency) once per distinct rule ID per release, sorts deterministically, and reports the top ten releases with their three rarest contributing rules.",
+    "The README now names every structural BLOCK category and states that behavioural findings inform review but never remove a plugin."
+  ],
+  "verification_evidence": {
+    "tdd_red": "10 dedicated tests failed before implementation.",
+    "targeted_green": "10 dedicated tests passed; combined auditor coverage passed with 191 tests and 7 subtests.",
+    "incident_negative_control": {
+      "SHELL_CURL_PIPE": "1 finding, MANUAL_REVIEW",
+      "DESTRUCTIVE_RM_RF": "1 finding, MANUAL_REVIEW",
+      "DESTRUCTIVE_RM_RF_SHELL": "1 finding, MANUAL_REVIEW",
+      "SECRET_PRIVATE_KEY_HEADER": "1 finding, MANUAL_REVIEW",
+      "SECRET_PASSWORD_LITERAL": "1 finding, MANUAL_REVIEW",
+      "SECRET_GENERIC_API_KEY": "1 finding, MANUAL_REVIEW"
+    },
+    "structural_controls": "Path traversal, setuid archive member, and a simulated ClamAV signature each remained BLOCK.",
+    "policy_errors_and_precedence": "A typoed blockable ID raised ValueError; a structural override to PASS_WITH_WARNINGS won, while an explicit behavioural BLOCK override was capped at MANUAL_REVIEW.",
+    "rarity_non_gating": "Ranking left every input classification and the verdict-store bytes unchanged; rarity_score is absent from all 42 records.",
+    "ranking": [
+      "unifideck 56.0",
+      "decky-music 38.6",
+      "Friendeck 22.1",
+      "CheatDeck 0.0 (last)"
+    ],
+    "mutation": "With the central cap removed, the incident negative control failed BLOCK != MANUAL_REVIEW while the archive and ClamAV structural controls passed: 1 failed, 2 passed.",
+    "full_suite": "274 passed in 1.16s",
+    "quality_gates": "ruff clean; ruff format clean; 274 passed and 21 subtests passed in 1.30s; no deleted review notes; quality gates passed.",
+    "enforcement": "security-policy.yml remains report-only."
+  },
+  "temporary_logs": [
+    "/tmp/decky-plugins-extended-structural-blocking-pull-error.log",
+    "/tmp/decky-plugins-extended-structural-blocking-baseline.log",
+    "/tmp/decky-plugins-extended-structural-blocking-red.log",
+    "/tmp/decky-plugins-extended-structural-blocking-targeted-2.log",
+    "/tmp/decky-plugins-extended-structural-blocking-mutation.log",
+    "/tmp/decky-plugins-extended-structural-blocking-verification.log",
+    "/tmp/decky-plugins-extended-structural-blocking-tallies.log",
+    "/tmp/decky-plugins-extended-structural-blocking-full-suite.log"
+  ],
+  "explicitly_not_verified": [
+    "The structural rules have not fired on this corpus, so their true-positive rate remains unmeasured.",
+    "Rarity ranking inherits false-positive findings and prioritizes review rather than proving maliciousness.",
+    "Re-enabling enforcement and auditing inherited upstream catalog plugins remain out of scope."
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "date": "2026-08-04",
+  "task_objective": "Make per-rule escalation policy-tunable, demote measured SteamOS platform baselines, and expose aggregate flag-rate signals in audit summaries without changing detection or catalog enforcement.",
+  "branch": "feat/rule-tuning",
+  "plan_commit": "2438b85",
+  "setup": {
+    "baseline": "256 passed in 1.06s",
+    "remote_dev_pull": "Attempted git pull --ff-only origin dev; origin has no dev ref. Local dev matched origin/main at 87a78bf and was used as the required base.",
+    "unknown_rule_before_fix": "A policy containing PRIVILEGE_SDUO loaded successfully and returned PASS_WITH_WARNINGS, proving the typo was silently accepted before validation."
+  },
+  "corpus_baseline": {
+    "total_releases": 42,
+    "classifications": {
+      "BLOCK": 8,
+      "MANUAL_REVIEW": 32,
+      "PASS": 2
+    },
+    "rule_firing_rates": {
+      "EXEC_SUBPROCESS_RUN": {"count": 22, "rate_percent": 52.38},
+      "PRIVILEGE_MOUNT": {"count": 21, "rate_percent": 50.0},
+      "PRIVILEGE_SYSTEMCTL": {"count": 18, "rate_percent": 42.85},
+      "PRIVILEGE_SUDO": {"count": 16, "rate_percent": 38.09},
+      "PRIVILEGE_SUDO_SHELL": {"count": 15, "rate_percent": 35.71},
+      "ROOT_ACCESS": {"count": 15, "rate_percent": 35.71},
+      "NATIVE_BINARY": {"count": 14, "rate_percent": 33.33},
+      "EXEC_SUBPROCESS_POPEN": {"count": 13, "rate_percent": 30.95},
+      "ZIP_ONLY_EXECUTABLE": {"count": 12, "rate_percent": 28.57},
+      "PERSIST_PROFILE_MOD": {"count": 11, "rate_percent": 26.19},
+      "PRIVILEGE_SYSTEMCTL_SHELL": {"count": 11, "rate_percent": 26.19},
+      "EXEC_EXEC": {"count": 10, "rate_percent": 23.8},
+      "PERSIST_LD_PRELOAD": {"count": 10, "rate_percent": 23.8},
+      "ZIP_ONLY_SCRIPT": {"count": 10, "rate_percent": 23.8},
+      "MODIFIED_SOURCE_FILE": {"count": 8, "rate_percent": 19.04},
+      "OBFUSCATION_LARGE_BASE64": {"count": 7, "rate_percent": 16.66},
+      "PRIVILEGE_STEAMOS_READONLY": {"count": 6, "rate_percent": 14.28},
+      "SENSITIVE_STEAM_AUTH": {"count": 6, "rate_percent": 14.28},
+      "PRIVILEGE_MODPROBE": {"count": 5, "rate_percent": 11.9},
+      "EXEC_EVAL": {"count": 4, "rate_percent": 9.52},
+      "SENSITIVE_ENV_HARVEST": {"count": 4, "rate_percent": 9.52},
+      "DESTRUCTIVE_RM_RF": {"count": 3, "rate_percent": 7.14},
+      "EXEC_OS_SYSTEM": {"count": 3, "rate_percent": 7.14},
+      "NETWORK_DISABLED_TLS": {"count": 3, "rate_percent": 7.14},
+      "OBFUSCATION_PICKLE": {"count": 3, "rate_percent": 7.14},
+      "PERSIST_KERNEL_MODULE_SHELL": {"count": 3, "rate_percent": 7.14},
+      "PRIVILEGE_IPTABLES": {"count": 3, "rate_percent": 7.14},
+      "PRIVILEGE_SUDO_JS": {"count": 3, "rate_percent": 7.14},
+      "SHELL_CURL_PIPE": {"count": 3, "rate_percent": 7.14},
+      "DESTRUCTIVE_RM_RF_SHELL": {"count": 2, "rate_percent": 4.76},
+      "EXEC_SHELL_TRUE": {"count": 2, "rate_percent": 4.76},
+      "OBFUSCATION_MARSHAL": {"count": 2, "rate_percent": 4.76},
+      "PACKAGE_LIFECYCLE_SCRIPT": {"count": 2, "rate_percent": 4.76},
+      "SECRET_GENERIC_API_KEY": {"count": 2, "rate_percent": 4.76},
+      "SECRET_PRIVATE_KEY_HEADER": {"count": 2, "rate_percent": 4.76},
+      "SENSITIVE_SSH_KEY": {"count": 2, "rate_percent": 4.76},
+      "ARCHIVE_DUPLICATE_PATH": {"count": 1, "rate_percent": 2.38},
+      "EXEC_EVAL_JS": {"count": 1, "rate_percent": 2.38},
+      "EXEC_FUNCTION_CTOR": {"count": 1, "rate_percent": 2.38},
+      "EXEC_OS_POPEN": {"count": 1, "rate_percent": 2.38},
+      "EXEC_SUBPROCESS_CALL": {"count": 1, "rate_percent": 2.38},
+      "PRIVILEGE_PKEXEC": {"count": 1, "rate_percent": 2.38},
+      "SECRET_PASSWORD_LITERAL": {"count": 1, "rate_percent": 2.38}
+    }
+  },
+  "policy_decision": {
+    "threshold": "strictly above 35% of 42 releases and currently MANUAL_REVIEW",
+    "demoted_rules": [
+      "PRIVILEGE_MOUNT",
+      "PRIVILEGE_SYSTEMCTL",
+      "PRIVILEGE_SUDO",
+      "PRIVILEGE_SUDO_SHELL",
+      "ROOT_ACCESS"
+    ],
+    "not_demoted": "EXEC_SUBPROCESS_RUN also exceeded 35%, but its built-in classification was already PASS_WITH_WARNINGS. The six plan-listed BLOCK rules were not changed."
+  },
+  "implementation": [
+    "Policy loading validates rule_classifications as a mapping of known rule IDs to the four existing policy tiers and fails on unknown IDs or invalid tiers.",
+    "Every audit applies policy weights to the completed Finding objects before allowlisting, final classification, verdict rationale extraction, and report generation; detection, evidence, rule IDs, and risk scores remain intact.",
+    "The aggregate Markdown artifact, GitHub step summary, and logs state total releases, all classification counts, and the ten highest rule firing rates using one count per rule per release."
+  ],
+  "verification_evidence": {
+    "tdd_red": "4 policy/report tests and 3 override behavior tests failed before implementation.",
+    "targeted_green": "8 targeted tests passed, including an end-to-end mocked audit that retained PRIVILEGE_SUDO while moving it and the release to PASS_WITH_WARNINGS.",
+    "context_hash": "Changing only the PRIVILEGE_SUDO rule_classifications value changed compute_audit_context_hash.",
+    "block_and_catalog": "16 selected BLOCK and catalog-gate tests passed; security-policy.yml enforcement mode remained report-only.",
+    "mutation": "Removing the central override application made the end-to-end audit test fail with MANUAL_REVIEW != PASS_WITH_WARNINGS (pytest exit 1).",
+    "negative_control": {
+      "before": {"BLOCK": 8, "MANUAL_REVIEW": 32, "PASS": 2},
+      "after": {"BLOCK": 8, "MANUAL_REVIEW": 31, "PASS_WITH_WARNINGS": 1, "PASS": 2},
+      "manual_review_reduction": 1,
+      "manual_review_reduction_percent": 3.125,
+      "acceptance_result": "The exact threshold-based demotions do not substantially reduce MANUAL_REVIEW. Thirty-one releases retain at least one lower-frequency MANUAL_REVIEW rule; broadening demotions would violate this plan's measured threshold and scope."
+    },
+    "full_suite": "264 passed in 1.09s"
+  },
+  "temporary_logs": [
+    "/tmp/decky-plugins-extended-rule-tuning-baseline.tsv",
+    "/tmp/decky-plugins-extended-rule-tuning-unknown-before.log",
+    "/tmp/decky-plugins-extended-rule-tuning-red.log",
+    "/tmp/decky-plugins-extended-rule-tuning-behavior-red.log",
+    "/tmp/decky-plugins-extended-rule-tuning-targeted.log",
+    "/tmp/decky-plugins-extended-rule-tuning-block-catalog.log",
+    "/tmp/decky-plugins-extended-rule-tuning-mutation.log",
+    "/tmp/decky-plugins-extended-rule-tuning-negative-control.log",
+    "/tmp/decky-plugins-extended-rule-tuning-negative-control-final.log",
+    "/tmp/decky-plugins-extended-rule-tuning-negative-control-details.log"
+  ],
+  "unverified_or_deferred": [
+    "The 35% heuristic remains a judgement rather than proof of safety.",
+    "The six known false-positive BLOCK rules remain unchanged for their separate precision plan.",
+    "No claim is made that rare rules represent true threats.",
+    "A future tuning plan must address co-occurring lower-frequency MANUAL_REVIEW rules if a substantial corpus flag-rate reduction remains the goal."
+  ]
+}
