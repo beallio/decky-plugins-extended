@@ -1,3 +1,5 @@
+import hashlib
+
 import audit_plugins as ap
 
 
@@ -39,6 +41,10 @@ def test_loose_secret_patterns_require_matching_quotes():
 def test_real_quoted_secret_literals_still_block():
     cases = (
         ('api_key = "aB3dE5gH7jK9mN1pQ3rS"', "SECRET_GENERIC_API_KEY"),
+        (
+            'apikey = "0123456789abcdef0123456789abcdef01234567"',
+            "SECRET_GENERIC_API_KEY",
+        ),
         ("token = 'xY9zA1bC3dE5fG7hJ9kL2mN4'", "SECRET_BEARER_TOKEN"),
         ('Bearer = "bR7dE5gH9jK1mN3pQ5rS7tV9"', "SECRET_BEARER_TOKEN"),
         ('cf_token = "cF3dE5gH7jK9mN1pQ3rS"', "SECRET_CLOUDFLARE_TOKEN"),
@@ -56,6 +62,7 @@ def test_literal_shape_secret_patterns_remain_blocking():
         ("ghp_" + "A" * 36, "SECRET_GITHUB_TOKEN"),
         ("AKIA" + "A" * 16, "SECRET_AWS_KEY"),
         ("-----BEGIN PRIVATE KEY-----", "SECRET_PRIVATE_KEY_HEADER"),
+        ('password = "correct horse battery"', "SECRET_PASSWORD_LITERAL"),
     )
 
     for line, rule_id in cases:
@@ -79,3 +86,44 @@ def test_obvious_placeholders_stay_visible_as_warnings():
     for line in cases:
         finding = _single_finding(line)
         assert finding.classification == "PASS_WITH_WARNINGS"
+
+
+def test_prose_secret_literals_stay_visible_as_warnings():
+    values = (
+        "Chave API Hubcap",
+        "Clé API Hubcap",
+        "API Key Settings",
+        "Save API Key",
+    )
+
+    for value in values:
+        # The patterns intentionally retain their existing 16-character minimum.
+        # Pad shorter prose with whitespace so the scanner, rather than only the
+        # credential-shape helper, exercises every language variant.
+        finding = _single_finding(f'api_key = "{value:<16}"')
+        assert finding.rule_id == "SECRET_GENERIC_API_KEY"
+        assert finding.classification == "PASS_WITH_WARNINGS"
+
+
+def test_any_whitespace_makes_a_matched_value_noncredential_shaped():
+    finding = _single_finding('api_key = "Chave\tAPI\tHubcap"')
+
+    assert finding.classification == "PASS_WITH_WARNINGS"
+
+
+def test_secret_evidence_reports_shape_without_leaking_value():
+    value = "aB3dE5gH7jK9mN1pQ3rS"
+    finding = _single_finding(f'api_key = "{value}"')
+
+    assert f"value_length={len(value)}" in finding.evidence
+    assert "contains_whitespace=no" in finding.evidence
+    assert "entirely_alphabetic=no" in finding.evidence
+
+    forbidden = {value, hashlib.sha256(value.encode()).hexdigest()}
+    forbidden.update(value[index : index + 4] for index in range(len(value) - 3))
+    assert all(fragment not in finding.evidence for fragment in forbidden)
+
+    prose = _single_finding('api_key = "Chave API Hubcap"')
+    assert "value_length=16" in prose.evidence
+    assert "contains_whitespace=yes" in prose.evidence
+    assert "entirely_alphabetic=yes" in prose.evidence
