@@ -4,6 +4,8 @@
   "branch": "feat/structural-blocking",
   "plan_commit": "733afb5",
   "implementation_commit": "1994b7a",
+  "documentation_commit": "af93053",
+  "formatting_commit": "993d2bb",
   "setup": {
     "plan_state": "The plan was already committed as the tip of dev and therefore became the implementation branch point; no duplicate empty plan commit was created.",
     "remote_dev_pull": "Attempted git pull --ff-only origin dev; origin has no dev ref. The clean local dev commit 733afb5 was used as the required base.",
@@ -57,6 +59,7 @@
     ],
     "mutation": "With the central cap removed, the incident negative control failed BLOCK != MANUAL_REVIEW while the archive and ClamAV structural controls passed: 1 failed, 2 passed.",
     "full_suite": "274 passed in 1.16s",
+    "quality_gates": "ruff clean; ruff format clean; 274 passed and 21 subtests passed in 1.30s; no deleted review notes; quality gates passed.",
     "enforcement": "security-policy.yml remains report-only."
   },
   "temporary_logs": [
