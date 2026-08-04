@@ -1,0 +1,88 @@
+{
+  "date": "2026-08-03",
+  "task_objective": "Record the manual-review and warning rule IDs behind each durable release verdict, backfill unchanged old-shape records without moving their audit timestamps, and migrate the existing DeckTools verdict.",
+  "branch": "feat/verdict-rationale",
+  "plan_commit": "bc7eb2b",
+  "implementation_commits": [
+    "aea4d9f",
+    "e75faed"
+  ],
+  "setup": {
+    "baseline": "237 passed.",
+    "remote_dev_pull": "Attempted git pull --ff-only origin dev and recorded the failure at /tmp/decky-plugins-extended-verdict-rationale-pull-error.log; origin has no dev ref, so the clean local dev tip bc7eb2b was used as the required base.",
+    "plan_history": "The plan was already committed as the dev tip, so feat/verdict-rationale inherited the required plan-first commit instead of creating a duplicate empty commit.",
+    "tooling": "The repository has no run.sh. XDG_CACHE_HOME was isolated under /tmp because the sandboxed global uv cache was read-only. The live re-audit reused Trivy 0.73.0 and ClamAV 1.4.5 with packaged signature databases staged under /tmp; no host packages were installed."
+  },
+  "implementation": {
+    "rationale_fields": "Every newly recorded verdict includes sorted, deduplicated review_rule_ids and warning_rule_ids lists. They contain only non-allowlisted rule IDs for MANUAL_REVIEW and PASS_WITH_WARNINGS findings; blocking_rule_ids behavior is unchanged.",
+    "public_data_boundary": "The tracked store receives rule IDs only. Finding evidence and evidence hashes are never copied into verdict records.",
+    "backfill": "When classification, blocking_rule_ids and artifact_sha256 are unchanged, _record_verdict refreshes audit_context_hash and the two rationale fields only when they differ or are missing. The existing audited_at value is preserved. Correct unchanged records still perform no write and remain byte-identical.",
+    "intentional_asymmetry": "A MANUAL_REVIEW record can correctly have an empty blocking_rule_ids list; the populated review_rule_ids list explains that verdict without changing catalog-gate behavior."
+  },
+  "decktools_re_audit": {
+    "repository": "https://github.com/lopesleo/DeckTools",
+    "release": "v0.6.0",
+    "release_id": "v0.6.0@437908781",
+    "artifact_sha256": "5069f38eec9fba1fe80d882a74c104a377a223770ff8dd31cbc5eff734851029",
+    "classification": "MANUAL_REVIEW",
+    "finding_count": 47,
+    "classification_counts": {
+      "MANUAL_REVIEW": 26,
+      "PASS_WITH_WARNINGS": 21,
+      "BLOCK": 0
+    },
+    "review_rule_ids": [
+      "PERSIST_LD_PRELOAD",
+      "PRIVILEGE_MOUNT",
+      "PRIVILEGE_STEAMOS_READONLY",
+      "PRIVILEGE_SUDO",
+      "ROOT_ACCESS",
+      "SENSITIVE_STEAM_AUTH"
+    ],
+    "warning_rule_ids": [
+      "EXEC_SUBPROCESS_POPEN",
+      "EXEC_SUBPROCESS_RUN",
+      "SECRET_GENERIC_API_KEY"
+    ],
+    "scanner_statuses": "trivy=passed, clamav=passed, semgrep=skipped, source-artifact-diff=passed",
+    "timestamp_preservation": "The verdict retained audited_at 2026-08-03T23:59:40.088915Z while gaining the rationale fields and current audit context hash 49b4281cedd919a3e923d8fb2eead7fd.",
+    "reproducibility": "A second fresh audit produced the same MANUAL_REVIEW result and left security-verdicts.json byte-identical at sha256 37cd4778c9354999eb48d51472fd1b6965059a86b962c56ddd4f7e12a4e6079f."
+  },
+  "verification_evidence": {
+    "tdd_red": "4 failed and 8 passed before implementation: rationale fields were absent and old or stale records were not backfilled.",
+    "rationale_and_backfill_targeted": "12 passed in tests/test_verdict_publication.py after implementation.",
+    "safety_control": "1 passed; the serialized verdict excluded the known evidence value, every overlapping four-character substring, and its sha256.",
+    "mutation_control": "Removing review_rule_ids and warning_rule_ids from the unchanged-record refresh branch made the old-shape backfill control fail while determinism and changed-verdict timestamp controls passed: 1 failed, 2 passed. Restoring the branch returned all 3 to passing.",
+    "unchanged_shipping_controls": "35 passed across audit-verdicts, catalog-gate, verdict-publication and audit-cache-invalidation tests.",
+    "migration_assertion": "The committed DeckTools record exactly matches the six sorted review rules and three sorted warning rules from the fresh report, retains an empty blocking_rule_ids list and preserves its prior audited_at value.",
+    "full_suite": "242 passed.",
+    "quality_gates_pre_session_log": "ruff check passed; 34 files already formatted; 242 passed and 21 subtests passed; no deleted review notes."
+  },
+  "test_adjustment_rationale": "Five new tests were added for the planned behavior and safety boundary. No existing expected value was changed or weakened.",
+  "files_modified": [
+    "audit_plugins.py",
+    "tests/test_verdict_publication.py",
+    "security-verdicts.json",
+    "docs/agent_conversations/2026-08-03_verdict-rationale.json"
+  ],
+  "not_verified": [
+    "No classification, catalog output or gate behavior was intentionally changed; the unchanged targeted suites and full regression suite cover that boundary.",
+    "Rule IDs remain identifiers rather than human-readable prose explanations; mapping them to descriptions is outside this plan.",
+    "Only the existing DeckTools verdict was migrated, as required."
+  ],
+  "temporary_logs": [
+    "/tmp/decky-plugins-extended-verdict-rationale-pull-error.log",
+    "/tmp/decky-plugins-extended-verdict-rationale-baseline.log",
+    "/tmp/decky-plugins-extended-verdict-rationale-tests-red.log",
+    "/tmp/decky-plugins-extended-verdict-rationale-core-targeted.log",
+    "/tmp/decky-plugins-extended-verdict-rationale-safety-control.log",
+    "/tmp/decky-plugins-extended-verdict-rationale-backfill-mutation.log",
+    "/tmp/decky-plugins-extended-verdict-rationale-mutation-restored.log",
+    "/tmp/decky-plugins-extended-verdict-rationale-decktools-audit.log",
+    "/tmp/decky-plugins-extended-verdict-rationale-decktools-audit-valid.log",
+    "/tmp/decky-plugins-extended-verdict-rationale-decktools-repro.log",
+    "/tmp/decky-plugins-extended-verdict-rationale-full-pytest.log",
+    "/tmp/decky-plugins-extended-verdict-rationale-quality-gates-pre-session.log"
+  ],
+  "unrelated_improvements_deferred": []
+}
