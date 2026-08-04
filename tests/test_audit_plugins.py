@@ -12,6 +12,7 @@ import json
 import os
 import stat
 import sys
+import tarfile
 import tempfile
 import unittest
 import zipfile
@@ -868,6 +869,15 @@ class TestPolicyLoading(unittest.TestCase):
         finally:
             os.unlink(name)
 
+    def test_repository_policy_enables_semgrep_as_optional(self):
+        policy_path = Path(ap.__file__).with_name("security-policy.yml")
+        policy = ap.load_policy(str(policy_path))
+
+        self.assertEqual(
+            policy["scanners"]["semgrep"],
+            {"enabled": True, "required": False},
+        )
+
 
 # ---------------------------------------------------------------------------
 # Report generation
@@ -1039,11 +1049,36 @@ class TestSemgrepSeverityMapping(unittest.TestCase):
         ):
             return ap.run_semgrep("/tmp/fake", self._policy())
 
+    def test_uses_vendored_rules_without_registry_or_telemetry(self):
+        calls = []
+
+        def fake_run(args, name, timeout=120):
+            calls.append((args, name, timeout))
+            return True, json.dumps({"results": []}), ""
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/semgrep"),
+            patch.object(ap, "_run_scanner", side_effect=fake_run),
+        ):
+            status, findings = ap.run_semgrep("/tmp/fake", self._policy())
+
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(findings, [])
+        args = calls[0][0]
+        self.assertNotIn("auto", args)
+        self.assertIn("--metrics=off", args)
+        self.assertIn("--disable-version-check", args)
+        config_path = Path(args[args.index("--config") + 1])
+        self.assertEqual(config_path.name, "semgrep-rules.yml")
+        self.assertTrue(config_path.is_file())
+
     def test_error_maps_to_high_manual_review(self):
         status, findings = self._run_with_severity("ERROR")
         self.assertEqual(status.status, "found_issue")
         self.assertEqual(findings[0].severity, "high")
         self.assertEqual(findings[0].classification, "MANUAL_REVIEW")
+        classification, _score = ap.classify_findings(findings)
+        self.assertEqual(classification, "MANUAL_REVIEW")
 
     def test_warning_maps_to_medium_manual_review(self):
         _, findings = self._run_with_severity("WARNING")
@@ -1680,7 +1715,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 patch.object(ap, "get_repo_file_raw", return_value=None),
                 patch.object(ap, "download_zip", side_effect=fake_download),
                 patch.object(ap, "run_clamav", return_value=_ok_clamav),
-                patch.object(ap, "run_trivy", return_value=_ok_trivy),
+                patch.object(ap, "run_trivy", return_value=_ok_trivy) as mocked_trivy,
                 patch.object(
                     ap,
                     "run_semgrep",
@@ -1708,6 +1743,10 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 )
             self.assertNotEqual(report.final_classification, "AUDIT_ERROR")
             self.assertEqual(report.plugin_name, "MyPlugin")
+            self.assertEqual(
+                mocked_trivy.call_args.kwargs["source_repo"],
+                ("owner", "my-plugin", "commit123"),
+            )
         finally:
             os.unlink(tf_path)
 
@@ -2598,7 +2637,9 @@ class TestTrivyStructuredFindings(unittest.TestCase):
         return p
 
     def _trivy_json(self, vulns: list) -> str:
-        return json.dumps({"Results": [{"Vulnerabilities": vulns}]})
+        return json.dumps(
+            {"Results": [{"Target": "package-lock.json", "Vulnerabilities": vulns}]}
+        )
 
     def _vuln(self, sev: str, vuln_id: str = "CVE-2024-0001") -> dict:
         return {
@@ -2656,6 +2697,121 @@ class TestTrivyStructuredFindings(unittest.TestCase):
         status, findings = self._run(stdout, ok=False)
         self.assertEqual(status.status, "found_issue")
         self.assertTrue(len(findings) > 0)
+
+    def test_scans_artifact_and_exact_commit_source_lockfile(self):
+        scanned_paths = []
+
+        def fake_fetch(owner, repo, commit_sha, destination):
+            self.assertEqual((owner, repo, commit_sha), ("owner", "plugin", "abc123"))
+            source_root = Path(destination) / "owner-plugin-abc123"
+            source_root.mkdir()
+            (source_root / "package-lock.json").write_text(
+                json.dumps(
+                    {
+                        "name": "fixture",
+                        "lockfileVersion": 3,
+                        "packages": {
+                            "": {"name": "fixture"},
+                            "node_modules/lodash": {"version": "4.17.20"},
+                        },
+                    }
+                )
+            )
+            return str(source_root)
+
+        def fake_scanner(args, _name, timeout=120):
+            scan_path = Path(args[-1])
+            scanned_paths.append(scan_path)
+            if any(scan_path.rglob("package-lock.json")):
+                return True, self._trivy_json([self._vuln("high")]), ""
+            return True, self._trivy_json([]), ""
+
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            with (
+                patch("shutil.which", return_value="/usr/bin/trivy"),
+                patch.object(ap, "_fetch_source_tree", side_effect=fake_fetch),
+                patch.object(ap, "_run_scanner", side_effect=fake_scanner),
+            ):
+                status, findings = ap.run_trivy(
+                    artifact_dir,
+                    self._policy(),
+                    source_repo=("owner", "plugin", "abc123"),
+                )
+
+        self.assertEqual(len(scanned_paths), 2)
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(len(findings), 1)
+        self.assertTrue(findings[0].path.startswith("source:"))
+        self.assertIn("source", status.detail)
+        self.assertIn("artifact", status.detail)
+
+    def test_failed_source_fetch_is_not_reported_as_passed(self):
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            with (
+                patch("shutil.which", return_value="/usr/bin/trivy"),
+                patch.object(
+                    ap,
+                    "_fetch_source_tree",
+                    side_effect=RuntimeError("source fetch failed"),
+                ),
+                patch.object(
+                    ap,
+                    "_run_scanner",
+                    return_value=(True, self._trivy_json([]), ""),
+                ) as scanner,
+            ):
+                status, findings = ap.run_trivy(
+                    artifact_dir,
+                    self._policy(),
+                    source_repo=("owner", "plugin", "abc123"),
+                )
+
+        self.assertEqual(status.status, "failed")
+        self.assertEqual(findings, [])
+        self.assertIn("source fetch failed", status.detail)
+        scanner.assert_called_once()
+
+
+class TestSourceTreeFetch(unittest.TestCase):
+    def test_source_archive_is_materialized_without_executing_hooks(self):
+        with tempfile.TemporaryDirectory() as td:
+            sentinel = Path(td) / "executed"
+            archive_path = Path(td) / "source.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as tf:
+                files = {
+                    "owner-plugin-abc123/package.json": json.dumps(
+                        {
+                            "scripts": {
+                                "postinstall": f"touch {sentinel}",
+                            }
+                        }
+                    ),
+                    "owner-plugin-abc123/setup.py": (
+                        f"from pathlib import Path\nPath({str(sentinel)!r}).touch()\n"
+                    ),
+                }
+                for name, content in files.items():
+                    raw = content.encode()
+                    info = tarfile.TarInfo(name)
+                    info.size = len(raw)
+                    tf.addfile(info, io.BytesIO(raw))
+
+            archive_bytes = archive_path.read_bytes()
+
+            def fake_download(_owner, _repo, _commit_sha, destination):
+                Path(destination).write_bytes(archive_bytes)
+
+            destination = Path(td) / "source"
+            with patch.object(
+                ap, "_download_source_archive", side_effect=fake_download
+            ):
+                source_root = Path(
+                    ap._fetch_source_tree("owner", "plugin", "abc123", destination)
+                )
+
+            self.assertTrue((source_root / "package.json").is_file())
+            self.assertTrue((source_root / "setup.py").is_file())
+            self.assertFalse(sentinel.exists())
 
 
 # ---------------------------------------------------------------------------

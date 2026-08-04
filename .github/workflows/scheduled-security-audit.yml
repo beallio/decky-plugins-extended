@@ -57,7 +57,7 @@ jobs:
         run: |
           # Incorporate policy version, implementation, and allowlist into the
           # cache key so the cache is invalidated when any of them change.
-          POLICY_HASH=$(sha256sum security-policy.yml security-allowlist.yml audit_plugins.py plugin_release_utils.py pyproject.toml | sha256sum | cut -c1-16)
+          POLICY_HASH=$(sha256sum security-policy.yml security-allowlist.yml semgrep-rules.yml audit_plugins.py plugin_release_utils.py pyproject.toml | sha256sum | cut -c1-16)
           echo "restore_key=audit-cache-v1-${POLICY_HASH}" >> "$GITHUB_OUTPUT"
           echo "save_key=audit-cache-v1-${POLICY_HASH}-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
 
@@ -82,6 +82,11 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/trivy.list
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends trivy || echo "::warning::trivy install failed"
+          uv tool install --python 3.12 --with setuptools==70.3.0 semgrep==1.132.0
+          SEMGREP_BIN_DIR=$(uv tool dir --bin)
+          echo "$SEMGREP_BIN_DIR" >> "$GITHUB_PATH"
+          export PATH="$SEMGREP_BIN_DIR:$PATH"
+          semgrep --version --disable-version-check
           sudo apt-get install -y --no-install-recommends clamav || {
             echo "::error::clamav install failed"
             exit 1

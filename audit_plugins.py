@@ -31,6 +31,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unicodedata
@@ -65,6 +66,7 @@ DOWNLOAD_TIMEOUT = 120  # seconds for ZIP downloads
 MAX_RETRIES = 3
 EVIDENCE_MAX_LEN = 256
 SECRET_REDACT = "[REDACTED]"
+SEMGREP_RULES_FILE = str(Path(__file__).with_name("semgrep-rules.yml"))
 
 log = logging.getLogger("audit_plugins")
 
@@ -277,7 +279,7 @@ def _default_policy() -> dict[str, Any]:
         "scanners": {
             "clamav": {"enabled": True, "required": True},
             "trivy": {"enabled": True, "required": True},
-            "semgrep": {"enabled": False, "required": False},
+            "semgrep": {"enabled": True, "required": False},
             "osv_scanner": {"enabled": False, "required": False},
             "source_artifact_diff": {"enabled": True, "required": True},
         },
@@ -1945,9 +1947,12 @@ def _severity_rank(sev: str) -> int:
 
 
 def run_trivy(
-    extract_dir: str, policy: dict[str, Any]
+    extract_dir: str,
+    policy: dict[str, Any],
+    *,
+    source_repo: Optional[tuple[str, str, str]] = None,
 ) -> tuple[ScannerStatus, list[Finding]]:
-    """Run Trivy filesystem scan. Returns (ScannerStatus, findings)."""
+    """Scan the release artifact and exact-tag source tree with Trivy."""
     if not _scanner_enabled(policy, "trivy"):
         return ScannerStatus(name="trivy", status="skipped"), []
 
@@ -1961,83 +1966,106 @@ def run_trivy(
             [],
         )
 
-    # trivy exits 0 for no issues, 1 when vulnerabilities are found (with --exit-code 1),
-    # 2 for internal errors.  Without --exit-code, it always exits 0 on success.
-    # We capture stdout regardless of exit code and parse; only treat a non-zero
-    # exit with *no* parseable JSON as a failure.
-    ok, stdout, stderr = _run_scanner(
-        ["trivy", "fs", "--format", "json", "--quiet", extract_dir],
-        "trivy",
-    )
-
-    # Try to parse JSON even when exit code is non-zero (findings exit).
-    if not stdout.strip():
-        detail = stderr[:500] if stderr else "no output"
-        return ScannerStatus(name="trivy", status="failed", detail=detail), []
-
-    try:
-        data = json.loads(stdout)
-    except (json.JSONDecodeError, ValueError) as exc:
-        return ScannerStatus(
-            name="trivy", status="failed", detail=f"JSON parse error: {exc}"
-        ), []
-
     vuln_cfg = policy.get("vulnerabilities", {})
     block_sev = vuln_cfg.get("block_severity", "critical")
     review_sev = vuln_cfg.get("review_severity", "high")
     block_rank = _severity_rank(block_sev)
     review_rank = _severity_rank(review_sev)
 
+    scan_targets = [("artifact", extract_dir)]
+    source_temp: Optional[tempfile.TemporaryDirectory[str]] = None
+    errors: list[str] = []
+    scope_counts: dict[str, int] = {}
     findings: list[Finding] = []
-    for result in data.get("Results") or []:
-        for vuln in result.get("Vulnerabilities") or []:
-            vuln_id = vuln.get("VulnerabilityID", "UNKNOWN")
-            pkg_name = vuln.get("PkgName", "unknown")
-            installed = vuln.get("InstalledVersion", "")
-            fixed = vuln.get("FixedVersion", "")
-            raw_sev = (vuln.get("Severity") or "UNKNOWN").lower()
-            # Normalise Trivy severity strings.
-            sev = raw_sev if raw_sev in SEVERITY_SCORE else "low"
-            # Advisory URL: prefer primary URL.
-            refs = vuln.get("References") or []
-            advisory_url = refs[0] if refs else ""
-            # Short title (length-limited).
-            title = _truncate(
-                vuln.get("Title") or vuln.get("Description") or vuln_id,
-                120,
-            )
-            rank = _severity_rank(sev)
-            if rank >= block_rank:
-                classification = "BLOCK"
-            elif rank >= review_rank:
-                classification = "MANUAL_REVIEW"
-            else:
-                classification = "PASS_WITH_WARNINGS"
 
-            fixed_str = f" (fix: {fixed})" if fixed else ""
-            findings.append(
-                Finding(
-                    rule_id=f"TRIVY_{vuln_id.replace('-', '_').upper()}",
-                    severity=sev,
-                    classification=classification,
-                    path=pkg_name,
-                    line=0,
-                    message=(
-                        f"{vuln_id} in {pkg_name}@{installed}{fixed_str}: {title}"
-                        + (f" — {advisory_url}" if advisory_url else "")
-                    ),
-                    evidence=_truncate(
-                        f"{vuln_id} {pkg_name}@{installed}" + fixed_str,
-                        EVIDENCE_MAX_LEN,
-                    ),
-                    scanner="trivy",
+    try:
+        if source_repo is not None:
+            owner, repo, commit_sha = source_repo
+            source_temp = tempfile.TemporaryDirectory(prefix="decky-source-")
+            try:
+                source_root = _fetch_source_tree(
+                    owner, repo, commit_sha, source_temp.name
                 )
-            )
+                scan_targets.append(("source", source_root))
+            except Exception as exc:
+                errors.append(f"source fetch failed: {exc}")
 
+        for scope, scan_dir in scan_targets:
+            # Trivy exits 0 on a completed scan because no --exit-code override is
+            # used. Parse any JSON it emits even if the process reports non-zero so
+            # useful findings survive alongside an infrastructure error.
+            _ok, stdout, stderr = _run_scanner(
+                ["trivy", "fs", "--format", "json", "--quiet", scan_dir],
+                "trivy",
+            )
+            if not stdout.strip():
+                detail = stderr[:500] if stderr else "no output"
+                errors.append(f"{scope} scan failed: {detail}")
+                continue
+
+            try:
+                data = json.loads(stdout)
+            except (json.JSONDecodeError, ValueError) as exc:
+                errors.append(f"{scope} scan JSON parse error: {exc}")
+                continue
+
+            before = len(findings)
+            for result in data.get("Results") or []:
+                target = str(result.get("Target") or "dependency manifest")
+                for vuln in result.get("Vulnerabilities") or []:
+                    vuln_id = vuln.get("VulnerabilityID", "UNKNOWN")
+                    pkg_name = vuln.get("PkgName", "unknown")
+                    installed = vuln.get("InstalledVersion", "")
+                    fixed = vuln.get("FixedVersion", "")
+                    raw_sev = (vuln.get("Severity") or "UNKNOWN").lower()
+                    sev = raw_sev if raw_sev in SEVERITY_SCORE else "low"
+                    refs = vuln.get("References") or []
+                    advisory_url = refs[0] if refs else ""
+                    title = _truncate(
+                        vuln.get("Title") or vuln.get("Description") or vuln_id,
+                        120,
+                    )
+                    rank = _severity_rank(sev)
+                    if rank >= block_rank:
+                        classification = "BLOCK"
+                    elif rank >= review_rank:
+                        classification = "MANUAL_REVIEW"
+                    else:
+                        classification = "PASS_WITH_WARNINGS"
+
+                    fixed_str = f" (fix: {fixed})" if fixed else ""
+                    findings.append(
+                        Finding(
+                            rule_id=f"TRIVY_{vuln_id.replace('-', '_').upper()}",
+                            severity=sev,
+                            classification=classification,
+                            path=f"{scope}:{target}",
+                            line=0,
+                            message=(
+                                f"[{scope}] {vuln_id} in {pkg_name}@{installed}"
+                                f"{fixed_str}: {title}"
+                                + (f" — {advisory_url}" if advisory_url else "")
+                            ),
+                            evidence=_truncate(
+                                f"{vuln_id} {pkg_name}@{installed}" + fixed_str,
+                                EVIDENCE_MAX_LEN,
+                            ),
+                            scanner="trivy",
+                        )
+                    )
+            scope_counts[scope] = len(findings) - before
+    finally:
+        if source_temp is not None:
+            source_temp.cleanup()
+
+    detail_parts = [
+        f"{scope} scanned ({count} findings)" for scope, count in scope_counts.items()
+    ]
+    detail_parts.extend(errors)
+    detail = "; ".join(detail_parts) or None
+    if errors:
+        return ScannerStatus(name="trivy", status="failed", detail=detail), findings
     status = "found_issue" if findings else "passed"
-    detail = (
-        f"{len(findings)} vulnerability/vulnerabilities found" if findings else None
-    )
     return ScannerStatus(name="trivy", status=status, detail=detail), findings
 
 
@@ -2122,9 +2150,11 @@ def run_semgrep(
         [
             "semgrep",
             "--config",
-            "auto",
+            SEMGREP_RULES_FILE,
             "--json",
             "--no-git-ignore",
+            "--metrics=off",
+            "--disable-version-check",
             extract_dir,
         ],
         "semgrep",
@@ -3274,6 +3304,85 @@ def download_zip(url: str, dest_path: str) -> str:
     return sha256.hexdigest()
 
 
+def _download_source_archive(
+    owner: str, repo: str, commit_sha: str, dest_path: str | Path
+) -> None:
+    """Download the exact commit tarball without invoking repository code."""
+    url = f"https://api.github.com/repos/{owner}/{repo}/tarball/{commit_sha}"
+    with _gh_session.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT) as resp:
+        resp.raise_for_status()
+        with open(dest_path, "wb") as archive_file:
+            for chunk in resp.iter_content(65536):
+                archive_file.write(chunk)
+
+
+def _fetch_source_tree(
+    owner: str, repo: str, commit_sha: str, destination: str | Path
+) -> str:
+    """Materialize an exact GitHub source archive without executing its contents."""
+    destination_path = Path(destination)
+    destination_path.mkdir(parents=True, exist_ok=True)
+    archive_path = destination_path / "source.tar.gz"
+    extracted_path = destination_path / "extracted"
+    extracted_path.mkdir()
+    _download_source_archive(owner, repo, commit_sha, archive_path)
+
+    limits = _default_policy()["archive"]
+    file_count = 0
+    total_size = 0
+    top_levels: set[str] = set()
+    seen_paths: set[str] = set()
+
+    with tarfile.open(archive_path, "r:*") as archive:
+        for member in archive:
+            safe, reason = _is_safe_member_path(member.name)
+            if not safe:
+                raise ValueError(
+                    f"Unsafe source archive member {member.name!r}: {reason}"
+                )
+            relative = PurePosixPath(member.name)
+            if not relative.parts:
+                continue
+            top_levels.add(relative.parts[0])
+            target = extracted_path.joinpath(*relative.parts)
+
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                # Git symlinks and other special entries are unnecessary for
+                # dependency resolution and are never materialized.
+                continue
+
+            file_count += 1
+            total_size += member.size
+            if file_count > limits["max_files"]:
+                raise ValueError("Source archive exceeds maximum file count")
+            if member.size > limits["max_single_file_bytes"]:
+                raise ValueError(f"Source archive member too large: {member.name}")
+            if total_size > limits["max_uncompressed_bytes"]:
+                raise ValueError("Source archive exceeds maximum uncompressed size")
+            relative_key = relative.as_posix()
+            if relative_key in seen_paths:
+                raise ValueError(f"Duplicate source archive member: {member.name}")
+            seen_paths.add(relative_key)
+
+            source = archive.extractfile(member)
+            if source is None:
+                raise ValueError(f"Could not read source archive member: {member.name}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with source, open(target, "wb") as output:
+                shutil.copyfileobj(source, output)
+
+    if file_count == 0:
+        raise ValueError("Source archive contains no regular files")
+    if len(top_levels) == 1:
+        source_root = extracted_path / next(iter(top_levels))
+        if source_root.is_dir():
+            return str(source_root)
+    return str(extracted_path)
+
+
 def _find_metadata_in_extracted(
     extract_dir: str, meta_file: str
 ) -> tuple[Optional[bytes], Optional[str]]:
@@ -3652,7 +3761,11 @@ def audit_release(
 
         # --- External scanners ---
         if zip_stats.safe and os.path.isdir(extract_dir):
-            trivy_status, trivy_findings = run_trivy(extract_dir, policy)
+            trivy_status, trivy_findings = run_trivy(
+                extract_dir,
+                policy,
+                source_repo=(owner, repo, resolved_tag_commit_sha),
+            )
             report.scanner_statuses.append(trivy_status)
             report.findings.extend(trivy_findings)
 
