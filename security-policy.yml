@@ -30,6 +30,24 @@ rule_classifications:
   # that integrate with the operating system rather than only the UI.
   ROOT_ACCESS: PASS_WITH_WARNINGS
 
+# Only deterministic structural facts may remove a release from the catalog.
+# Overrides above run first: they may demote these rules, but rules outside this
+# list are capped at MANUAL_REVIEW even if their detector labels them BLOCK.
+# Duplicate normalised paths remain review-only because a legitimate release in
+# the audited corpus contains one. A corrupt archive is an AUDIT_ERROR because
+# the audit could not complete, not evidence that the artifact is malicious.
+blockable_rules:
+  - MALWARE
+  - ARCHIVE_TRAVERSAL
+  - ARCHIVE_ESCAPE_SYMLINK
+  - ARCHIVE_BOMB_RATIO
+  - ARCHIVE_BOMB_SIZE
+  - ARCHIVE_SETUID_FILE
+  - ARCHIVE_DEVICE_FILE
+  - ARCHIVE_NAMED_PIPE
+  - ARCHIVE_FILE_COUNT_EXCEEDED
+  - ARCHIVE_SINGLE_FILE_TOO_LARGE
+
 archive:
   # Maximum number of files allowed in a single release ZIP.
   max_files: 10000
