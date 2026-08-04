@@ -1,1 +1,11 @@
-{}
+{
+  "https://github.com/lopesleo/DeckTools": {
+    "v0.6.0@437908781": {
+      "artifact_sha256": "5069f38eec9fba1fe80d882a74c104a377a223770ff8dd31cbc5eff734851029",
+      "audit_context_hash": "2b0aaa28cccd45b4ae83037bf00ed202",
+      "audited_at": "2026-08-03T23:59:40.088915Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW"
+    }
+  }
+}
