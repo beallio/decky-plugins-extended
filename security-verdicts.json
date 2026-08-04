@@ -2,10 +2,23 @@
   "https://github.com/lopesleo/DeckTools": {
     "v0.6.0@437908781": {
       "artifact_sha256": "5069f38eec9fba1fe80d882a74c104a377a223770ff8dd31cbc5eff734851029",
-      "audit_context_hash": "2b0aaa28cccd45b4ae83037bf00ed202",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
       "audited_at": "2026-08-03T23:59:40.088915Z",
       "blocking_rule_ids": [],
-      "classification": "MANUAL_REVIEW"
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "PERSIST_LD_PRELOAD",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_STEAMOS_READONLY",
+        "PRIVILEGE_SUDO",
+        "ROOT_ACCESS",
+        "SENSITIVE_STEAM_AUTH"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_POPEN",
+        "EXEC_SUBPROCESS_RUN",
+        "SECRET_GENERIC_API_KEY"
+      ]
     }
   }
 }
