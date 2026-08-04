@@ -287,6 +287,15 @@
       "classification": "PASS",
       "review_rule_ids": [],
       "warning_rule_ids": []
+    },
+    "v2.0.0@501152302": {
+      "artifact_sha256": "32e2931f9ca8083c1605f04b4ed089b0bf210f79db236a7fd34f02c519e902d9",
+      "audit_context_hash": "49b4281cedd919a3e923d8fb2eead7fd",
+      "audited_at": "2026-08-04T13:58:26.822198Z",
+      "blocking_rule_ids": [],
+      "classification": "PASS",
+      "review_rule_ids": [],
+      "warning_rule_ids": []
     }
   },
   "https://github.com/Teppichseite/RetroDECKY": {
