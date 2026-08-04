@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("GITHUB_TOKEN", "test-token")
@@ -174,3 +175,10 @@ def test_generator_uses_policy_mode_for_published_audit(tmp_path):
     html = (tmp_path / "public/audit.html").read_text(encoding="utf-8")
     assert payload["enforcement_mode"] == "enforce"
     assert "Releases with a BLOCK verdict are excluded" in html
+
+
+def test_landing_page_links_to_audit_page():
+    repository_root = Path(generate_json.__file__).parent
+    landing_page = (repository_root / "static/index.html").read_text(encoding="utf-8")
+
+    assert 'href="audit.html"' in landing_page
