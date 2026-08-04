@@ -24,6 +24,7 @@ import datetime
 import hashlib
 import json
 import logging
+import math
 import os
 import posixpath
 import re
@@ -91,6 +92,19 @@ RULE_CLASSIFICATION_VALUES = {
     "PASS_WITH_WARNINGS",
     "PASS",
 }
+
+DEFAULT_BLOCKABLE_RULES = (
+    "MALWARE",
+    "ARCHIVE_TRAVERSAL",
+    "ARCHIVE_ESCAPE_SYMLINK",
+    "ARCHIVE_BOMB_RATIO",
+    "ARCHIVE_BOMB_SIZE",
+    "ARCHIVE_SETUID_FILE",
+    "ARCHIVE_DEVICE_FILE",
+    "ARCHIVE_NAMED_PIPE",
+    "ARCHIVE_FILE_COUNT_EXCEEDED",
+    "ARCHIVE_SINGLE_FILE_TOO_LARGE",
+)
 
 _NON_TABLE_RULE_IDS = {
     "ARCHIVE_BOMB_RATIO",
@@ -259,6 +273,14 @@ class VerdictResult:
     blocking_rule_ids: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ReviewQueueEntry:
+    repository: str
+    release_id: str
+    score: float
+    rarest_rules: tuple[tuple[str, int], ...]
+
+
 # ---------------------------------------------------------------------------
 # Configuration loading
 # ---------------------------------------------------------------------------
@@ -295,6 +317,7 @@ def load_policy(path: str = DEFAULT_POLICY_FILE) -> dict[str, Any]:
     policy = _default_policy()
     _deep_merge(policy, data)
     _validate_rule_classifications(policy, path)
+    _validate_blockable_rules(policy, path)
     return policy
 
 
@@ -303,6 +326,7 @@ def _default_policy() -> dict[str, Any]:
         "version": "1",
         "enforcement": {"mode": "report-only"},
         "rule_classifications": {},
+        "blockable_rules": list(DEFAULT_BLOCKABLE_RULES),
         "archive": {
             "max_files": 10000,
             "max_uncompressed_bytes": 1073741824,
@@ -361,6 +385,22 @@ def _validate_rule_classifications(policy: dict[str, Any], path: str) -> None:
         raise ValueError(
             f"Invalid rule classification override(s) in {path}: {rendered}. "
             f"Allowed values: {allowed}."
+        )
+
+
+def _validate_blockable_rules(policy: dict[str, Any], path: str) -> None:
+    blockable_rules = policy.get("blockable_rules", [])
+    if not isinstance(blockable_rules, list) or not all(
+        isinstance(rule_id, str) for rule_id in blockable_rules
+    ):
+        raise ValueError(f"blockable_rules must be a list of rule IDs in {path}.")
+
+    known_rule_ids = _known_policy_rule_ids()
+    unknown_rule_ids = sorted(set(blockable_rules) - known_rule_ids)
+    if unknown_rule_ids:
+        raise ValueError(
+            f"Unknown rule ID(s) in blockable_rules for {path}: "
+            + ", ".join(unknown_rule_ids)
         )
 
 
@@ -620,16 +660,27 @@ def classify_findings(
     return "PASS", score
 
 
-def apply_rule_classification_overrides(
+def apply_rule_classification_policy(
     findings: list[Finding], policy: dict[str, Any]
 ) -> None:
-    """Apply policy weights to constructed findings without changing detection."""
+    """Apply overrides, then cap non-structural findings at manual review."""
     _validate_rule_classifications(policy, "in-memory policy")
+    _validate_blockable_rules(policy, "in-memory policy")
     overrides = policy.get("rule_classifications", {})
+    blockable_rules = set(policy.get("blockable_rules", []))
     for finding in findings:
         classification = overrides.get(finding.rule_id)
         if classification is not None:
             finding.classification = classification
+        if finding.classification == "BLOCK" and finding.rule_id not in blockable_rules:
+            finding.classification = "MANUAL_REVIEW"
+
+
+def apply_rule_classification_overrides(
+    findings: list[Finding], policy: dict[str, Any]
+) -> None:
+    """Backward-compatible name for applying all rule-classification policy."""
+    apply_rule_classification_policy(findings, policy)
 
 
 # ---------------------------------------------------------------------------
@@ -3909,8 +3960,9 @@ def audit_release(
                     )
                 )
 
-        # Policy changes escalation weight only: findings and rule IDs remain intact.
-        apply_rule_classification_overrides(report.findings, policy)
+        # Overrides run first; the structural ceiling then prevents behavioural
+        # rules from escalating above MANUAL_REVIEW. Findings remain intact.
+        apply_rule_classification_policy(report.findings, policy)
 
         # --- Apply allowlist ---
         report.findings, report.allowlist_decisions = apply_allowlist(
@@ -3965,8 +4017,62 @@ def _run_summary_stats(
     return classifications, top_rules
 
 
-def generate_run_summary(reports: list[AuditReport]) -> str:
-    """Return aggregate counts and top rule firing rates without finding evidence."""
+def rank_review_queue(
+    verdicts: dict[str, dict[str, dict[str, Any]]],
+) -> list[ReviewQueueEntry]:
+    """Rank releases by inverse corpus rule frequency without changing verdicts."""
+    releases: list[tuple[str, str, set[str]]] = []
+    for repository, repository_verdicts in sorted(verdicts.items()):
+        for release_id, record in sorted(repository_verdicts.items()):
+            rule_ids: set[str] = set()
+            for field_name in (
+                "blocking_rule_ids",
+                "review_rule_ids",
+                "warning_rule_ids",
+            ):
+                values = record.get(field_name, [])
+                if isinstance(values, list):
+                    rule_ids.update(
+                        value for value in values if isinstance(value, str) and value
+                    )
+            releases.append((repository, release_id, rule_ids))
+
+    total_releases = len(releases)
+    if not total_releases:
+        return []
+
+    frequencies: Counter[str] = Counter()
+    for _repository, _release_id, rule_ids in releases:
+        frequencies.update(rule_ids)
+
+    ranked = [
+        ReviewQueueEntry(
+            repository=repository,
+            release_id=release_id,
+            score=math.fsum(
+                math.log(total_releases / frequencies[rule_id])
+                for rule_id in sorted(rule_ids)
+            ),
+            rarest_rules=tuple(
+                sorted(
+                    ((rule_id, frequencies[rule_id]) for rule_id in rule_ids),
+                    key=lambda item: (item[1], item[0]),
+                )[:3]
+            ),
+        )
+        for repository, release_id, rule_ids in releases
+    ]
+    return sorted(
+        ranked,
+        key=lambda entry: (-entry.score, entry.repository, entry.release_id),
+    )
+
+
+def generate_run_summary(
+    reports: list[AuditReport],
+    verdicts: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
+) -> str:
+    """Return aggregate tallies and a reporting-only rarity-ranked review queue."""
     classifications, top_rules = _run_summary_stats(reports)
     lines = [
         "## Audit Run Summary",
@@ -3992,6 +4098,36 @@ def generate_run_summary(reports: list[AuditReport]) -> str:
         lines.append(f"| {rule_id} | {count} | {rate:.2f}% |")
     if not top_rules:
         lines.append("| None | 0 | 0.00% |")
+
+    verdict_store = load_verdicts() if verdicts is None else verdicts
+    ranked_releases = rank_review_queue(verdict_store)
+    total_ranked = len(ranked_releases)
+    lines.extend(
+        [
+            "",
+            "### Review queue by rarity (reporting only)",
+            "",
+            (
+                "Rarity scores prioritize review; they never alter a finding or "
+                "release classification."
+            ),
+            "",
+            "| Rank | Release | Score | Rarest contributing rules |",
+            "|---:|---|---:|---|",
+        ]
+    )
+    for rank, entry in enumerate(ranked_releases[:10], start=1):
+        repository = entry.repository.removeprefix("https://github.com/")
+        rarest = ", ".join(
+            f"{rule_id} ({frequency}/{total_ranked})"
+            for rule_id, frequency in entry.rarest_rules
+        )
+        lines.append(
+            f"| {rank} | `{repository}` `{entry.release_id}` | "
+            f"{entry.score:.1f} | {rarest or 'None'} |"
+        )
+    if not ranked_releases:
+        lines.append("| - | None | 0.0 | None |")
 
     return "\n".join(lines) + "\n"
 

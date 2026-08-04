@@ -966,7 +966,7 @@ class TestRuleClassificationOverrides(unittest.TestCase):
         self.assertEqual(findings[0].classification, "MANUAL_REVIEW")
         self.assertEqual(ap.classify_findings(findings)[0], "MANUAL_REVIEW")
 
-    def test_block_rules_are_unchanged(self):
+    def test_non_structural_block_rules_are_capped_at_manual_review(self):
         block_rule_ids = {
             "SHELL_CURL_PIPE",
             "DESTRUCTIVE_RM_RF",
@@ -994,8 +994,10 @@ class TestRuleClassificationOverrides(unittest.TestCase):
             self._policy({"PRIVILEGE_SUDO": "PASS_WITH_WARNINGS"}),
         )
 
-        self.assertTrue(all(f.classification == "BLOCK" for f in findings))
-        self.assertEqual(ap.classify_findings(findings)[0], "BLOCK")
+        self.assertTrue(
+            all(f.classification == "MANUAL_REVIEW" for f in findings)
+        )
+        self.assertEqual(ap.classify_findings(findings)[0], "MANUAL_REVIEW")
 
 
 # ---------------------------------------------------------------------------
@@ -1828,7 +1830,13 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             if finding.rule_id == "SENSITIVE_ENV_HARVEST"
         )
         self.assertEqual(env_finding.classification, "PASS_WITH_WARNINGS")
-        self.assertEqual(report.final_classification, "BLOCK")
+        secret_finding = next(
+            finding
+            for finding in report.findings
+            if finding.rule_id == "SECRET_GITHUB_TOKEN"
+        )
+        self.assertEqual(secret_finding.classification, "MANUAL_REVIEW")
+        self.assertEqual(report.final_classification, "MANUAL_REVIEW")
         self.assertEqual(report.plugin_name, "Syncthing")
         self.assertEqual(
             report.archive_stats.static_scan_skipped_extensions,
