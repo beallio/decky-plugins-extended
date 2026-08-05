@@ -385,6 +385,26 @@
       ]
     }
   },
+  "https://github.com/beallio/SDH-PlayTime-beallio-remix": {
+    "v3.3.0+beallio.1@502032919": {
+      "artifact_sha256": "2f144da998dce021f9b1a8240b54c7c31dda3d35760055a1f2c35dba64eae221",
+      "audit_context_hash": "8b67fcb6c19c44e35b260fd9e039962f",
+      "audited_at": "2026-08-05T08:30:44.153238Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "EXEC_EXEC",
+        "PRIVILEGE_SYSTEMCTL_SHELL"
+      ],
+      "warning_rule_ids": [
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL",
+        "TRIVY_CVE_2026_31808"
+      ]
+    }
+  },
   "https://github.com/chillibeaver/DeckSMB": {
     "1.0.1@388387610": {
       "artifact_sha256": "a613638936d024852b069a448a6172b6767b1b1a684c29b8160b7d017a548211",
