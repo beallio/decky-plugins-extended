@@ -1,0 +1,67 @@
+{
+  "date": "2026-08-04",
+  "task_objective": "Re-derive stored BLOCK verdicts from current blockable rule IDs at both catalog trust points, surface policy disagreements, and publish effective classifications without enabling enforcement.",
+  "branch": "feat/verdict-rederivation",
+  "plan_commit": "ebd4699",
+  "implementation_commit": "79f5cfa",
+  "setup": {
+    "plan_state": "The plan was already committed as the tip of dev and therefore became the implementation branch point; no duplicate empty plan commit was created.",
+    "remote_dev_pull": "Attempted git pull --ff-only origin dev; origin has no dev ref. The clean local dev commit ebd4699 was used as the required base.",
+    "baseline": "282 passed in 1.16s.",
+    "pre_change_danger": "Against the committed 42-release store, the configured-release gate treated all eight stored BLOCK records as effective BLOCK. Under a forced in-memory enforce posture, those eight releases would be excluded. The TDD generator fixture reproduced their removal from both catalogs."
+  },
+  "policy_decisions": {
+    "demotion_only": "Only stored BLOCK records are re-derived. MANUAL_REVIEW with a currently blockable MALWARE rule remains MANUAL_REVIEW, so stale data can never be promoted into an exclusion.",
+    "at_least_one_rule": "A stored BLOCK remains effective BLOCK when at least one recorded blocking_rule_id is in the current blockable_rules, even if other recorded IDs are no longer blockable.",
+    "underivable_block": "A stored BLOCK with empty or missing blocking_rule_ids is re-derived as MANUAL_REVIEW and logged. This intentionally fails open because the current auditor cannot justify excluding that release.",
+    "stored_state": "VerdictResult.audit_classification remains the stored value. Public audit records use classification for the effective value and stored_classification for the durable value, making policy disagreement explicit without rewriting security-verdicts.json.",
+    "test_expectation_changes": "Legacy catalog-gate fixtures used STATIC_EVAL while asserting a genuinely blocked release. They now use ARCHIVE_TRAVERSAL and supply blockable_rules because the plan explicitly makes non-structural stored BLOCK verdicts non-blocking; the exclusion expectations themselves were preserved.",
+    "enforcement": "security-policy.yml remains mode: report-only."
+  },
+  "implementation": [
+    "effective_stored_classification centralizes demotion-only policy re-derivation and is used by configured-release classification and upstream-catalog matching.",
+    "Catalog generation and update checks load blockable_rules once, pass them through both trust points, and fail open if policy loading fails.",
+    "Configured and upstream demotions log the plugin or repository, release, stored rule IDs, and current non-blockable status without logging evidence.",
+    "Generated audit JSON and HTML show effective classification, preserve stored classification, and explain when a verdict predates current policy."
+  ],
+  "verification_evidence": {
+    "tdd_red": "15 focused tests failed before implementation. After correcting the tracked-store fixture to read security-verdicts.json rather than the legacy cache, the failures reproduced both trust-point defects, catalog removal, empty-rationale blocking, and the old audit schema.",
+    "focused_green": "18 focused verdict-rederivation tests passed in 0.04s; the combined gate, audit-publication, verdict, and generator selection passed 65 tests and 14 subtests in 0.13s.",
+    "ordered_verification": "Failure and underivable cases ran before the all-eight negative control; 10 selected tests passed in 0.03s.",
+    "committed_store_tallies": {
+      "store_releases": 42,
+      "stored_blocks": 8,
+      "effective_blocks": 0,
+      "demoted_blocks": 8
+    },
+    "catalog_negative_control": "A deterministic generator run against all eight BLOCK entries from the committed store retained eight plugin releases in both stable and testing catalogs under an in-memory enforce policy, and emitted eight policy-demotion log lines.",
+    "structural_control": "A stored BLOCK with ARCHIVE_TRAVERSAL remained BLOCK; a mixed stale-plus-ARCHIVE_TRAVERSAL rationale also remained BLOCK.",
+    "promotion_control": "A stored MANUAL_REVIEW with MALWARE remained MANUAL_REVIEW.",
+    "underivable_control": "Stored BLOCK entries with empty and missing blocking_rule_ids both became MANUAL_REVIEW; generator output stated that no blocking rule IDs were recorded.",
+    "upstream_control": "The upstream-catalog path demoted SHELL_CURL_PIPE, retained ARCHIVE_TRAVERSAL as blocking, and logged repository, release, and rule ID without fixture evidence.",
+    "audit_publication": "The rendered audit output showed MANUAL_REVIEW as effective and BLOCK as stored for a stale verdict, retained BLOCK/BLOCK for a structural control, and preserved the existing evidence/file-content exclusion tests.",
+    "classification_mutation": "Replacing configured-release re-derivation with the stored classification made the stale control fail while the structural control passed: 1 failed, 1 passed.",
+    "upstream_mutation": "Replacing upstream re-derivation with the stored classification made the stale control fail while the structural control passed: 1 failed, 1 passed.",
+    "full_suite": "300 passed in 1.14s.",
+    "quality_gates": "ruff check passed; ruff format reported 44 files formatted; pytest reported 300 passed and 21 subtests passed in 1.11s; no review notes were deleted; quality gates passed.",
+    "enforcement_posture": "security-policy.yml still reads mode: report-only."
+  },
+  "temporary_logs": [
+    "/tmp/decky-plugins-extended-verdict-rederivation-danger.log",
+    "/tmp/decky-plugins-extended-verdict-rederivation-red.log",
+    "/tmp/decky-plugins-extended-verdict-rederivation-related.log",
+    "/tmp/decky-plugins-extended-verdict-rederivation-classification-mutation.log",
+    "/tmp/decky-plugins-extended-verdict-rederivation-upstream-mutation.log",
+    "/tmp/decky-plugins-extended-verdict-rederivation-post-mutation.log",
+    "/tmp/decky-plugins-extended-verdict-rederivation-verification.log",
+    "/tmp/decky-plugins-extended-verdict-rederivation-tallies.log",
+    "/tmp/decky-plugins-extended-verdict-rederivation-full-suite.log",
+    "/tmp/decky-plugins-extended-verdict-rederivation-quality-gates-pre-doc.log"
+  ],
+  "explicitly_not_verified": [
+    "This change does not enable enforcement and does not claim enforcement is safe to enable.",
+    "The stored verdict file was not migrated or rewritten; stale classifications remain until a later audit.",
+    "BLOCK remains unexercised on the committed corpus, so this change provides no true-positive or false-positive measurement for structural blocking.",
+    "The upstream Decky catalog plugins that are not in the local verdict store remain unaudited."
+  ]
+}
