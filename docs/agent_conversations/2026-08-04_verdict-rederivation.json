@@ -44,6 +44,12 @@
     "upstream_mutation": "Replacing upstream re-derivation with the stored classification made the stale control fail while the structural control passed: 1 failed, 1 passed.",
     "full_suite": "300 passed in 1.14s.",
     "quality_gates": "ruff check passed; ruff format reported 44 files formatted; pytest reported 300 passed and 21 subtests passed in 1.11s; no review notes were deleted; quality gates passed.",
+    "review_round_01": {
+      "duplicate_identity_red": "With two same-identity entries, the non-blocking entry first produced False for both MANUAL_REVIEW and stale BLOCK variants; 2 failed and the reverse-order controls passed.",
+      "resolution": "The upstream gate now evaluates every identity match until a genuinely blockable verdict is found and defers stale-BLOCK demotion logs until the final answer is non-blocking. The committed-store test asserts stored-versus-effective policy invariants over every record without fixed corpus counts, and the generator derives its demotion count from a self-sufficient fixture.",
+      "targeted_green": "The verdict-rederivation test module passed 22 tests in 0.05s.",
+      "quality_gates": "ruff check passed; ruff format reported 45 files already formatted; pytest reported 304 passed and 21 subtests passed in 1.16s; no review notes were deleted; quality gates passed."
+    },
     "enforcement_posture": "security-policy.yml still reads mode: report-only."
   },
   "temporary_logs": [
@@ -56,7 +62,10 @@
     "/tmp/decky-plugins-extended-verdict-rederivation-verification.log",
     "/tmp/decky-plugins-extended-verdict-rederivation-tallies.log",
     "/tmp/decky-plugins-extended-verdict-rederivation-full-suite.log",
-    "/tmp/decky-plugins-extended-verdict-rederivation-quality-gates-pre-doc.log"
+    "/tmp/decky-plugins-extended-verdict-rederivation-quality-gates-pre-doc.log",
+    "/tmp/decky-plugins-extended/verdict-rederivation-review01-red.log",
+    "/tmp/decky-plugins-extended/verdict-rederivation-review01-targeted.log",
+    "/tmp/decky-plugins-extended/verdict-rederivation-review01-quality-gates.log"
   ],
   "explicitly_not_verified": [
     "This change does not enable enforcement and does not claim enforcement is safe to enable.",
