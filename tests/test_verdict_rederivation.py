@@ -118,6 +118,45 @@ def test_upstream_release_rederivation_only_demotes_stored_blocks(
     )
 
 
+@pytest.mark.parametrize("nonblocking_first", [True, False])
+@pytest.mark.parametrize(
+    ("nonblocking_classification", "nonblocking_rule_ids"),
+    [
+        ("MANUAL_REVIEW", ["MALWARE"]),
+        ("BLOCK", ["SHELL_CURL_PIPE"]),
+    ],
+)
+def test_upstream_release_blocks_when_any_same_identity_verdict_is_blockable(
+    nonblocking_first,
+    nonblocking_classification,
+    nonblocking_rule_ids,
+    capsys,
+):
+    nonblocking_entry = _stored_verdict(
+        nonblocking_classification, nonblocking_rule_ids
+    )[REPOSITORY]["v1.0.0@1"]
+    blockable_entry = _stored_verdict("BLOCK", ["ARCHIVE_TRAVERSAL"])[REPOSITORY][
+        "v1.0.0@1"
+    ]
+    entries = [
+        ("v1.0.0@1", nonblocking_entry),
+        ("v1.0.0@2", blockable_entry),
+    ]
+    if not nonblocking_first:
+        entries.reverse()
+    verdicts = {REPOSITORY: dict(entries)}
+    version = {
+        "name": "1.0.0",
+        "hash": ARTIFACT_HASH,
+        "artifact": (
+            "https://github.com/owner/plugin/releases/download/v1.0.0/plugin.zip"
+        ),
+    }
+
+    assert generate_json.catalog_version_is_blocked(version, verdicts, BLOCKABLE_RULES)
+    assert "[policy-demotion]" not in capsys.readouterr().out
+
+
 def test_upstream_demotion_log_names_release_and_rule_ids_without_evidence(capsys):
     verdicts = _stored_verdict("BLOCK", ["SHELL_CURL_PIPE"])
     verdicts[REPOSITORY]["v1.0.0@1"]["evidence"] = "PRIVATE-EVIDENCE"

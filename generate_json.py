@@ -368,6 +368,7 @@ def catalog_version_is_blocked(version, verdicts, blockable_rules=None):
         return False
 
     identity = (version.get("name"), version.get("hash"))
+    policy_demotions = []
     for repository, release_verdicts in verdicts.items():
         if _repository_slug(repository) != repository_slug:
             continue
@@ -382,16 +383,21 @@ def catalog_version_is_blocked(version, verdicts, blockable_rules=None):
             effective_classification = effective_stored_classification(
                 entry, blockable_rules
             )
+            if effective_classification == "BLOCK":
+                return True
             if (
                 entry.get("classification") == "BLOCK"
                 and effective_classification != "BLOCK"
             ):
-                _log_policy_demotion(
-                    _repository_slug(repository) or repository,
-                    tag_name,
-                    list(entry.get("blocking_rule_ids") or []),
+                policy_demotions.append(
+                    (
+                        _repository_slug(repository) or repository,
+                        tag_name,
+                        list(entry.get("blocking_rule_ids") or []),
+                    )
                 )
-            return effective_classification == "BLOCK"
+    for plugin, release, blocking_rule_ids in policy_demotions:
+        _log_policy_demotion(plugin, release, blocking_rule_ids)
     return False
 
 
