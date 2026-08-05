@@ -109,6 +109,27 @@
         "PRIVILEGE_SYSTEMCTL",
         "ROOT_ACCESS"
       ]
+    },
+    "panel-de-control-v0.34.0@502995072": {
+      "artifact_sha256": "a14c59930089c9d50c9bba124b91784db9d361958c28103b7a97ef9a1dbd061b",
+      "audit_context_hash": "8b67fcb6c19c44e35b260fd9e039962f",
+      "audited_at": "2026-08-05T19:23:35.843074Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "NATIVE_BINARY",
+        "PERSIST_LD_PRELOAD",
+        "PERSIST_PROFILE_MOD",
+        "PRIVILEGE_MODPROBE",
+        "ZIP_ONLY_EXECUTABLE"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_POPEN",
+        "EXEC_SUBPROCESS_RUN",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SYSTEMCTL",
+        "ROOT_ACCESS"
+      ]
     }
   },
   "https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager": {
