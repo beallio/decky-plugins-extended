@@ -10,6 +10,7 @@ import generate_json
 REPOSITORY = "https://github.com/owner/plugin"
 BLOCKED_HASH = "b" * 64
 FALLBACK_HASH = "a" * 64
+BLOCKABLE_RULES = {"ARCHIVE_TRAVERSAL"}
 
 
 def _release(tag, asset_id, digest, *, prerelease=False):
@@ -48,7 +49,7 @@ def _verdicts(*, all_blocked=False):
         REPOSITORY: {
             "v2.0.0@2": {
                 "classification": "BLOCK",
-                "blocking_rule_ids": ["STATIC_EVAL"],
+                "blocking_rule_ids": ["ARCHIVE_TRAVERSAL"],
                 "artifact_sha256": BLOCKED_HASH,
                 "audit_context_hash": "context",
                 "audited_at": "2026-08-03T00:00:00Z",
@@ -116,7 +117,10 @@ def _run_generator(
         monkeypatch.setattr(
             generate_json,
             "load_policy",
-            lambda *_a, **_k: {"enforcement": {"mode": enforcement_mode}},
+            lambda *_a, **_k: {
+                "enforcement": {"mode": enforcement_mode},
+                "blockable_rules": sorted(BLOCKABLE_RULES),
+            },
             raising=False,
         )
     monkeypatch.setattr(
@@ -163,7 +167,7 @@ def test_gate_removes_blocked_existing_version_and_uses_fallback(
     output = capsys.readouterr().out
     assert "Plugin" in output
     assert "v2.0.0" in output
-    assert "STATIC_EVAL" in output
+    assert "ARCHIVE_TRAVERSAL" in output
 
 
 def test_fresh_clone_reads_tracked_verdicts_and_blocks_release(monkeypatch, tmp_path):
@@ -199,7 +203,10 @@ def test_fresh_clone_reads_tracked_verdicts_and_blocks_release(monkeypatch, tmp_
     monkeypatch.setattr(
         generate_json,
         "load_policy",
-        lambda *_a, **_k: {"enforcement": {"mode": "enforce"}},
+        lambda *_a, **_k: {
+            "enforcement": {"mode": "enforce"},
+            "blockable_rules": sorted(BLOCKABLE_RULES),
+        },
         raising=False,
     )
 
@@ -347,7 +354,10 @@ def test_custom_update_check_ignores_blocked_newest_release(monkeypatch):
     monkeypatch.setattr(generate_json, "get_releases", lambda *_args: releases)
 
     assert (
-        check_for_updates.check_custom_repos({"Plugin": {"1.0.0"}}, _verdicts()) == []
+        check_for_updates.check_custom_repos(
+            {"Plugin": {"1.0.0"}}, _verdicts(), BLOCKABLE_RULES
+        )
+        == []
     )
 
 
@@ -357,16 +367,21 @@ def test_upstream_update_check_ignores_blocked_newest_release(monkeypatch):
     ]
     monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
 
-    assert check_for_updates.check_upstream({"Plugin": {"1.0.0"}}, _verdicts()) == []
+    assert (
+        check_for_updates.check_upstream(
+            {"Plugin": {"1.0.0"}}, _verdicts(), BLOCKABLE_RULES
+        )
+        == []
+    )
 
 
 def test_upstream_update_gate_requires_the_audited_hash(monkeypatch):
     upstream = [_plugin([_version("v2.0.0", "c" * 64)])]
     monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
 
-    assert check_for_updates.check_upstream({"Plugin": {"1.0.0"}}, _verdicts()) == [
-        ("Plugin", "2.0.0")
-    ]
+    assert check_for_updates.check_upstream(
+        {"Plugin": {"1.0.0"}}, _verdicts(), BLOCKABLE_RULES
+    ) == [("Plugin", "2.0.0")]
 
 
 def test_two_consecutive_update_checks_stay_false_for_blocked_releases(

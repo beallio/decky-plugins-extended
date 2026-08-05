@@ -8,15 +8,13 @@ enforcement:
   #                fail the PR (exit 0 on security findings).
   # "enforce":     BLOCK findings exit 2; MANUAL_REVIEW exits 3.
   # Internal infrastructure failures always fail CI regardless of mode.
-  # Held at report-only. The structural cap in #17 means no NEW audit can produce
-  # a BLOCK from a behavioural rule, but the gate acts on the STORED
-  # classification, and security-verdicts.json still holds eight BLOCK entries
-  # written under the old rules. Enabling enforcement before those are rewritten
-  # would exclude the same eight false positives that were removed on
-  # 2026-08-04. Flip this only once the store has been repopulated by an audit
-  # running under the current policy, or once the gate re-derives classification
-  # from blocking_rule_ids rather than trusting the stored value.
-  mode: report-only
+  # Enabled on 2026-08-04. The precondition recorded here was that the gate must
+  # re-derive classification from blocking_rule_ids rather than trust the stored
+  # value; #19 (verdict-rederivation) does exactly that at both trust points, so
+  # the eight BLOCK entries still sitting in security-verdicts.json under the old
+  # rules no longer exclude anything. Only #17's structural rules can remove a
+  # release, and on the audited corpus that set matches nothing today.
+  mode: enforce
 
 # Corpus-tuned escalation weights. Detection is unchanged: every finding still
 # appears in reports, but these platform-baseline rules no longer force review.
