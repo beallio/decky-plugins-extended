@@ -85,6 +85,7 @@ def test_public_audit_whitelists_fields_and_never_leaks_evidence(tmp_path):
         "repository",
         "release",
         "classification",
+        "stored_classification",
         "rule_ids",
         "audited_at",
     }

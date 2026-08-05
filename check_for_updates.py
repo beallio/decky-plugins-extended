@@ -40,13 +40,13 @@ def report(missing, label):
         print(f"  ... and {len(missing) - 10} more")
 
 
-def check_upstream(live, verdicts):
+def check_upstream(live, verdicts, blockable_rules=None):
     missing = []
     for plugin in g.fetch_json(g.PLUGINS_URL):
         versions = [
             version
             for version in (plugin.get("versions") or [])
-            if not g.catalog_version_is_blocked(version, verdicts)
+            if not g.catalog_version_is_blocked(version, verdicts, blockable_rules)
         ]
         if not versions:
             continue
@@ -56,7 +56,7 @@ def check_upstream(live, verdicts):
     return missing
 
 
-def check_custom_repos(live, verdicts):
+def check_custom_repos(live, verdicts, blockable_rules=None):
     missing = []
     for url in g.read_repo_urls():
         owner, repo = url.rstrip("/").split("/")[-2:]
@@ -74,7 +74,9 @@ def check_custom_repos(live, verdicts):
                     }
                     for r in g.get_releases(owner, repo)
                     if not r.get("prerelease")
-                    and g.classification_for(url, r, verdicts).effective_classification
+                    and g.classification_for(
+                        url, r, verdicts, blockable_rules
+                    ).effective_classification
                     != "BLOCK"
                 ]
             )
@@ -92,11 +94,19 @@ def check_custom_repos(live, verdicts):
 def main():
     live = version_index(g.fetch_json(LIVE_URL))
     verdicts = g.load_verdicts()
+    try:
+        blockable_rules = set(g.load_policy().get("blockable_rules") or [])
+    except Exception as exc:
+        print(
+            f"Warning: could not read blockable rules ({exc}); "
+            "treating stored BLOCK verdicts as non-blocking."
+        )
+        blockable_rules = set()
 
-    upstream = check_upstream(live, verdicts)
+    upstream = check_upstream(live, verdicts, blockable_rules)
     report(upstream, "Upstream versions missing")
 
-    custom = check_custom_repos(live, verdicts)
+    custom = check_custom_repos(live, verdicts, blockable_rules)
     report(custom, "Custom repository releases missing")
 
     changed = bool(upstream or custom)

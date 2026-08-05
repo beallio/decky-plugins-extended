@@ -11,7 +11,12 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from audit_plugins import classification_for, load_policy, load_verdicts
+from audit_plugins import (
+    classification_for,
+    effective_stored_classification,
+    load_policy,
+    load_verdicts,
+)
 from plugin_release_utils import (
     get_zip_asset,
     has_exactly_one_zip,
@@ -341,7 +346,22 @@ def _repository_slug(value):
     return ""
 
 
-def catalog_version_is_blocked(version, verdicts):
+def _log_policy_demotion(plugin, release, blocking_rule_ids):
+    if blocking_rule_ids:
+        rationale = (
+            "stored rule IDs "
+            + ", ".join(blocking_rule_ids)
+            + " are not currently blockable"
+        )
+    else:
+        rationale = "no blocking rule IDs were recorded"
+    print(
+        f"  [policy-demotion] {plugin} release {release}: stored BLOCK "
+        f"re-derived as MANUAL_REVIEW; {rationale}."
+    )
+
+
+def catalog_version_is_blocked(version, verdicts, blockable_rules=None):
     """Match an upstream catalog version to a durable BLOCK verdict."""
     repository_slug = _repository_slug(version.get("artifact", ""))
     if not repository_slug:
@@ -357,8 +377,21 @@ def catalog_version_is_blocked(version, verdicts):
                 normalize_version(tag_name),
                 entry.get("artifact_sha256"),
             )
-            if identity == audited_identity and entry.get("classification") == "BLOCK":
-                return True
+            if identity != audited_identity:
+                continue
+            effective_classification = effective_stored_classification(
+                entry, blockable_rules
+            )
+            if (
+                entry.get("classification") == "BLOCK"
+                and effective_classification != "BLOCK"
+            ):
+                _log_policy_demotion(
+                    _repository_slug(repository) or repository,
+                    tag_name,
+                    list(entry.get("blocking_rule_ids") or []),
+                )
+            return effective_classification == "BLOCK"
     return False
 
 
@@ -385,7 +418,7 @@ def copy_static_files(source="static", destination="public"):
     return copied
 
 
-def _public_audit_records(verdicts):
+def _public_audit_records(verdicts, blockable_rules=None):
     """Return only the verdict fields that are safe and useful to publish."""
     records = []
     for repository, release_verdicts in verdicts.items():
@@ -405,11 +438,16 @@ def _public_audit_records(verdicts):
                 if isinstance(values, list):
                     rule_ids.update(str(value) for value in values if value)
 
+            stored_classification = str(verdict.get("classification") or "UNKNOWN")
+            effective_classification = effective_stored_classification(
+                verdict, blockable_rules
+            )
             records.append(
                 {
                     "repository": str(repository),
                     "release": str(release),
-                    "classification": str(verdict.get("classification") or "UNKNOWN"),
+                    "classification": str(effective_classification),
+                    "stored_classification": stored_classification,
                     "rule_ids": sorted(rule_ids),
                     "audited_at": str(verdict.get("audited_at") or ""),
                 }
@@ -452,6 +490,12 @@ def _render_audit_html(records, enforcement_mode):
     for record in records:
         classification = html.escape(record["classification"])
         classification_class = "block" if record["classification"] == "BLOCK" else ""
+        stored_classification = html.escape(record["stored_classification"])
+        policy_disagreement = ""
+        if record["classification"] != record["stored_classification"]:
+            policy_disagreement = f"""
+            <p class="policy-disagreement"><strong>Stored verdict: {stored_classification}.</strong>
+            This verdict predates the current policy; its recorded blocking rule IDs are not currently blockable.</p>"""
         rule_ids = record["rule_ids"]
         rendered_rules = (
             " ".join(f"<code>{html.escape(rule_id)}</code>" for rule_id in rule_ids)
@@ -461,7 +505,7 @@ def _render_audit_html(records, enforcement_mode):
         audited_at = html.escape(record["audited_at"] or "Not recorded")
         cards.append(
             f"""        <article class="verdict {classification_class}">
-            <div class="classification">{classification}</div>
+            <div class="classification">Effective classification: {classification}</div>{policy_disagreement}
             <dl>
                 <dt>Repository</dt>
                 <dd>{html.escape(record["repository"])}</dd>
@@ -531,6 +575,12 @@ def _render_audit_html(records, enforcement_mode):
             letter-spacing: 0.04em;
         }}
         .block .classification {{ background: #ff4d6d; color: #090909; }}
+        .policy-disagreement {{
+            margin: 0 0 1rem;
+            padding: 0.75rem;
+            background: #302a16;
+            border-left: 4px solid #ffff00;
+        }}
         dl {{ display: grid; grid-template-columns: 8rem 1fr; gap: 0.4rem 1rem; margin: 0; }}
         dt {{ font-weight: 700; color: #c9c9c9; }}
         dd {{ margin: 0; overflow-wrap: anywhere; }}
@@ -554,7 +604,7 @@ def _render_audit_html(records, enforcement_mode):
     <main>
         <p><a href="index.html">&larr; Decky Extended Plugins</a></p>
         <h1>Plugin Audit Log</h1>
-        <p class="intro">This page publishes the latest stored audit verdict for each audited release. It lists rule IDs only; private evidence and file contents are never published.</p>
+        <p class="intro">This page publishes each release's effective classification under the current policy and keeps any older stored verdict visible when the two disagree. It lists rule IDs only; private evidence and file contents are never published.</p>
 
         <h2>What the tiers mean</h2>
         <section class="tier-explanation" aria-label="Audit tier explanations">
@@ -574,10 +624,12 @@ def _render_audit_html(records, enforcement_mode):
 """
 
 
-def write_audit_outputs(verdicts, enforcement_mode, destination="public"):
+def write_audit_outputs(
+    verdicts, enforcement_mode, destination="public", *, blockable_rules=None
+):
     """Publish human- and machine-readable audit records without evidence."""
     os.makedirs(destination, exist_ok=True)
-    records = _public_audit_records(verdicts)
+    records = _public_audit_records(verdicts, blockable_rules)
     payload = {
         "enforcement_mode": str(enforcement_mode),
         "releases": records,
@@ -635,14 +687,17 @@ def main():
     # removed eight legitimate plugins from the live catalog on the first real
     # audit run - every one of them a false positive.
     try:
-        enforcement_mode = (load_policy().get("enforcement") or {}).get(
+        policy = load_policy()
+        enforcement_mode = (policy.get("enforcement") or {}).get(
             "mode"
         ) or "report-only"
+        blockable_rules = set(policy.get("blockable_rules") or [])
     except Exception as exc:  # a broken policy must not silently start blocking
         print(
             f"Warning: could not read enforcement mode ({exc}); assuming report-only."
         )
         enforcement_mode = "report-only"
+        blockable_rules = set()
     gating_enforced = enforcement_mode == "enforce"
     print(
         f"Catalog gate: enforcement mode is {enforcement_mode!r}"
@@ -702,7 +757,16 @@ def main():
                     continue
                 valid_release_count += 1
 
-                verdict = classification_for(url, rel, verdicts)
+                verdict = classification_for(url, rel, verdicts, blockable_rules)
+                if (
+                    verdict.audit_classification == "BLOCK"
+                    and verdict.effective_classification != "BLOCK"
+                ):
+                    _log_policy_demotion(
+                        plugin_name,
+                        rel.get("tag_name", ""),
+                        verdict.blocking_rule_ids,
+                    )
                 if verdict.effective_classification == "BLOCK" and not gating_enforced:
                     rule_ids = ", ".join(verdict.blocking_rule_ids) or "unknown rule"
                     print(
@@ -861,7 +925,7 @@ def main():
         )
 
     copy_static_files()
-    write_audit_outputs(verdicts, enforcement_mode)
+    write_audit_outputs(verdicts, enforcement_mode, blockable_rules=blockable_rules)
 
     print("Successfully generated JSON files in the 'public' directory.")
 
