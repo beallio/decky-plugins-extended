@@ -107,14 +107,32 @@ jobs:
         run: cp security-verdicts.json "$RUNNER_TEMP/security-verdicts-before.json"
 
       - name: Run audit on all configured repositories
+        id: audit
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p security-reports
+          set +e
           uv run python audit_plugins.py \
             --all \
             --output-dir security-reports \
             --cache-dir .audit-cache
+          audit_exit=$?
+          set -e
+          echo "audit_exit=${audit_exit}" >> "$GITHUB_OUTPUT"
+
+          # Under enforcement, exit 2 (BLOCK) and exit 3 (MANUAL_REVIEW) are
+          # audit RESULTS, not failures of this step. Letting them fail here
+          # would skip "Publish updated verdicts" and freeze the verdict store
+          # at whatever it held before - which is precisely the stale-verdict
+          # condition enforcement depends on the store not being in. Publish
+          # first; the "Enforcement result" step below fails the job afterwards.
+          # Exit 1 is an internal audit error and still fails immediately,
+          # because a partially-written store must not be published.
+          case "${audit_exit}" in
+            0 | 2 | 3) exit 0 ;;
+            *) exit "${audit_exit}" ;;
+          esac
         timeout-minutes: 45
 
       - name: Publish updated verdicts
@@ -163,6 +181,35 @@ jobs:
           echo "Initial verdict push raced with another update; rebasing and retrying once."
           git pull --rebase origin "$GITHUB_REF_NAME"
           git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Enforcement result
+        if: always() && steps.audit.outputs.audit_exit != ''
+        env:
+          AUDIT_EXIT: ${{ steps.audit.outputs.audit_exit }}
+        run: |
+          # Runs after publication so an enforcement result can never withhold
+          # the verdicts that produced it.
+          case "${AUDIT_EXIT}" in
+            0)
+              echo "Audit clean under the current enforcement mode."
+              ;;
+            2)
+              echo "::error::Audit produced BLOCK findings; see the job summary."
+              exit 2
+              ;;
+            3)
+              # MANUAL_REVIEW is a standing queue on a six-hourly sweep of the
+              # whole corpus, not a regression. Failing the scheduled job on it
+              # would keep this workflow permanently red and destroy the signal
+              # that a real BLOCK would carry. New plugins are gated by the
+              # pull_request audit, which still fails on exit 3.
+              echo "::warning::Audit flagged releases for MANUAL_REVIEW; see the job summary."
+              ;;
+            *)
+              echo "::error::Unexpected audit exit code ${AUDIT_EXIT}."
+              exit 1
+              ;;
+          esac
 
       - name: Save audit cache
         # Save cache after scanning so updated entries persist on the next run.
