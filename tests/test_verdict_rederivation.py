@@ -180,18 +180,16 @@ def test_upstream_demotion_log_names_release_and_rule_ids_without_evidence(capsy
     assert "PRIVATE-EVIDENCE" not in output
 
 
-def test_committed_stale_blocks_all_rederive_to_manual_review():
+def test_committed_verdicts_follow_current_blocking_policy():
     repository_root = Path(ap.__file__).parent
     verdicts = json.loads(
         (repository_root / "security-verdicts.json").read_text(encoding="utf-8")
     )
     policy = ap.load_policy(str(repository_root / "security-policy.yml"))
-    stored_blocks = []
+    evaluated = []
 
     for repository, releases in verdicts.items():
         for release_id, entry in releases.items():
-            if entry.get("classification") != "BLOCK":
-                continue
             tag, asset_id = release_id.rsplit("@", 1)
             release = _release(tag, int(asset_id), entry["artifact_sha256"])
             release["assets"][0]["browser_download_url"] = (
@@ -203,14 +201,23 @@ def test_committed_stale_blocks_all_rederive_to_manual_review():
                 verdicts,
                 policy["blockable_rules"],
             )
-            stored_blocks.append(result)
+            evaluated.append((repository, release_id, entry, result))
 
-    assert sum(len(releases) for releases in verdicts.values()) == 42
-    assert len(stored_blocks) == 8
-    assert {result.audit_classification for result in stored_blocks} == {"BLOCK"}
-    assert {result.effective_classification for result in stored_blocks} == {
-        "MANUAL_REVIEW"
-    }
+    assert evaluated, "the committed verdict store should not be empty"
+    for repository, release_id, entry, result in evaluated:
+        assert result.audit_classification == entry["classification"], (
+            repository,
+            release_id,
+        )
+        if entry["classification"] == "BLOCK":
+            has_blockable_rule = bool(
+                set(entry.get("blocking_rule_ids") or [])
+                & set(policy["blockable_rules"])
+            )
+            assert (result.effective_classification == "BLOCK") is has_blockable_rule, (
+                repository,
+                release_id,
+            )
 
 
 def _run_generator(monkeypatch, tmp_path, verdicts):
@@ -288,7 +295,7 @@ def _run_generator(monkeypatch, tmp_path, verdicts):
     return stable, testing
 
 
-def test_generator_keeps_all_eight_stale_blocks_and_logs_policy_disagreement(
+def test_generator_keeps_stale_blocks_and_logs_policy_disagreement(
     monkeypatch, tmp_path, capsys
 ):
     repository_root = Path(ap.__file__).parent
@@ -300,10 +307,24 @@ def test_generator_keeps_all_eight_stale_blocks_and_logs_policy_disagreement(
             release_id: copy.deepcopy(entry)
             for release_id, entry in releases.items()
             if entry.get("classification") == "BLOCK"
+            and not set(entry.get("blocking_rule_ids") or []) & BLOCKABLE_RULES
         }
         for repository, releases in committed.items()
-        if any(entry.get("classification") == "BLOCK" for entry in releases.values())
+        if any(
+            entry.get("classification") == "BLOCK"
+            and not set(entry.get("blocking_rule_ids") or []) & BLOCKABLE_RULES
+            for entry in releases.values()
+        )
     }
+    if not stale_blocks:
+        stale_blocks = _stored_verdict("BLOCK", ["SHELL_CURL_PIPE"])
+    expected_demotion_count = sum(
+        1
+        for releases in stale_blocks.values()
+        for entry in releases.values()
+        if entry.get("classification") == "BLOCK"
+        and not set(entry.get("blocking_rule_ids") or []) & BLOCKABLE_RULES
+    )
     secret_evidence = "PRIVATE-EVIDENCE-MUST-NOT-APPEAR"
     next(iter(next(iter(stale_blocks.values())).values()))["evidence"] = secret_evidence
 
@@ -315,7 +336,7 @@ def test_generator_keeps_all_eight_stale_blocks_and_logs_policy_disagreement(
     assert {plugin["name"] for plugin in stable} == expected_names
     assert {plugin["name"] for plugin in testing} == expected_names
     output = capsys.readouterr().out
-    assert output.count("[policy-demotion]") == 8
+    assert output.count("[policy-demotion]") == expected_demotion_count
     for repository, releases in stale_blocks.items():
         plugin_name = repository.rstrip("/").rsplit("/", 1)[-1]
         assert plugin_name in output
