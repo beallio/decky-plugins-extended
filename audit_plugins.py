@@ -40,7 +40,7 @@ import zipfile
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Optional
+from typing import Any, Collection, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -3113,10 +3113,32 @@ def _release_id(release: dict[str, Any]) -> str:
     return f"{release.get('tag_name', '')}@{zip_assets[0].get('id', '')}"
 
 
+def effective_stored_classification(
+    entry: dict[str, Any], blockable_rules: Collection[str] | None = None
+) -> str:
+    """Re-derive whether a durable BLOCK is justified by the current policy.
+
+    Re-derivation is deliberately demotion-only. A stored non-BLOCK verdict is
+    never promoted from stale rule IDs, while a stored BLOCK without a currently
+    blockable rationale fails open to MANUAL_REVIEW.
+    """
+    stored_classification = entry.get("classification", "AUDIT_ERROR")
+    if stored_classification != "BLOCK":
+        return stored_classification
+
+    if blockable_rules is None:
+        blockable_rules = load_policy().get("blockable_rules", [])
+    blocking_rule_ids = entry.get("blocking_rule_ids") or []
+    if set(blocking_rule_ids).intersection(blockable_rules):
+        return "BLOCK"
+    return "MANUAL_REVIEW"
+
+
 def classification_for(
     repository: str,
     release: AuditReport | dict[str, Any],
     verdicts: dict[str, dict[str, dict[str, Any]]],
+    blockable_rules: Collection[str] | None = None,
 ) -> VerdictResult:
     """Return the current and effective classifications for one release.
 
@@ -3147,7 +3169,9 @@ def classification_for(
     entry = repository_verdicts.get(_release_id(release), {})
     classification = entry.get("classification", "AUDIT_ERROR")
     return VerdictResult(
-        effective_classification=classification,
+        effective_classification=effective_stored_classification(
+            entry, blockable_rules
+        ),
         audit_classification=classification,
         blocking_rule_ids=list(entry.get("blocking_rule_ids") or []),
     )
