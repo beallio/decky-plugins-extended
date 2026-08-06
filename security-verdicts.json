@@ -445,6 +445,24 @@
         "PRIVILEGE_SYSTEMCTL",
         "TRIVY_CVE_2026_31808"
       ]
+    },
+    "v3.3.0+beallio.8@503065946": {
+      "artifact_sha256": "0df18cf9793975970069ea1d8fd6231dd0c43bd49370dfa92898e69971134bbd",
+      "audit_context_hash": "8b67fcb6c19c44e35b260fd9e039962f",
+      "audited_at": "2026-08-06T02:05:14.923014Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "EXEC_EXEC",
+        "PRIVILEGE_SYSTEMCTL_SHELL"
+      ],
+      "warning_rule_ids": [
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL",
+        "TRIVY_CVE_2026_31808"
+      ]
     }
   },
   "https://github.com/chillibeaver/DeckSMB": {
