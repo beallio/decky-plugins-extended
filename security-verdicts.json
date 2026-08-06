@@ -273,6 +273,23 @@
         "EXEC_SUBPROCESS_RUN",
         "PRIVILEGE_SYSTEMCTL"
       ]
+    },
+    "2.0.0@504129123": {
+      "artifact_sha256": "596dde0f581145293d6957f25e47df8be15d0cb0d4560dc6712938447b06e241",
+      "audit_context_hash": "8b67fcb6c19c44e35b260fd9e039962f",
+      "audited_at": "2026-08-06T23:55:06.561683Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "PERSIST_LD_PRELOAD",
+        "ZIP_ONLY_SCRIPT"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_RUN",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL"
+      ]
     }
   },
   "https://github.com/Rayekkk/LeGoTDP": {
@@ -428,6 +445,25 @@
     }
   },
   "https://github.com/beallio/SDH-PlayTime-beallio-remix": {
+    "v3.3.0+beallio.10@504317846": {
+      "artifact_sha256": "2d9fcf96f132b3253288e3f8e4503a5bf2261f59ae3f9e7c88f988143ba4c0d2",
+      "audit_context_hash": "8b67fcb6c19c44e35b260fd9e039962f",
+      "audited_at": "2026-08-06T23:55:29.818986Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "EXEC_EXEC",
+        "PRIVILEGE_SYSTEMCTL_SHELL"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_RUN",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL",
+        "TRIVY_CVE_2026_31808"
+      ]
+    },
     "v3.3.0+beallio.1@502032919": {
       "artifact_sha256": "2f144da998dce021f9b1a8240b54c7c31dda3d35760055a1f2c35dba64eae221",
       "audit_context_hash": "8b67fcb6c19c44e35b260fd9e039962f",
