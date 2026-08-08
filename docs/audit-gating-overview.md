@@ -4,6 +4,37 @@
 > `docs/plans/`. Each sub-plan carries its own orchestration contract, branch, and markers.
 > Nothing here is run directly.
 
+## Current implementation state (2026-08-08)
+
+The historical design and appendix below describe the incremental rollout at
+the time those sub-plans landed. The current authoritative behavior is:
+
+- `security-policy.yml` uses `enforcement.mode: enforce`; report-only is
+  supported but inactive.
+- The auditor processes every stable and prerelease catalog-eligible release in
+  canonical repository and deterministic newest-first release order. Full PR
+  and scheduled runs use four disjoint shards, atomic per-release checkpoints,
+  isolated verdict deltas, and duplicate-rejecting aggregation. Only explicit
+  `--repository ... --latest-only` uses one release.
+- Catalog decisions bind the exact release key to the current artifact hash.
+  Only a `CURRENT` effective `BLOCK` is excluded. `STALE_HASH` and `UNKNOWN`
+  are explicit fail-open outcomes; neither can reuse an old pass or block.
+- A deterministic blockable structural finding remains `BLOCK` even when a
+  required scanner fails. A corrupt archive without such proof remains a
+  release-local `AUDIT_ERROR`. Safe sibling outputs publish before exit 4;
+  run-global integrity failures use exit 1 and publish nothing.
+- Digestless assets are bounded-streamed to validate current bytes even on a
+  warm run. Cache identity includes Semgrep rules and scanner/database
+  identities; scheduled runs bypass report-cache hits when ClamAV or Trivy
+  database freshness cannot be established.
+- Repository URLs and the complete tracked verdict schema are validated
+  strictly. Release/source streams use the policy's 64 MiB/256 MiB limits,
+  10/60-second connect/read timeouts, and 1 MiB chunks.
+- CI selects changed repositories only for a plugin-list-only diff. Security
+  pipeline, policy, verdict, dependency, quality-gate, test, or audit-workflow
+  changes select the four-shard corpus. Local and CI gates use Ruff, pytest,
+  Semgrep 1.132.0, and checksummed actionlint 1.7.12.
+
 ## Sub-plans, in execution order
 
 Each finalizes into `dev` before the next begins, so later sub-plans branch from a base that

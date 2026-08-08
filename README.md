@@ -143,11 +143,19 @@ uv run generate_json.py
 environment. The generated catalogs are written to `public/plugins.json` and
 `public/testing_plugins.json`.
 
-Run the unit tests with:
+Run the same local gates as CI with:
 
 ```sh
-GITHUB_TOKEN=test-token uv run python -m unittest discover -s tests -v
+uv run ruff check .
+uv run ruff format --check .
+GITHUB_TOKEN=test-token uv run pytest -q
+scripts/orchestration/run-quality-gates
 ```
+
+The project quality gate also downloads the official actionlint v1.7.12
+archive through `gh`, verifies the release checksum, and validates every GitHub
+Actions workflow. Pytest exit 5 (no tests collected) is a failure. PR and
+scheduled audit jobs install Semgrep 1.132.0 and assert that exact version.
 
 The token must be able to read the configured repositories; the GitHub Actions
 workflow uses its built-in `GITHUB_TOKEN`.
@@ -185,11 +193,13 @@ skipping the rebuild.
 ## Security auditing
 
 The pull-request and scheduled audit workflows statically inspect configured
-plugin repositories and their release ZIPs. Catalog generation consults the
-durable verdict store before adding releases: an effective `BLOCK` verdict is
-excluded, while `MANUAL_REVIEW`, `AUDIT_ERROR`, and releases without a verdict
-remain eligible under the fail-open policy. The audit never imports, executes,
-installs, or sources plugin code.
+plugin repositories and every catalog-eligible release ZIP. The checked-in
+policy currently uses `enforcement.mode: enforce`. Catalog generation excludes
+only a `CURRENT` effective `BLOCK`: the exact release key and the current
+artifact SHA-256 must match the durable verdict. `MANUAL_REVIEW`, release-local
+`AUDIT_ERROR`, `STALE_HASH`, and `UNKNOWN` remain eligible under the fail-open
+catalog policy. The audit never imports, executes, installs, or sources plugin
+code.
 
 ### What is scanned
 
@@ -241,7 +251,7 @@ does not certify a plugin.
 | `PASS_WITH_WARNINGS` | Minor issues such as low/medium vulnerabilities, ordinary network usage, or an unavailable optional scanner. |
 | `MANUAL_REVIEW` | Root flag, sudo, native binaries, systemd changes, obfuscated code, or a high-severity dependency vulnerability. |
 | `BLOCK` | A structural artifact fact: a malware signature; archive traversal or an escaping symlink; a compression-ratio, total-size, file-count, or single-file-size archive bomb limit; a setuid/setgid member; a device file; or a named pipe. |
-| `AUDIT_ERROR` | Audit could not reach a conclusion because of a download failure, corrupt ZIP, or internal error. |
+| `AUDIT_ERROR` | This release attempt could not reach a conclusion because of a bounded-download failure, corrupt ZIP, required-scanner failure, or other release-local error. |
 
 `BLOCK` is restricted by `security-policy.yml` to the structural facts listed
 above. Behavioural findings such as privileged commands, shell downloads,
@@ -249,25 +259,26 @@ destructive-looking text, or secret-shaped literals remain visible and inform
 the rarity-ranked review queue, but they classify no higher than
 `MANUAL_REVIEW` and never remove a plugin from the catalog.
 
-### Report-only workflow mode and catalog gating
+### Enforcement and catalog gating
 
-The audit workflows default to **report-only**: `BLOCK` and `MANUAL_REVIEW`
-findings are prominent in the job summary but do not prevent a pull request
-from merging. Internal audit failures still fail the audit job. Separately,
-catalog generation excludes releases whose effective durable verdict is
-`BLOCK`; `MANUAL_REVIEW` and `AUDIT_ERROR` continue to ship as decided by the
-catalog policy.
+The current policy is **enforce**. A completed `BLOCK` exits 2 and
+`MANUAL_REVIEW` exits 3. A release-local incomplete audit uses exit 4 only after
+safe sibling reports and verdict deltas have been checkpointed; its prior
+completed verdict is preserved. Exit 1 is reserved for run-global policy,
+verdict-store, aggregation, or output-integrity failures, whose outputs are not
+safe to publish. Mixed release outcomes use precedence 1, 4, 2, 3, 0.
 
-To make the audit workflow itself return a blocking status after evaluating
-false-positive rates, change `security-policy.yml`:
+Report-only remains supported but inactive. To use it explicitly, change
+`security-policy.yml`:
 
 ```yaml
 enforcement:
-  mode: enforce   # was: report-only
+  mode: report-only
 ```
 
-In enforcement mode the audit command exits 2 for `BLOCK` and 3 for
-`MANUAL_REVIEW`.
+In report-only mode findings remain visible, but completed `BLOCK` and
+`MANUAL_REVIEW` results do not make the command fail. Release-local and
+run-global integrity failures remain distinct.
 
 ### Running an audit locally
 
@@ -282,10 +293,22 @@ uv run python audit_plugins.py --changed --base-ref origin/main
 
 # Audit a single repository:
 uv run python audit_plugins.py --repository https://github.com/owner/repo
+
+# Fast one-release smoke/debug audit (the only newest-release-only mode):
+uv run python audit_plugins.py --repository https://github.com/owner/repo --latest-only
+
+# Run one deterministic shard of the full worklist:
+uv run python audit_plugins.py --all --shard-count 4 --shard-index 0
 ```
 
 Reports are written to `security-reports/security-report.json` and
-`security-reports/security-report.md`. Generated reports are gitignored.
+`security-reports/security-report.md`. A progress manifest, isolated verdict
+delta, and report are written atomically after every release. Resume skips only
+an exact completed identity: canonical repository, GitHub release ID, asset ID,
+current artifact hash, resolved source commit, and audit-context hash. Work is
+ordered by canonical `owner/repo`, then release timestamp, release ID, and asset
+ID; releases are newest-first within each repository. Generated reports are
+gitignored.
 
 ### Reviewing reports
 
@@ -312,8 +335,10 @@ exceptions:
     expires: "2027-01-01"
 ```
 
-- `MALWARE`, `ARCHIVE_TRAVERSAL`, and `CREDENTIAL_THEFT` rules require an exact
-  `artifact_sha256`; they cannot be excepted with `"any"`.
+- Every rule in the policy's live `blockable_rules` set requires a canonical
+  lowercase 64-character `artifact_sha256` matching the current artifact; it
+  cannot use `"any"`. Non-blockable exceptions may use `"any"` only with an
+  exact repository, release, rule, approval, reason, and unexpired date scope.
 - Entries expire automatically; expired entries produce a warning but do not
   silently apply.
 - There is no global "ignore all findings" switch.
@@ -325,10 +350,33 @@ GitHub release assets can be replaced without changing the tag name. Allowlist
 entries therefore use the downloaded ZIP's SHA-256, while audit cache entries
 also bind the release/asset identity, audit context, and resolved tag commit.
 
-A compatible cache hit is found before the ZIP download, so an unchanged
-release is not downloaded again. A changed asset identity, audit context, or
-source commit causes a cache miss; after that download, the observed SHA-256 is
-revalidated before the result is reused or stored.
+GitHub's digest is trusted only when it is exactly `sha256:` followed by 64 hex
+characters. Digest-backed releases can use a compatible pre-download cache hit.
+Digestless releases always perform one bounded artifact stream to prove the
+current bytes before reusing extraction/scanner results; a catalog's old hash is
+never reused merely because its version and URL match. Cache identity includes
+the artifact, release/asset, resolved source commit, policy, allowlist, vendored
+Semgrep rules, scanner executables/versions, and available ClamAV/Trivy database
+freshness. Scheduled runs bypass report-cache hits when database freshness
+cannot be established.
+
+Verdict lookup reports `CURRENT` for an exact release-key/hash match,
+`STALE_HASH` for an absent or different stored hash, and `UNKNOWN` for no
+verdict. The latter two are explicit fail-open audit records in `audit.json` and
+`audit.html`; the public `plugins.json` and `testing_plugins.json` schemas do not
+change.
+
+Repository identities accept only
+`https://github.com/<owner>/<repo>` with an optional trailing slash and are
+canonicalized to lowercase owner/repository keys. Credentials, ports, query or
+fragment data, `.git`, encoded separators, and extra path segments are rejected.
+The tracked verdict store is validated through every nested record and never
+falls back to `.audit-cache`.
+
+Downloads are streamed once with policy limits: release ZIPs are capped at
+67,108,864 bytes, source archives at 268,435,456 bytes, connect/read timeouts are
+10/60 seconds, and chunks are 1,048,576 bytes. Declared and observed overflows
+fail closed and partial files are removed.
 
 ### Why untrusted plugin code is never executed
 
@@ -341,12 +389,20 @@ build or install step compromises the CI runner.
 
 ### How scheduled release audits work
 
-`scheduled-security-audit.yml` runs every six hours and audits the newest
-eligible release of every configured repository. Its workflow cache is keyed
-by the policy, allowlist, and audit implementation, so changing any of them
-invalidates prior results. It never modifies the allowlist or automatically
-approves a finding.
+`scheduled-security-audit.yml` runs every six hours and audits every eligible
+stable or prerelease release of every configured repository in four isolated,
+deterministic shards, then rejects duplicate identities while aggregating their
+reports and verdict deltas. Its workflow cache covers policy, allowlist,
+Semgrep rules, implementation, and dependency inputs; runtime database
+freshness decides whether report-cache reuse is safe. It never modifies the
+allowlist or automatically approves a finding.
 
 The scheduled audit clones and scans every configured repository on each run.
 That is the principal Actions-minutes cost; widen the cron interval if the
 six-hour cadence becomes too expensive.
+
+For pull requests, a change only to `additional_plugins.txt` selects changed
+repositories. Any audit/generator/update/release-utility, policy, allowlist,
+verdict, Semgrep-rule, dependency, selector, quality-gate, test, or audit-workflow
+change selects the same four-shard full corpus. The one-release smoke remains a
+separate fast end-to-end check and is never treated as corpus coverage.
