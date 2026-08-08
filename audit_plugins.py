@@ -465,6 +465,7 @@ def load_allowlist(
         (policy if policy is not None else _default_policy()).get("blockable_rules", [])
     )
     validated: list[dict[str, Any]] = []
+    seen_identities: dict[tuple[str, str, str, str], int] = {}
     for i, entry in enumerate(exceptions):
         if not isinstance(entry, dict):
             raise ValueError(f"Allowlist entry {i} is not a mapping.")
@@ -481,6 +482,14 @@ def load_allowlist(
                 raise ValueError(
                     f"Allowlist entry {i} missing required field '{required}'."
                 )
+        try:
+            repository = plugin_release_utils.canonical_repository_identity(
+                entry["repository"]
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"Allowlist entry {i} has invalid repository: {entry['repository']!r}."
+            ) from exc
         rule_id = str(entry["rule"])
         artifact_sha256 = str(entry["artifact_sha256"])
         if rule_id in blockable_rules and not _CANONICAL_SHA256.fullmatch(
@@ -505,7 +514,22 @@ def load_allowlist(
                 raise ValueError(
                     f"Allowlist entry {i} 'expires' must be ISO 8601 date (YYYY-MM-DD)."
                 )
-        validated.append(entry)
+        identity = (
+            repository,
+            str(entry["release"]),
+            artifact_sha256,
+            rule_id,
+        )
+        previous_index = seen_identities.get(identity)
+        if previous_index is not None:
+            raise ValueError(
+                f"Allowlist entries {previous_index} and {i} collide after "
+                "repository canonicalization."
+            )
+        seen_identities[identity] = i
+        validated_entry = dict(entry)
+        validated_entry["repository"] = repository
+        validated.append(validated_entry)
     return validated
 
 
@@ -616,15 +640,7 @@ def apply_allowlist(
 
 def _normalise_repo_key(repo: str) -> str:
     """Normalize a strict GitHub URL or exact owner/repo key."""
-    if not isinstance(repo, str):
-        raise ValueError(f"Invalid GitHub repository identity: {repo!r}")
-    if repo.lower().startswith("https://"):
-        return plugin_release_utils.canonical_repository_key(repo)
-    if repo.count("/") == 1:
-        return plugin_release_utils.canonical_repository_key(
-            f"https://github.com/{repo}"
-        )
-    raise ValueError(f"Invalid GitHub repository identity: {repo!r}")
+    return plugin_release_utils.canonical_repository_identity(repo)
 
 
 def _scanner_enabled(policy: dict[str, Any], name: str) -> bool:

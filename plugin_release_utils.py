@@ -187,6 +187,32 @@ def parse_github_repository_url(url: str) -> tuple[str, str]:
     return _parse_github_repository_atoms(*raw_parts, error=error)
 
 
+def parse_github_repository_identity(identity: str) -> tuple[str, str]:
+    """Return canonical atoms for a strict GitHub URL or ``owner/repo`` key."""
+    error = f"Invalid GitHub repository identity: {identity!r}"
+    if not isinstance(identity, str) or not identity or identity != identity.strip():
+        raise ValueError(error)
+
+    if identity.lower().startswith("https://"):
+        try:
+            return parse_github_repository_url(identity)
+        except ValueError as exc:
+            raise ValueError(error) from exc
+
+    raw_parts = identity.split("/")
+    if len(raw_parts) != 2 or not all(raw_parts):
+        raise ValueError(error)
+    try:
+        return _parse_github_repository_atoms(*raw_parts, error=error)
+    except ValueError as exc:
+        raise ValueError(error) from exc
+
+
+def canonical_repository_identity(identity: str) -> str:
+    """Return a strict GitHub URL or shorthand as canonical ``owner/repo``."""
+    return "/".join(parse_github_repository_identity(identity))
+
+
 def parse_github_release_asset_url(url: str) -> tuple[str, str]:
     """Extract canonical ``(owner, repo)`` from a browser release-asset URL.
 

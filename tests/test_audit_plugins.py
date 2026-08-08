@@ -831,6 +831,86 @@ class TestAllowlist(unittest.TestCase):
         self.assertTrue(findings[0].allowlisted)
         self.assertEqual(len(decisions), 1)
 
+    def test_load_canonicalizes_accepted_repository_scopes(self):
+        for repository in (
+            "Owner/Repo",
+            "https://github.com/Owner/Repo",
+            "HTTPS://GitHub.COM/Owner/Repo/",
+        ):
+            with self.subTest(repository=repository):
+                entry = {
+                    **self._exception("ROOT_ACCESS", "a" * 64),
+                    "repository": repository,
+                }
+
+                exceptions = self._make_allowlist([entry])
+
+                self.assertEqual(exceptions[0]["repository"], "owner/repo")
+
+    def test_load_rejects_hostile_and_malformed_repository_scopes(self):
+        invalid_repositories = (
+            "https://evil.example/owner/repo",
+            "http://github.com/owner/repo",
+            "https://user@github.com/owner/repo",
+            "https://github.com:443/owner/repo",
+            "https://github.com/owner/repo?ref=main",
+            "https://github.com/owner/repo#readme",
+            "https://github.com/owner/repo/extra",
+            "https://github.com/owner/repo.git",
+            "owner",
+            "owner/repo/",
+            "owner//repo",
+            "owner/..",
+            "owner/repo.git",
+            "owner%2Frewrite/repo",
+            "owner/repo%5Cother",
+            "owner/repo?ref=main",
+        )
+
+        for repository in invalid_repositories:
+            with self.subTest(repository=repository):
+                entry = {
+                    **self._exception("ROOT_ACCESS", "a" * 64),
+                    "repository": repository,
+                }
+
+                with self.assertRaisesRegex(
+                    ValueError, "Allowlist entry 0 has invalid repository"
+                ):
+                    self._make_allowlist([entry])
+
+    def test_invalid_repository_fails_loading_before_no_findings_can_bypass_it(self):
+        entry = {
+            **self._exception("ROOT_ACCESS", "a" * 64),
+            "repository": "https://evil.example/owner/repo",
+        }
+
+        with self.assertRaises(ValueError):
+            exceptions = self._make_allowlist([entry])
+            ap.apply_allowlist(
+                [],
+                exceptions,
+                "https://github.com/owner/repo",
+                "1.0.0",
+                "a" * 64,
+            )
+
+    def test_load_rejects_repository_scope_collisions_after_canonicalization(self):
+        first = {
+            **self._exception("ROOT_ACCESS", "a" * 64),
+            "repository": "Owner/Repo",
+        }
+        second = {
+            **self._exception("ROOT_ACCESS", "a" * 64),
+            "repository": "https://github.com/owner/repo/",
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Allowlist entries 0 and 1 collide after repository canonicalization",
+        ):
+            self._make_allowlist([first, second])
+
     def test_invalid_allowlist_raises(self):
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
             f.write(
