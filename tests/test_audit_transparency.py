@@ -84,8 +84,15 @@ def test_public_audit_whitelists_fields_and_never_leaks_evidence(tmp_path):
     assert set(release) == {
         "repository",
         "release",
+        "tag",
+        "asset_id",
         "classification",
         "stored_classification",
+        "identity_status",
+        "current_artifact_sha256",
+        "stored_artifact_sha256",
+        "fail_open",
+        "outcome",
         "rule_ids",
         "audited_at",
     }
@@ -96,9 +103,68 @@ def test_public_audit_whitelists_fields_and_never_leaks_evidence(tmp_path):
     ]
     assert '"evidence"' not in raw_json
     assert '"file_contents"' not in raw_json
-    for forbidden in (secret, file_contents, "f" * 64):
+    assert release["stored_artifact_sha256"] == "f" * 64
+    assert release["identity_status"] == "UNKNOWN"
+    for forbidden in (secret, file_contents):
         assert forbidden not in html
         assert forbidden not in raw_json
+
+
+def test_current_stale_and_unknown_identity_are_public_and_unambiguous(tmp_path):
+    verdicts = {
+        "https://github.com/example/plugin": {
+            "v1.2.3@42": {
+                "artifact_sha256": "a" * 64,
+                "classification": "BLOCK",
+                "blocking_rule_ids": ["ARCHIVE_TRAVERSAL"],
+            }
+        }
+    }
+    identities = [
+        {
+            "repository": "https://github.com/example/plugin",
+            "release": "v1.2.3@42",
+            "tag": "v1.2.3",
+            "asset_id": 42,
+            "classification": "AUDIT_ERROR",
+            "stored_classification": "BLOCK",
+            "identity_status": "STALE_HASH",
+            "current_artifact_sha256": "b" * 64,
+            "stored_artifact_sha256": "a" * 64,
+            "fail_open": True,
+        },
+        {
+            "repository": "https://github.com/example/new-plugin",
+            "release": "v2.0.0@9",
+            "tag": "v2.0.0",
+            "asset_id": 9,
+            "classification": "AUDIT_ERROR",
+            "stored_classification": "AUDIT_ERROR",
+            "identity_status": "UNKNOWN",
+            "current_artifact_sha256": "c" * 64,
+            "stored_artifact_sha256": None,
+            "fail_open": True,
+        },
+    ]
+
+    generate_json.write_audit_outputs(
+        verdicts,
+        "enforce",
+        tmp_path,
+        current_identity_records=identities,
+    )
+
+    payload = json.loads((tmp_path / "audit.json").read_text(encoding="utf-8"))
+    by_status = {record["identity_status"]: record for record in payload["releases"]}
+    assert by_status["STALE_HASH"]["current_artifact_sha256"] == "b" * 64
+    assert by_status["STALE_HASH"]["stored_artifact_sha256"] == "a" * 64
+    assert by_status["STALE_HASH"]["outcome"] == "FAIL_OPEN"
+    assert by_status["UNKNOWN"]["stored_artifact_sha256"] is None
+
+    html = (tmp_path / "audit.html").read_text(encoding="utf-8")
+    assert "STALE_HASH — FAIL_OPEN" in html
+    assert "UNKNOWN — FAIL_OPEN" in html
+    assert "v1.2.3 / 42" in html
 
 
 def test_block_releases_are_rendered_before_every_other_tier(tmp_path):

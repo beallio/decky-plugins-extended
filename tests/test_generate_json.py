@@ -27,9 +27,10 @@ class GenerateJsonTests(unittest.TestCase):
         }
         self.assertIsNone(generate_json.build_version_object(dual_zip_release))
 
-    def test_build_version_object_reuses_known_hash(self):
+    def test_build_version_object_rehashes_same_version_and_url(self):
         artifact = "https://example.invalid/plugin.zip"
         known_hash = "a" * 64
+        current_hash = "b" * 64
         release = {
             "tag_name": "v1.2.3",
             "published_at": "2026-01-02T00:00:00Z",
@@ -39,12 +40,50 @@ class GenerateJsonTests(unittest.TestCase):
             "versions": [{"name": "1.2.3", "artifact": artifact, "hash": known_hash}]
         }
 
-        with patch.object(generate_json, "calculate_hash") as calculate_hash:
+        with patch.object(
+            generate_json, "calculate_hash", return_value=current_hash
+        ) as calculate_hash:
             version = generate_json.build_version_object(release, existing)
 
-        calculate_hash.assert_not_called()
-        self.assertEqual(version["hash"], known_hash)
+        calculate_hash.assert_called_once_with(artifact, policy=None)
+        self.assertEqual(version["hash"], current_hash)
         self.assertEqual(version["artifact"], artifact)
+
+    def test_build_version_object_accepts_only_exact_github_digest(self):
+        artifact = "https://example.invalid/plugin.zip"
+        current_hash = "b" * 64
+        valid = {
+            "tag_name": "v1.2.3",
+            "assets": [
+                {
+                    "name": "plugin.zip",
+                    "browser_download_url": artifact,
+                    "digest": "sha256:" + "A" * 64,
+                }
+            ],
+        }
+
+        with patch.object(generate_json, "calculate_hash") as calculate_hash:
+            version = generate_json.build_version_object(valid)
+
+        calculate_hash.assert_not_called()
+        self.assertEqual(version["hash"], "a" * 64)
+
+        for malformed in (
+            "sha256:" + "a" * 63,
+            "sha512:" + "a" * 64,
+            "prefix-sha256:" + "a" * 64,
+            "sha256:" + "g" * 64,
+        ):
+            with self.subTest(malformed=malformed):
+                release = copy.deepcopy(valid)
+                release["assets"][0]["digest"] = malformed
+                with patch.object(
+                    generate_json, "calculate_hash", return_value=current_hash
+                ) as calculate_hash:
+                    version = generate_json.build_version_object(release)
+                calculate_hash.assert_called_once_with(artifact, policy=None)
+                self.assertEqual(version["hash"], current_hash)
 
     def test_normalize_version_extracts_version_from_prefixed_tags(self):
         cases = {
@@ -392,7 +431,8 @@ class GenerateJsonTests(unittest.TestCase):
                 return copy.deepcopy(base_stable)
             return copy.deepcopy(base_testing)
 
-        def build_version_object(release, existing_plugin=None):
+        def build_version_object(release, existing_plugin=None, policy=None):
+            del existing_plugin, policy
             name = release["tag_name"].lstrip("v")
             return {
                 "name": name,

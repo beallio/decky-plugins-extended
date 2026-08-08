@@ -26,7 +26,8 @@ LIVE_URL = os.environ.get(
 
 def version_index(plugins):
     return {
-        p["name"]: {v.get("name") for v in p.get("versions") or []} for p in plugins
+        p["name"]: {(v.get("name"), v.get("hash")) for v in p.get("versions") or []}
+        for p in plugins
     }
 
 
@@ -40,53 +41,99 @@ def report(missing, label):
         print(f"  ... and {len(missing) - 10} more")
 
 
-def check_upstream(live, verdicts, blockable_rules=None):
-    missing = []
-    for plugin in g.fetch_json(g.PLUGINS_URL):
-        versions = [
-            version
-            for version in (plugin.get("versions") or [])
-            if not g.catalog_version_is_blocked(version, verdicts, blockable_rules)
-        ]
-        if not versions:
+def _resolve_upstream_release(version, release_cache, download_policy=None):
+    """Resolve and hash the exact current release behind an upstream version."""
+    artifact = version.get("artifact", "")
+    try:
+        repository = g.canonicalize_github_release_asset_repository_url(artifact)
+        owner, repo = g.parse_github_repository_url(repository)
+    except ValueError:
+        return None, None
+    if repository not in release_cache:
+        release_cache[repository] = g.get_releases(owner, repo)
+    releases = release_cache[repository]
+    candidates = []
+    for release in releases:
+        if not g.is_release_eligible(release, allow_prerelease=True):
             continue
-        newest = versions[0].get("name")
-        if newest not in live.get(plugin["name"], set()):
-            missing.append((plugin["name"], newest))
+        asset = g.get_zip_asset(release) or {}
+        if (
+            g.normalize_version(release.get("tag_name", "")) == version.get("name")
+            and asset.get("browser_download_url") == artifact
+        ):
+            candidates.append(release)
+    if len(candidates) != 1:
+        return None, None
+    current = g.build_version_object(candidates[0], policy=download_policy)
+    return candidates[0], current
+
+
+def check_upstream(live, verdicts, blockable_rules=None, *, download_policy=None):
+    missing = []
+    release_cache = {}
+    for plugin in g.fetch_json(g.PLUGINS_URL):
+        newest = None
+        for version in plugin.get("versions") or []:
+            release, current = _resolve_upstream_release(
+                version, release_cache, download_policy=download_policy
+            )
+            current_hash = current.get("hash") if current else None
+            if not g.catalog_version_is_blocked(
+                version,
+                verdicts,
+                blockable_rules,
+                release=release,
+                current_artifact_sha256=current_hash,
+            ):
+                newest = current or version
+                break
+        if newest is None:
+            continue
+        identity = (newest.get("name"), newest.get("hash"))
+        if identity not in live.get(plugin["name"], set()):
+            missing.append((plugin["name"], newest.get("name")))
     return missing
 
 
-def check_custom_repos(live, verdicts, blockable_rules=None):
+def check_custom_repos(live, verdicts, blockable_rules=None, *, download_policy=None):
     missing = []
     for url in g.read_repo_urls():
-        owner, repo = url.rstrip("/").split("/")[-2:]
         try:
+            url = g.canonicalize_github_repository_url(url)
+            owner, repo = g.parse_github_repository_url(url)
             branch = g.get_repo_info(owner, repo).get("default_branch", "main")
             name = g.resolve_plugin_name(
                 g.get_plugin_json(owner, repo, branch),
                 g.get_package_json(owner, repo, branch),
             )
-            versions = g.sort_versions(
-                [
-                    {
-                        "name": g.normalize_version(r.get("tag_name", "")),
-                        "created": r.get("published_at") or "",
-                    }
-                    for r in g.get_releases(owner, repo)
-                    if not r.get("prerelease")
-                    and g.classification_for(
-                        url, r, verdicts, blockable_rules
-                    ).effective_classification
-                    != "BLOCK"
-                ]
-            )
+            versions = []
+            for release in g.get_releases(owner, repo):
+                if not g.is_release_eligible(release, allow_prerelease=False):
+                    continue
+                version = g.build_version_object(release, policy=download_policy)
+                if version is None:
+                    continue
+                verdict = g.classification_for(
+                    url,
+                    release,
+                    verdicts,
+                    blockable_rules,
+                    current_artifact_sha256=version["hash"],
+                )
+                if verdict.effective_classification != "BLOCK":
+                    versions.append(version)
+            g.sort_versions(versions)
+        except g.ArtifactDownloadError:
+            raise
         except Exception as e:
             # An unreachable repo is not evidence of a change, and the build
             # itself tolerates these, so never rebuild on one.
             print(f"  skipped {owner}/{repo}: {e}")
             continue
 
-        if versions and versions[0]["name"] not in live.get(name, set()):
+        if versions and (versions[0]["name"], versions[0]["hash"]) not in live.get(
+            name, set()
+        ):
             missing.append((name, versions[0]["name"]))
     return missing
 
@@ -95,18 +142,27 @@ def main():
     live = version_index(g.fetch_json(LIVE_URL))
     verdicts = g.load_verdicts()
     try:
-        blockable_rules = set(g.load_policy().get("blockable_rules") or [])
+        policy = g.load_policy()
+        blockable_rules = set(policy.get("blockable_rules") or [])
     except Exception as exc:
-        print(
-            f"Warning: could not read blockable rules ({exc}); "
-            "treating stored BLOCK verdicts as non-blocking."
-        )
-        blockable_rules = set()
+        raise RuntimeError(f"Could not load catalog security policy: {exc}") from exc
 
-    upstream = check_upstream(live, verdicts, blockable_rules)
+    try:
+        upstream = check_upstream(
+            live, verdicts, blockable_rules, download_policy=policy
+        )
+    except g.ArtifactDownloadError as exc:
+        print(f"Fatal artifact identity failure: {exc}")
+        return 1
     report(upstream, "Upstream versions missing")
 
-    custom = check_custom_repos(live, verdicts, blockable_rules)
+    try:
+        custom = check_custom_repos(
+            live, verdicts, blockable_rules, download_policy=policy
+        )
+    except g.ArtifactDownloadError as exc:
+        print(f"Fatal artifact identity failure: {exc}")
+        return 1
     report(custom, "Custom repository releases missing")
 
     changed = bool(upstream or custom)
