@@ -172,6 +172,236 @@ def test_normalize_github_sha256_digest_rejects_malformed_values(value):
     assert pru.normalize_github_sha256_digest(value) is None
 
 
+class _FakeResponse:
+    def __init__(
+        self, *, payload=None, links=None, headers=None, chunks=(), error=None
+    ):
+        self._payload = payload
+        self.links = links or {}
+        self.headers = headers or {}
+        self._chunks = chunks
+        self._error = error
+        self.iterated = False
+        self.closed = False
+        self.requested_chunk_size = None
+
+    def raise_for_status(self):
+        if self._error:
+            raise self._error
+
+    def json(self):
+        return self._payload
+
+    def iter_content(self, chunk_size):
+        self.iterated = True
+        self.requested_chunk_size = chunk_size
+        for chunk in self._chunks:
+            if isinstance(chunk, BaseException):
+                raise chunk
+            yield chunk
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeSession:
+    def __init__(self, responses):
+        self._responses = iter(responses)
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return next(self._responses)
+
+
+def test_get_releases_consumes_every_pagination_link():
+    second_url = "https://api.github.com/repositories/1/releases?per_page=100&page=2"
+    first = _FakeResponse(payload=[{"id": 1}], links={"next": {"url": second_url}})
+    second = _FakeResponse(payload=[{"id": 2}])
+    session = _FakeSession([first, second])
+
+    assert pru.get_releases("Owner", "Repo", session=session) == [{"id": 1}, {"id": 2}]
+    assert session.calls == [
+        (
+            "https://api.github.com/repos/owner/repo/releases?per_page=100",
+            {"timeout": 10},
+        ),
+        (second_url, {"timeout": 10}),
+    ]
+    assert first.closed and second.closed
+
+
+def test_get_releases_later_page_failure_is_not_partial_success():
+    first = _FakeResponse(
+        payload=[{"id": 1}], links={"next": {"url": "https://api.github.com/page/2"}}
+    )
+    second = _FakeResponse(error=RuntimeError("page two failed"))
+
+    with pytest.raises(pru.ReleasePaginationError, match="page 2") as exc_info:
+        pru.get_releases("owner", "repo", session=_FakeSession([first, second]))
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+
+def test_get_releases_rejects_a_repeated_next_link():
+    first_url = "https://api.github.com/repos/owner/repo/releases?per_page=100"
+    second_url = "https://api.github.com/page/2"
+    first = _FakeResponse(payload=[{"id": 1}], links={"next": {"url": second_url}})
+    second = _FakeResponse(payload=[{"id": 2}], links={"next": {"url": first_url}})
+
+    with pytest.raises(pru.ReleasePaginationError, match="cyclic"):
+        pru.get_releases("owner", "repo", session=_FakeSession([first, second]))
+
+
+def test_download_policy_defaults_are_explicit_and_validated():
+    policy = pru.validate_download_policy({})
+    assert policy == pru.DownloadPolicy(
+        release_max_bytes=67_108_864,
+        source_max_bytes=268_435_456,
+        connect_timeout_seconds=10,
+        read_timeout_seconds=60,
+        chunk_size_bytes=1_048_576,
+    )
+    assert pru.DEFAULT_RELEASE_MAX_BYTES == 67_108_864
+    assert pru.DEFAULT_SOURCE_MAX_BYTES == 268_435_456
+    assert pru.DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_SECONDS == 10
+    assert pru.DEFAULT_DOWNLOAD_READ_TIMEOUT_SECONDS == 60
+    assert pru.DEFAULT_DOWNLOAD_CHUNK_SIZE_BYTES == 1_048_576
+
+
+@pytest.mark.parametrize(
+    "downloads",
+    [
+        "invalid",
+        {"release_max_bytes": True},
+        {"source_max_bytes": 0},
+        {"connect_timeout_seconds": -1},
+        {"read_timeout_seconds": 1.5},
+        {"chunk_size_bytes": "1024"},
+    ],
+)
+def test_download_policy_rejects_invalid_values(downloads):
+    with pytest.raises(ValueError, match="download"):
+        pru.validate_download_policy({"downloads": downloads})
+
+
+def _small_download_policy(**overrides):
+    downloads = {
+        "release_max_bytes": 5,
+        "source_max_bytes": 9,
+        "connect_timeout_seconds": 2,
+        "read_timeout_seconds": 3,
+        "chunk_size_bytes": 2,
+    }
+    downloads.update(overrides)
+    return {"downloads": downloads}
+
+
+def test_bounded_stream_download_exact_limit_succeeds_and_hashes_once(tmp_path):
+    response = _FakeResponse(headers={}, chunks=[b"12", b"", b"345"])
+    session = _FakeSession([response])
+    destination = tmp_path / "plugin.zip"
+
+    result = pru.bounded_stream_download(
+        "https://example.com/plugin.zip",
+        destination,
+        session=session,
+        kind="release",
+        policy=_small_download_policy(),
+    )
+
+    assert destination.read_bytes() == b"12345"
+    assert result.path == destination
+    assert result.size_bytes == 5
+    assert (
+        result.sha256
+        == "5994471abb01112afcc18159f6cc74b4f511b99806da59b3caf5a9c173cacfc5"
+    )
+    assert session.calls[0][1] == {"stream": True, "timeout": (2, 3)}
+    assert response.requested_chunk_size == 2
+    assert response.closed
+
+
+def test_bounded_stream_download_rejects_oversized_declared_length_before_reading(
+    tmp_path,
+):
+    response = _FakeResponse(headers={"Content-Length": "6"}, chunks=[b"ignored"])
+    destination = tmp_path / "plugin.zip"
+
+    with pytest.raises(pru.DownloadLimitError, match="Content-Length"):
+        pru.bounded_stream_download(
+            "https://example.com/plugin.zip",
+            destination,
+            session=_FakeSession([response]),
+            kind="release",
+            policy=_small_download_policy(),
+        )
+    assert not response.iterated
+    assert not destination.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("content_length", [None, "malformed", "-1", "1"])
+def test_bounded_stream_download_enforces_streamed_limit_and_cleans_partial(
+    tmp_path, content_length
+):
+    headers = {} if content_length is None else {"Content-Length": content_length}
+    response = _FakeResponse(headers=headers, chunks=[b"12345", b"6"])
+    destination = tmp_path / "plugin.zip"
+
+    with pytest.raises(pru.DownloadLimitError, match="exceeds 5 bytes"):
+        pru.bounded_stream_download(
+            "https://example.com/plugin.zip",
+            destination,
+            session=_FakeSession([response]),
+            kind="release",
+            policy=_small_download_policy(),
+        )
+    assert not destination.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_bounded_stream_download_cleans_partial_after_stream_failure(tmp_path):
+    response = _FakeResponse(chunks=[b"12", RuntimeError("stream failed")])
+    destination = tmp_path / "source.tar.gz"
+
+    with pytest.raises(RuntimeError, match="stream failed"):
+        pru.bounded_stream_download(
+            "https://example.com/source.tar.gz",
+            destination,
+            session=_FakeSession([response]),
+            kind="source",
+            policy=_small_download_policy(),
+        )
+    assert not destination.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_bounded_stream_download_uses_source_limit(tmp_path):
+    destination = tmp_path / "source.tar.gz"
+    response = _FakeResponse(chunks=[b"123456789"])
+    result = pru.bounded_stream_download(
+        "https://example.com/source.tar.gz",
+        destination,
+        session=_FakeSession([response]),
+        kind="source",
+        policy=_small_download_policy(),
+    )
+    assert result.size_bytes == 9
+
+
+def test_bounded_stream_download_rejects_unknown_kind_without_request(tmp_path):
+    session = _FakeSession([])
+    with pytest.raises(ValueError, match="download kind"):
+        pru.bounded_stream_download(
+            "https://example.com/plugin.zip",
+            tmp_path / "plugin.zip",
+            session=session,
+            kind="other",
+            policy=_small_download_policy(),
+        )
+    assert session.calls == []
+
+
 def test_select_best_release_testing_prefers_higher_prerelease():
     stable = {
         "tag_name": "v1.0.0",

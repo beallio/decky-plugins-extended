@@ -8,8 +8,14 @@ This module is side-effect free and safe to import from either context.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
+import tempfile
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import unquote, urlsplit
 
@@ -19,6 +25,90 @@ from urllib.parse import unquote, urlsplit
 
 _ENCODED_PATH_SEPARATOR = re.compile(r"%(?:2f|5c)", re.IGNORECASE)
 _GITHUB_SHA256_DIGEST = re.compile(r"sha256:([0-9a-fA-F]{64})")
+
+
+class ReleasePaginationError(RuntimeError):
+    """A repository's complete GitHub release history could not be loaded."""
+
+
+def get_releases(
+    owner: str,
+    repo: str,
+    *,
+    session: Any,
+    timeout: int | tuple[int, int] = 10,
+) -> list[dict[str, Any]]:
+    """Fetch every GitHub release page using an injected HTTP transport.
+
+    Any page failure or repeated ``next`` URL raises instead of exposing the
+    accumulated prefix as though it were a complete repository history.
+    """
+    canonical_owner, canonical_repo = parse_github_repository_url(
+        f"https://github.com/{owner}/{repo}"
+    )
+    next_url: Optional[str] = (
+        f"https://api.github.com/repos/{canonical_owner}/{canonical_repo}"
+        "/releases?per_page=100"
+    )
+    releases: list[dict[str, Any]] = []
+    visited: set[str] = set()
+    page_number = 0
+
+    while next_url is not None:
+        if next_url in visited:
+            raise ReleasePaginationError(
+                f"GitHub release pagination is cyclic for {canonical_owner}/{canonical_repo}"
+            )
+        visited.add(next_url)
+        page_number += 1
+        response = None
+        try:
+            response = session.get(next_url, timeout=timeout)
+            response.raise_for_status()
+            page = response.json()
+            if not isinstance(page, list) or not all(
+                isinstance(release, dict) for release in page
+            ):
+                raise ReleasePaginationError(
+                    f"GitHub release page {page_number} is not a list of objects"
+                )
+            releases.extend(page)
+
+            links = getattr(response, "links", {})
+            if not isinstance(links, Mapping):
+                raise ReleasePaginationError(
+                    f"GitHub release page {page_number} has invalid pagination links"
+                )
+            next_link = links.get("next")
+            if next_link is None:
+                next_url = None
+            elif not isinstance(next_link, Mapping) or not isinstance(
+                next_link.get("url"), str
+            ):
+                raise ReleasePaginationError(
+                    f"GitHub release page {page_number} has an invalid next link"
+                )
+            else:
+                next_url = next_link["url"]
+                if not next_url or next_url in visited:
+                    raise ReleasePaginationError(
+                        "GitHub release pagination is cyclic for "
+                        f"{canonical_owner}/{canonical_repo}"
+                    )
+        except ReleasePaginationError:
+            raise
+        except Exception as exc:
+            raise ReleasePaginationError(
+                "Failed to fetch GitHub releases for "
+                f"{canonical_owner}/{canonical_repo} at page {page_number}"
+            ) from exc
+        finally:
+            if response is not None:
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
+
+    return releases
 
 
 def parse_github_repository_url(url: str) -> tuple[str, str]:
@@ -93,6 +183,172 @@ def normalize_github_sha256_digest(value: Any) -> Optional[str]:
         return None
     match = _GITHUB_SHA256_DIGEST.fullmatch(value)
     return match.group(1).lower() if match else None
+
+
+# ---------------------------------------------------------------------------
+# Policy-driven bounded downloads
+# ---------------------------------------------------------------------------
+
+DEFAULT_RELEASE_MAX_BYTES = 67_108_864
+DEFAULT_SOURCE_MAX_BYTES = 268_435_456
+DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_SECONDS = 10
+DEFAULT_DOWNLOAD_READ_TIMEOUT_SECONDS = 60
+DEFAULT_DOWNLOAD_CHUNK_SIZE_BYTES = 1_048_576
+
+
+class DownloadLimitError(ValueError):
+    """A response declared or streamed more bytes than policy permits."""
+
+
+@dataclass(frozen=True)
+class DownloadPolicy:
+    """Validated limits and timeouts shared by every download call path."""
+
+    release_max_bytes: int = DEFAULT_RELEASE_MAX_BYTES
+    source_max_bytes: int = DEFAULT_SOURCE_MAX_BYTES
+    connect_timeout_seconds: int = DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_SECONDS
+    read_timeout_seconds: int = DEFAULT_DOWNLOAD_READ_TIMEOUT_SECONDS
+    chunk_size_bytes: int = DEFAULT_DOWNLOAD_CHUNK_SIZE_BYTES
+
+    def limit_for(self, kind: str) -> int:
+        if kind == "release":
+            return self.release_max_bytes
+        if kind == "source":
+            return self.source_max_bytes
+        raise ValueError(f"Unsupported download kind: {kind!r}")
+
+
+def _positive_download_integer(name: str, value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"downloads.{name} must be a positive integer")
+    return value
+
+
+def validate_download_policy(
+    policy: Optional[Mapping[str, Any] | DownloadPolicy] = None,
+) -> DownloadPolicy:
+    """Build a validated config from a policy root or ``downloads`` mapping."""
+    if isinstance(policy, DownloadPolicy):
+        values: Mapping[str, Any] = {
+            "release_max_bytes": policy.release_max_bytes,
+            "source_max_bytes": policy.source_max_bytes,
+            "connect_timeout_seconds": policy.connect_timeout_seconds,
+            "read_timeout_seconds": policy.read_timeout_seconds,
+            "chunk_size_bytes": policy.chunk_size_bytes,
+        }
+    elif policy is None:
+        values = {}
+    elif not isinstance(policy, Mapping):
+        raise ValueError("download policy must be a mapping")
+    else:
+        downloads = policy.get("downloads", policy)
+        if not isinstance(downloads, Mapping):
+            raise ValueError("policy downloads must be a mapping")
+        values = downloads
+
+    defaults = DownloadPolicy()
+    return DownloadPolicy(
+        release_max_bytes=_positive_download_integer(
+            "release_max_bytes",
+            values.get("release_max_bytes", defaults.release_max_bytes),
+        ),
+        source_max_bytes=_positive_download_integer(
+            "source_max_bytes",
+            values.get("source_max_bytes", defaults.source_max_bytes),
+        ),
+        connect_timeout_seconds=_positive_download_integer(
+            "connect_timeout_seconds",
+            values.get("connect_timeout_seconds", defaults.connect_timeout_seconds),
+        ),
+        read_timeout_seconds=_positive_download_integer(
+            "read_timeout_seconds",
+            values.get("read_timeout_seconds", defaults.read_timeout_seconds),
+        ),
+        chunk_size_bytes=_positive_download_integer(
+            "chunk_size_bytes",
+            values.get("chunk_size_bytes", defaults.chunk_size_bytes),
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class DownloadResult:
+    """Identity and size produced by one successful bounded stream."""
+
+    path: Path
+    sha256: str
+    size_bytes: int
+
+
+def bounded_stream_download(
+    url: str,
+    destination: str | Path,
+    *,
+    session: Any,
+    kind: str,
+    policy: Optional[Mapping[str, Any] | DownloadPolicy] = None,
+) -> DownloadResult:
+    """Atomically stream one response within policy while computing SHA-256."""
+    settings = validate_download_policy(policy)
+    max_bytes = settings.limit_for(kind)
+    destination_path = Path(destination)
+    response = session.get(
+        url,
+        stream=True,
+        timeout=(
+            settings.connect_timeout_seconds,
+            settings.read_timeout_seconds,
+        ),
+    )
+    temporary_path: Optional[Path] = None
+
+    try:
+        response.raise_for_status()
+        raw_content_length = response.headers.get("Content-Length")
+        try:
+            declared_length = int(raw_content_length)
+        except (TypeError, ValueError):
+            declared_length = None
+        if declared_length is not None and declared_length > max_bytes:
+            raise DownloadLimitError(
+                f"Content-Length {declared_length} exceeds {max_bytes} bytes"
+            )
+
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        hasher = hashlib.sha256()
+        streamed_bytes = 0
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{destination_path.name}.",
+            suffix=".part",
+            dir=destination_path.parent,
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            for chunk in response.iter_content(chunk_size=settings.chunk_size_bytes):
+                if not chunk:
+                    continue
+                streamed_bytes += len(chunk)
+                if streamed_bytes > max_bytes:
+                    raise DownloadLimitError(
+                        f"Streamed response exceeds {max_bytes} bytes"
+                    )
+                temporary_file.write(chunk)
+                hasher.update(chunk)
+
+        os.replace(temporary_path, destination_path)
+        temporary_path = None
+        return DownloadResult(
+            path=destination_path,
+            sha256=hasher.hexdigest(),
+            size_bytes=streamed_bytes,
+        )
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
 
 
 # ---------------------------------------------------------------------------
