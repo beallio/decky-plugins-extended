@@ -412,6 +412,19 @@
       "warning_rule_ids": [
         "PRIVILEGE_MOUNT"
       ]
+    },
+    "v0.3.6@505582730": {
+      "artifact_sha256": "0d856632d8a48a93f9886bb4f4bc7270bf64f21d1dce23c208a978e45d94fda5",
+      "audit_context_hash": "8b67fcb6c19c44e35b260fd9e039962f",
+      "audited_at": "2026-08-08T01:11:17.118858Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "OBFUSCATION_LARGE_BASE64"
+      ],
+      "warning_rule_ids": [
+        "PRIVILEGE_MOUNT"
+      ]
     }
   },
   "https://github.com/beallio/Decky-SteamAchievements": {
