@@ -412,7 +412,14 @@ def _deep_merge(base: dict, override: dict) -> None:
             base[k] = v
 
 
-def load_allowlist(path: str = DEFAULT_ALLOWLIST_FILE) -> list[dict[str, Any]]:
+_CANONICAL_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def load_allowlist(
+    path: str = DEFAULT_ALLOWLIST_FILE,
+    *,
+    policy: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
     """Load and validate security-allowlist.yml.
 
     Raises ValueError for malformed entries.
@@ -429,6 +436,9 @@ def load_allowlist(path: str = DEFAULT_ALLOWLIST_FILE) -> list[dict[str, Any]]:
     exceptions = data.get("exceptions") or []
     if not isinstance(exceptions, list):
         raise ValueError(f"allowlist 'exceptions' must be a list in {path}.")
+    blockable_rules = set(
+        (policy if policy is not None else _default_policy()).get("blockable_rules", [])
+    )
     validated: list[dict[str, Any]] = []
     for i, entry in enumerate(exceptions):
         if not isinstance(entry, dict):
@@ -446,6 +456,22 @@ def load_allowlist(path: str = DEFAULT_ALLOWLIST_FILE) -> list[dict[str, Any]]:
                 raise ValueError(
                     f"Allowlist entry {i} missing required field '{required}'."
                 )
+        rule_id = str(entry["rule"])
+        artifact_sha256 = str(entry["artifact_sha256"])
+        if rule_id in blockable_rules and not _CANONICAL_SHA256.fullmatch(
+            artifact_sha256
+        ):
+            raise ValueError(
+                f"Allowlist entry {i} rule {rule_id!r} requires an exact "
+                "lowercase artifact_sha256."
+            )
+        if artifact_sha256 != "any" and not _CANONICAL_SHA256.fullmatch(
+            artifact_sha256
+        ):
+            raise ValueError(
+                f"Allowlist entry {i} artifact_sha256 must be 'any' or an exact "
+                "lowercase SHA-256."
+            )
         # Validate expires format if present
         if "expires" in entry and entry["expires"]:
             try:
@@ -483,17 +509,22 @@ def apply_allowlist(
     repository: str,
     release: str,
     artifact_sha256: str,
+    *,
+    policy: Optional[dict[str, Any]] = None,
 ) -> tuple[list[Finding], list[dict[str, Any]]]:
     """Mark findings as allowlisted where an exception applies.
 
     Returns (updated findings, list of allowlist decision records).
-    Blocked rules (MALWARE, ARCHIVE_TRAVERSAL, CREDENTIAL_THEFT) may only
-    be allowlisted when artifact_sha256 matches exactly.
+    Every rule in the live policy's ``blockable_rules`` may only be allowlisted
+    when a canonical lowercase artifact SHA-256 matches exactly.
     """
     today = datetime.date.today()
     decisions: list[dict[str, Any]] = []
     # Normalise repo to "owner/repo" format
     norm_repo = _normalise_repo_key(repository)
+    blockable_rules = set(
+        (policy if policy is not None else _default_policy()).get("blockable_rules", [])
+    )
 
     for finding in findings:
         for exc in exceptions:
@@ -514,9 +545,12 @@ def apply_allowlist(
             if exc_release and exc_release != release:
                 continue
 
-            # Certain rules require an exact artifact hash
-            if finding.rule_id in ("MALWARE", "ARCHIVE_TRAVERSAL", "CREDENTIAL_THEFT"):
-                if not exc_sha or exc_sha == "any":
+            if finding.rule_id in blockable_rules:
+                if (
+                    not exc_sha
+                    or not _CANONICAL_SHA256.fullmatch(exc_sha)
+                    or exc_sha != artifact_sha256
+                ):
                     log.warning(
                         "Allowlist entry for %s/%s rejected: %s requires exact artifact_sha256.",
                         exc_repo,
@@ -4022,6 +4056,7 @@ def audit_release(
             repo_url,
             tag_name,
             artifact_sha256,
+            policy=policy,
         )
 
         # --- Final classification ---
@@ -4324,7 +4359,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
 
     try:
-        exceptions = load_allowlist(args.allowlist)
+        exceptions = load_allowlist(args.allowlist, policy=policy)
     except ValueError as exc:
         log.error("Invalid allowlist: %s", exc)
         return 1

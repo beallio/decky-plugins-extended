@@ -674,7 +674,7 @@ class TestClassification(unittest.TestCase):
 
 
 class TestAllowlist(unittest.TestCase):
-    def _make_allowlist(self, exceptions: list[dict]) -> list[dict]:
+    def _write_allowlist(self, exceptions: list[dict]) -> str:
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
             f.write("version: '1'\nexceptions:\n")
             for exc in exceptions:
@@ -682,11 +682,27 @@ class TestAllowlist(unittest.TestCase):
                 for k, v in exc.items():
                     f.write(f'{k}: "{v}"\n    ')
                 f.write("\n")
-            name = f.name
+            return f.name
+
+    def _make_allowlist(
+        self, exceptions: list[dict], policy: dict | None = None
+    ) -> list[dict]:
+        name = self._write_allowlist(exceptions)
         try:
-            return ap.load_allowlist(name)
+            return ap.load_allowlist(name, policy=policy)
         finally:
             os.unlink(name)
+
+    def _exception(self, rule_id: str, sha: str) -> dict:
+        return {
+            "repository": "owner/repo",
+            "release": "1.0.0",
+            "artifact_sha256": sha,
+            "rule": rule_id,
+            "reason": "reviewed fixture",
+            "approved_by": "reviewer",
+            "expires": "2027-01-01",
+        }
 
     def _block_finding(self, rule_id: str = "ROOT_ACCESS") -> ap.Finding:
         return ap.Finding(
@@ -703,16 +719,7 @@ class TestAllowlist(unittest.TestCase):
     def test_matching_entry_allowlists_finding(self):
         sha = "a" * 64
         # Build exceptions directly
-        excs = [
-            {
-                "repository": "owner/repo",
-                "release": "1.0.0",
-                "artifact_sha256": sha,
-                "rule": "ROOT_ACCESS",
-                "reason": "Hardware plugin",
-                "approved_by": "reviewer",
-            }
-        ]
+        excs = [self._exception("ROOT_ACCESS", sha)]
         finding = self._block_finding("ROOT_ACCESS")
         findings, decisions = ap.apply_allowlist(
             [finding],
@@ -725,15 +732,7 @@ class TestAllowlist(unittest.TestCase):
         self.assertEqual(len(decisions), 1)
 
     def test_hash_mismatch_does_not_allowlist(self):
-        excs = [
-            {
-                "repository": "owner/repo",
-                "artifact_sha256": "a" * 64,
-                "rule": "ROOT_ACCESS",
-                "reason": "Hardware plugin",
-                "approved_by": "reviewer",
-            }
-        ]
+        excs = [self._exception("ROOT_ACCESS", "a" * 64)]
         finding = self._block_finding("ROOT_ACCESS")
         findings, decisions = ap.apply_allowlist(
             [finding],
@@ -747,12 +746,8 @@ class TestAllowlist(unittest.TestCase):
     def test_expired_entry_does_not_allowlist(self):
         excs = [
             {
-                "repository": "owner/repo",
-                "artifact_sha256": "a" * 64,
-                "rule": "ROOT_ACCESS",
-                "reason": "Hardware plugin",
-                "approved_by": "reviewer",
-                "expires": "2020-01-01",  # in the past
+                **self._exception("ROOT_ACCESS", "a" * 64),
+                "expires": "2020-01-01",
             }
         ]
         finding = self._block_finding("ROOT_ACCESS")
@@ -767,15 +762,7 @@ class TestAllowlist(unittest.TestCase):
 
     def test_malware_requires_exact_hash(self):
         """MALWARE rule cannot be allowlisted with artifact_sha256='any'."""
-        excs = [
-            {
-                "repository": "owner/repo",
-                "artifact_sha256": "any",
-                "rule": "MALWARE",
-                "reason": "false positive",
-                "approved_by": "reviewer",
-            }
-        ]
+        excs = [self._exception("MALWARE", "any")]
         finding = self._block_finding("MALWARE")
         findings, _ = ap.apply_allowlist(
             [finding],
@@ -785,6 +772,64 @@ class TestAllowlist(unittest.TestCase):
             "a" * 64,
         )
         self.assertFalse(findings[0].allowlisted)
+
+    def test_every_live_blockable_rule_requires_exact_lowercase_hash(self):
+        policy = ap.load_policy("security-policy.yml")
+        current_sha = "a" * 64
+
+        for rule_id in policy["blockable_rules"]:
+            with self.subTest(rule_id=rule_id):
+                for rejected in ("any", "A" * 64, "a" * 63, "g" * 64):
+                    name = self._write_allowlist([self._exception(rule_id, rejected)])
+                    try:
+                        with self.assertRaises(ValueError):
+                            ap.load_allowlist(name, policy=policy)
+                    finally:
+                        os.unlink(name)
+
+                exceptions = self._make_allowlist(
+                    [self._exception(rule_id, current_sha)], policy=policy
+                )
+                finding = self._block_finding(rule_id)
+                findings, decisions = ap.apply_allowlist(
+                    [finding],
+                    exceptions,
+                    "https://github.com/owner/repo",
+                    "1.0.0",
+                    current_sha,
+                    policy=policy,
+                )
+                self.assertTrue(findings[0].allowlisted)
+                self.assertEqual(len(decisions), 1)
+
+    def test_new_blockable_rule_immediately_requires_exact_hash(self):
+        policy = ap._default_policy()
+        policy["blockable_rules"].append("ROOT_ACCESS")
+        name = self._write_allowlist([self._exception("ROOT_ACCESS", "any")])
+        try:
+            with self.assertRaises(ValueError):
+                ap.load_allowlist(name, policy=policy)
+        finally:
+            os.unlink(name)
+
+    def test_non_blockable_rule_may_use_any_with_complete_scope(self):
+        policy = ap._default_policy()
+        exceptions = self._make_allowlist(
+            [self._exception("ROOT_ACCESS", "any")], policy=policy
+        )
+        finding = self._block_finding("ROOT_ACCESS")
+
+        findings, decisions = ap.apply_allowlist(
+            [finding],
+            exceptions,
+            "https://github.com/owner/repo",
+            "1.0.0",
+            "a" * 64,
+            policy=policy,
+        )
+
+        self.assertTrue(findings[0].allowlisted)
+        self.assertEqual(len(decisions), 1)
 
     def test_invalid_allowlist_raises(self):
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
