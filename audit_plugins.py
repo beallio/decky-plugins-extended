@@ -4066,12 +4066,6 @@ def _resumable_progress_report(
 
     try:
         report = _dict_to_report(raw_report)
-        report_repository = plugin_release_utils.canonicalize_github_repository_url(
-            report.repository
-        )
-        expected_repository = plugin_release_utils.canonicalize_github_repository_url(
-            expected["repository"]
-        )
     except Exception:
         return None
 
@@ -4086,7 +4080,7 @@ def _resumable_progress_report(
         "audit_context_hash": expected["audit_context_hash"],
         "completion_status": "completed",
     }
-    if report_repository != expected_repository or any(
+    if report.repository != expected["repository"] or any(
         getattr(report, field) != value
         for field, value in expected_report_identity.items()
     ):

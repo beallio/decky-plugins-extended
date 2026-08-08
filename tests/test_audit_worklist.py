@@ -736,6 +736,16 @@ def _embedded_report_identity(report):
     ("field", "replacement"),
     [
         ("repository", "https://github.com/attacker/spliced"),
+        pytest.param(
+            "repository",
+            "https://github.com/OWNER/REPO",
+            id="repository-case-only-mismatch",
+        ),
+        pytest.param(
+            "repository",
+            "https://github.com/owner/repo/",
+            id="repository-trailing-slash-mismatch",
+        ),
         ("release", "v2"),
         ("release_id", "v2@10"),
         ("github_release_id", "2"),
