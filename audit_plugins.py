@@ -5143,6 +5143,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
         return _release_outcome_exit_code(reports, enforcement_mode)
 
+    report_json_path = os.path.join(args.output_dir, "security-report.json")
+    report_markdown_path = os.path.join(args.output_dir, "security-report.md")
+    progress_path = args.progress_manifest or os.path.join(
+        args.output_dir, f"progress-shard-{args.shard_index}.json"
+    )
+    verdict_delta_path = args.verdict_delta or os.path.join(
+        args.output_dir, f"verdict-delta-shard-{args.shard_index}.json"
+    )
+
     # Determine repositories to audit
     try:
         if args.all:
@@ -5161,12 +5170,19 @@ def main(argv: Optional[list[str]] = None) -> int:
         # upload always finds files and CI does not produce a spurious
         # "No files were found" warning.
         try:
-            json_path, md_path = write_reports(
-                [], args.output_dir, verdicts=verdict_snapshot
+            write_reports([], args.output_dir, verdicts=verdict_snapshot)
+            _atomic_write_text(
+                verdict_delta_path,
+                json.dumps({}, indent=2, sort_keys=True) + "\n",
             )
-            log.info("Empty reports written: %s, %s", json_path, md_path)
+            log.info(
+                "Empty reports and verdict delta written: %s, %s, %s",
+                report_json_path,
+                report_markdown_path,
+                verdict_delta_path,
+            )
         except Exception as exc:
-            log.error("Failed to write empty reports: %s", exc)
+            log.error("Failed to write empty audit outputs: %s", exc)
             return 1
         # Print distinction in job summary
         summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -5197,12 +5213,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         args.shard_index,
         args.shard_count,
         len(worklist),
-    )
-    progress_path = args.progress_manifest or os.path.join(
-        args.output_dir, f"progress-shard-{args.shard_index}.json"
-    )
-    verdict_delta_path = args.verdict_delta or os.path.join(
-        args.output_dir, f"verdict-delta-shard-{args.shard_index}.json"
     )
     try:
         progress_records = _load_progress_manifest(progress_path)

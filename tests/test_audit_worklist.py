@@ -1,5 +1,7 @@
 import hashlib
 import json
+import subprocess
+import sys
 import zipfile
 from io import BytesIO
 from pathlib import Path
@@ -7,6 +9,8 @@ from pathlib import Path
 import pytest
 
 import audit_plugins as ap
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _release(
@@ -263,6 +267,89 @@ def test_release_outcome_exit_precedence(classifications, expected):
     ]
 
     assert ap._release_outcome_exit_code(reports, "enforce") == expected
+
+
+def test_empty_repository_selection_cli_writes_complete_shard_outputs(tmp_path):
+    output_dir = tmp_path / "reports"
+    progress_path = tmp_path / "state" / "progress.json"
+    verdict_delta_path = tmp_path / "deltas" / "shard-2.json"
+    tracked_verdict_path = ROOT / "security-verdicts.json"
+    tracked_verdict_bytes = tracked_verdict_path.read_bytes()
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "audit_plugins.py"),
+            "--changed",
+            "--base-ref",
+            "HEAD",
+            "--shard-count",
+            "4",
+            "--shard-index",
+            "2",
+            "--output-dir",
+            str(output_dir),
+            "--progress-manifest",
+            str(progress_path),
+            "--verdict-delta",
+            str(verdict_delta_path),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(
+        (output_dir / "security-report.json").read_text(encoding="utf-8")
+    )
+    assert report == {
+        "generated_at": "",
+        "policy_version": ap.POLICY_VERSION,
+        "report_count": 0,
+        "reports": [],
+        "schema_version": ap.AUDIT_SCHEMA_VERSION,
+    }
+    assert (output_dir / "security-report.md").read_text(encoding="utf-8") == (
+        "# Decky Plugin Security Audit\n\n"
+        "Generated: \n\n"
+        "No plugin repository changes were detected.\n"
+    )
+    assert verdict_delta_path.read_text(encoding="utf-8") == "{}\n"
+    assert not progress_path.exists()
+    assert tracked_verdict_path.read_bytes() == tracked_verdict_bytes
+
+
+def test_empty_repository_selection_delta_write_failure_is_run_global(
+    monkeypatch, tmp_path
+):
+    output_dir = tmp_path / "reports"
+    verdict_delta_path = tmp_path / "deltas" / "shard-0.json"
+    original_atomic_write = ap._atomic_write_text
+
+    def fail_delta_write(path, content):
+        if Path(path) == verdict_delta_path:
+            raise OSError("delta output denied")
+        original_atomic_write(path, content)
+
+    monkeypatch.setattr(ap, "load_policy", lambda *_args: ap._default_policy())
+    monkeypatch.setattr(ap, "load_allowlist", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ap, "load_verdicts", lambda *_args: {})
+    monkeypatch.setattr(ap, "get_changed_repos", lambda *_args: [])
+    monkeypatch.setattr(ap, "_atomic_write_text", fail_delta_write)
+
+    code = ap.main(
+        [
+            "--changed",
+            "--output-dir",
+            str(output_dir),
+            "--verdict-delta",
+            str(verdict_delta_path),
+        ]
+    )
+
+    assert code == 1
+    assert not verdict_delta_path.exists()
 
 
 def test_mixed_release_run_checkpoints_success_and_publishes_error_before_exit_4(
