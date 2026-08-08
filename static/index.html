@@ -30,7 +30,7 @@
             background: rgba(0, 0, 0, 0.8);
             border: 4px solid #ff00ff;
             border-radius: 15px;
-            padding: 40px;
+            padding: 72px 40px 40px;
             box-shadow: 0 0 20px #ff00ff, inset 0 0 20px #00ffff;
             max-width: 800px;
             width: 90%;
@@ -87,6 +87,57 @@
             flex-wrap: wrap;
         }
 
+        .utility-links {
+            position: absolute;
+            top: 18px;
+            right: 22px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            z-index: 2;
+        }
+
+        .utility-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 8px;
+            border: 1px solid rgba(0, 255, 255, 0.45);
+            border-radius: 6px;
+            background: rgba(13, 13, 13, 0.65);
+            color: rgba(255, 255, 255, 0.72);
+            font-size: 0.75em;
+            text-decoration: none;
+            text-transform: uppercase;
+            transition: color 0.15s, border-color 0.15s, transform 0.15s;
+        }
+
+        .utility-link:hover,
+        .utility-link:focus-visible {
+            transform: translateY(-1px);
+            border-color: #00ffff;
+            color: #00ffff;
+            outline: none;
+        }
+
+        .utility-icon {
+            width: 1.15em;
+            height: 1.15em;
+            flex: 0 0 auto;
+        }
+
+        .github-icon {
+            fill: currentColor;
+        }
+
+        .audit-icon {
+            fill: none;
+            stroke: currentColor;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            stroke-width: 1.8;
+        }
+
         .link-button {
             display: inline-block;
             background-color: #ff00ff;
@@ -123,18 +174,6 @@
             box-shadow: 0 0 0 #00ffff;
         }
 
-        .link-button.github {
-            background-color: #00ff00; /* Neon green */
-            border-color: #ff00ff;
-            box-shadow: 5px 5px 0 #00ffff;
-        }
-
-        .link-button.github:hover {
-            background-color: #00ffff;
-            border-color: #00ff00;
-            box-shadow: 0 0 0 #ff00ff;
-        }
-
         /* Decorative background elements */
         .sun {
             position: fixed;
@@ -166,6 +205,23 @@
             transform-origin: bottom center;
             z-index: 2;
         }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 76px 20px 30px;
+            }
+
+            .utility-links {
+                top: 14px;
+                right: 14px;
+                gap: 6px;
+            }
+
+            .utility-link {
+                padding: 5px 6px;
+                font-size: 0.68em;
+            }
+        }
     </style>
 </head>
 <body>
@@ -174,20 +230,32 @@
     <div class="grid-floor"></div>
 
     <div class="container">
+        <div class="utility-links" aria-label="Site links">
+            <a href="audit.html" class="utility-link audit" aria-label="View audit log" title="View audit log">
+                <svg class="utility-icon audit-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 3.5 19 6v5.2c0 4.4-2.8 7.8-7 9.3-4.2-1.5-7-4.9-7-9.3V6z"></path>
+                    <path d="m8.5 12 2.2 2.2 4.8-5"></path>
+                </svg>
+                <span>Audit</span>
+            </a>
+            <a href="https://github.com/beallio/decky-plugins-extended" class="utility-link github" aria-label="View source on GitHub" title="View source on GitHub" target="_blank" rel="noopener">
+                <svg class="utility-icon github-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.722 3.633 18.44 3.633 18.44c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.418-1.305.762-1.605-2.665-.3-5.466-1.335-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.21 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"></path>
+                </svg>
+                <span>GitHub</span>
+            </a>
+        </div>
         <h1>Decky Extended Plugins</h1>
         <p>A custom Decky Loader store that merges the official Deckbrew catalog with community plugins that aren't in it, installed and updated the normal way. Copy a URL below and paste it into Decky under <strong>Settings &rarr; General &rarr; Store Channel &rarr; Custom</strong>. Use stable unless you want prereleases.</p>
         
         <div class="links-container">
             <button class="link-button" onclick="copyText('https://decky-extended-plugins.beallio.com/plugins.json', this, 'COPY STABLE')">COPY STABLE</button>
             <button class="link-button dev" onclick="copyText('https://decky-extended-plugins.beallio.com/testing_plugins.json', this, 'COPY TEST/DEV')">COPY TEST/DEV</button>
-            <a href="audit.html" class="link-button">AUDIT LOG</a>
-            <a href="https://github.com/beallio/decky-plugins-extended" class="link-button github" target="_blank" rel="noopener">GITHUB REPO</a>
         </div>
 
         <div class="urls">
             <a href="https://decky-extended-plugins.beallio.com/plugins.json">decky-extended-plugins.beallio.com/plugins.json</a>
             <a href="https://decky-extended-plugins.beallio.com/testing_plugins.json">decky-extended-plugins.beallio.com/testing_plugins.json</a>
-            <a href="audit.html">decky-extended-plugins.beallio.com/audit.html</a>
         </div>
     </div>
 
