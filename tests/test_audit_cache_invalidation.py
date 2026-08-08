@@ -29,6 +29,19 @@ def _regular(name: str, content: str | bytes = "") -> tuple[str, bytes | str, in
     return (name, content, 0)
 
 
+def _scanner_identities(*, clamav_database: object) -> dict:
+    return {
+        "clamav": {
+            "enabled": True,
+            "executable": "/usr/bin/clamscan",
+            "version": "ClamAV 1.4.3",
+            "database": clamav_database,
+        },
+        "trivy": {"enabled": False},
+        "semgrep": {"enabled": False},
+    }
+
+
 class TestAuditCacheInvalidation(unittest.TestCase):
     def test_runtime_identities_capture_real_database_freshness(self):
         policy = {
@@ -151,6 +164,132 @@ class TestAuditCacheInvalidation(unittest.TestCase):
         self.assertNotEqual(original, rules_changed)
         self.assertNotEqual(original, scanner_changed)
         self.assertNotEqual(original, database_changed)
+
+    def test_clamav_database_identity_change_causes_cache_miss(self):
+        policy = ap._default_policy()
+        context_a = ap.compute_audit_context_hash(
+            policy,
+            [],
+            scanner_identities=_scanner_identities(clamav_database="27848"),
+        )
+        context_b = ap.compute_audit_context_hash(
+            policy,
+            [],
+            scanner_identities=_scanner_identities(clamav_database="27849"),
+        )
+        report = ap.AuditReport(
+            repository="https://github.com/owner/repo",
+            release="v1.0.0",
+            release_id="v1.0.0@123",
+            artifact_sha256="a" * 64,
+            audit_context_hash=context_a,
+            resolved_tag_commit_sha="commit123",
+            final_classification="PASS",
+            completion_status="completed",
+        )
+
+        with tempfile.TemporaryDirectory() as cache_dir:
+            ap.save_cached_report(
+                cache_dir, report, report.release_id, context_a, "commit123"
+            )
+            matching = ap.load_cached_report(
+                cache_dir,
+                report.repository,
+                report.release_id,
+                report.artifact_sha256,
+                context_a,
+                "commit123",
+            )
+            changed = ap.load_cached_report(
+                cache_dir,
+                report.repository,
+                report.release_id,
+                report.artifact_sha256,
+                context_b,
+                "commit123",
+            )
+
+        self.assertNotEqual(context_a, context_b)
+        self.assertIsNotNone(matching)
+        self.assertIsNone(changed)
+
+    def test_scheduled_freshness_bypasses_otherwise_valid_cache(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_dir = os.path.join(tmp_dir, ".audit-cache")
+            policy = ap._default_policy()
+            for scanner in policy["scanners"].values():
+                scanner["enabled"] = False
+                scanner["required"] = False
+            policy["scanners"]["clamav"]["enabled"] = True
+            zip_bytes = _make_zip([_regular("plugin.json", '{"name":"test"}')])
+            zip_sha = hashlib.sha256(zip_bytes).hexdigest()
+            release_data = {
+                "id": 123,
+                "tag_name": "v1.0.0",
+                "assets": [
+                    {
+                        "id": 456,
+                        "name": "plugin.zip",
+                        "browser_download_url": "https://example.com/plugin.zip",
+                        "digest": f"sha256:{zip_sha}",
+                    }
+                ],
+            }
+            download_count = 0
+            clamav_count = 0
+
+            def download(_url, destination, policy=None):
+                self.assertIs(policy, audit_policy)
+                nonlocal download_count
+                download_count += 1
+                Path(destination).write_bytes(zip_bytes)
+                return zip_sha
+
+            def clamav(*_args):
+                nonlocal clamav_count
+                clamav_count += 1
+                return ap.ScannerStatus(name="clamav", status="passed"), []
+
+            audit_policy = policy
+            with (
+                patch("audit_plugins.get_repo_metadata", return_value={"name": "repo"}),
+                patch("audit_plugins.get_releases", return_value=[release_data]),
+                patch(
+                    "audit_plugins._resolve_ref_to_commit_and_tree_sha",
+                    return_value=("commit123", "tree123", None),
+                ),
+                patch("audit_plugins.get_repo_file_raw", return_value=None),
+                patch("audit_plugins.download_zip", side_effect=download),
+                patch("audit_plugins.run_clamav", side_effect=clamav),
+                patch(
+                    "audit_plugins._scanner_runtime_identities",
+                    return_value=_scanner_identities(clamav_database=None),
+                ),
+                patch.dict(os.environ, {"AUDIT_SCHEDULED": "0"}),
+            ):
+                ap.audit_repository(
+                    "https://github.com/owner/repo", policy, [], cache_dir=cache_dir
+                )
+                ap.audit_repository(
+                    "https://github.com/owner/repo", policy, [], cache_dir=cache_dir
+                )
+                self.assertEqual((download_count, clamav_count), (1, 1))
+
+                with (
+                    patch.dict(os.environ, {"AUDIT_SCHEDULED": "1"}),
+                    self.assertLogs("audit_plugins", level="WARNING") as logs,
+                ):
+                    ap.audit_repository(
+                        "https://github.com/owner/repo",
+                        policy,
+                        [],
+                        cache_dir=cache_dir,
+                    )
+
+            self.assertEqual((download_count, clamav_count), (2, 2))
+            self.assertTrue(
+                any("cache bypassed" in message for message in logs.output), logs.output
+            )
 
     def test_predownload_index_cannot_redirect_to_another_release(self):
         report = ap.AuditReport(
