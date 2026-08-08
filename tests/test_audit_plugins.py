@@ -1970,7 +1970,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             for path, content in source_files.items()
         ]
 
-        def fake_download(_url, dest_path):
+        def fake_download(_url, dest_path, policy=None):
+            del policy
             Path(dest_path).write_bytes(zip_data)
             return hashlib.sha256(zip_data).hexdigest()
 
@@ -2080,7 +2081,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         try:
             import hashlib
 
-            def fake_download(url, dest_path):
+            def fake_download(url, dest_path, policy=None):
+                del url, policy
                 Path(dest_path).write_bytes(zip_data)
                 sha = hashlib.sha256(zip_data).hexdigest()
                 return sha
@@ -2150,7 +2152,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ],
         }
 
-        def fake_download(_url, dest_path):
+        def fake_download(_url, dest_path, policy=None):
+            del policy
             Path(dest_path).write_bytes(zip_data)
             return hashlib.sha256(zip_data).hexdigest()
 
@@ -2216,7 +2219,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ],
         }
 
-        def fake_download(url, dest_path):
+        def fake_download(url, dest_path, policy=None):
+            del url, policy
             Path(dest_path).write_bytes(zip_data)
             import hashlib
 
@@ -2290,7 +2294,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ],
         }
 
-        def fake_download(url, dest_path):
+        def fake_download(url, dest_path, policy=None):
+            del url, policy
             Path(dest_path).write_bytes(zip_data)
             import hashlib
 
@@ -2365,7 +2370,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ],
         }
 
-        def fake_download(url, dest_path):
+        def fake_download(url, dest_path, policy=None):
+            del url, policy
             Path(dest_path).write_bytes(zip_data)
             import hashlib
 
@@ -2427,7 +2433,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ],
         }
 
-        def fake_download(url, dest_path):
+        def fake_download(url, dest_path, policy=None):
+            del url, policy
             Path(dest_path).write_bytes(zip_data)
             import hashlib
 
@@ -2489,7 +2496,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ],
         }
 
-        def fake_download(url, dest_path):
+        def fake_download(url, dest_path, policy=None):
+            del url, policy
             Path(dest_path).write_bytes(zip_data)
             import hashlib
 
@@ -2552,7 +2560,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ],
         }
 
-        def fake_download(url, dest_path):
+        def fake_download(url, dest_path, policy=None):
+            del url, policy
             Path(dest_path).write_bytes(zip_data)
             import hashlib
 
@@ -2687,13 +2696,19 @@ class TestCLI(unittest.TestCase):
         self.assertNotEqual(ctx.exception.code, 0)
 
     def test_infrastructure_error_exits_1(self):
-        """AUDIT_ERROR always exits 1 regardless of enforcement mode."""
-        meta_err = Exception("network down")
+        """A repository-local enumeration error publishes output and exits 4."""
+        error_report = ap.AuditReport(
+            repository="https://github.com/owner/repo",
+            final_classification="AUDIT_ERROR",
+            completion_status="incomplete",
+            error_scope="repository",
+            errors=["network down"],
+        )
         with (
-            patch.object(ap, "get_repo_metadata", side_effect=meta_err),
             patch.object(
                 ap, "read_repo_urls", return_value=["https://github.com/owner/repo"]
             ),
+            patch.object(ap, "build_audit_worklist", return_value=([], [error_report])),
             tempfile.TemporaryDirectory() as tmp,
         ):
             code = ap.main(
@@ -2706,7 +2721,7 @@ class TestCLI(unittest.TestCase):
                     "--skip-cache",
                 ]
             )
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 4)
 
     def test_report_only_mode_does_not_exit_2_on_block(self):
         """In report-only mode, BLOCK findings must not exit 2."""
@@ -2718,7 +2733,14 @@ class TestCLI(unittest.TestCase):
             repository="https://github.com/owner/bad-plugin",
             final_classification="BLOCK",
             artifact_sha256="a" * 64,
+            completion_status="completed",
         )
+        release = {
+            "id": 1,
+            "tag_name": "v1",
+            "assets": [{"id": 10, "name": "plugin.zip"}],
+        }
+        work_item = ap.AuditWorkItem("https://github.com/owner/bad-plugin", release, {})
 
         with (
             patch.object(ap, "load_policy", return_value=policy),
@@ -2728,7 +2750,8 @@ class TestCLI(unittest.TestCase):
                 "read_repo_urls",
                 return_value=["https://github.com/owner/bad-plugin"],
             ),
-            patch.object(ap, "audit_repository", return_value=block_report),
+            patch.object(ap, "build_audit_worklist", return_value=([work_item], [])),
+            patch.object(ap, "audit_release", return_value=block_report),
             tempfile.TemporaryDirectory() as tmp,
         ):
             code = ap.main(
@@ -3147,7 +3170,8 @@ class TestTrivyStructuredFindings(unittest.TestCase):
     def test_scans_artifact_and_exact_commit_source_lockfile(self):
         scanned_paths = []
 
-        def fake_fetch(owner, repo, commit_sha, destination):
+        def fake_fetch(owner, repo, commit_sha, destination, policy=None):
+            self.assertIsNotNone(policy)
             self.assertEqual((owner, repo, commit_sha), ("owner", "plugin", "abc123"))
             source_root = Path(destination) / "owner-plugin-abc123"
             source_root.mkdir()
@@ -3244,7 +3268,8 @@ class TestSourceTreeFetch(unittest.TestCase):
 
             archive_bytes = archive_path.read_bytes()
 
-            def fake_download(_owner, _repo, _commit_sha, destination):
+            def fake_download(_owner, _repo, _commit_sha, destination, policy=None):
+                del policy
                 Path(destination).write_bytes(archive_bytes)
 
             destination = Path(td) / "source"

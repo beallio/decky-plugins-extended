@@ -55,7 +55,8 @@ def _configure_successful_audit(monkeypatch, zip_data: bytes) -> None:
     monkeypatch.setattr(ap, "get_repo_metadata", lambda *_args: {"archived": False})
     monkeypatch.setattr(ap, "get_repo_file_raw", lambda *_args: None)
 
-    def download(_url: str, destination: str) -> str:
+    def download(_url: str, destination: str, policy=None) -> str:
+        del policy
         Path(destination).write_bytes(zip_data)
         return hashlib.sha256(zip_data).hexdigest()
 
@@ -183,8 +184,10 @@ def test_audit_error_preserves_good_verdict_and_reports_both_states(
     result = ap.classification_for(REPOSITORY, report, verdicts)
 
     assert verdicts[REPOSITORY]["v1.0.0@1"]["classification"] == "PASS"
-    assert result.effective_classification == "PASS"
+    assert result.effective_classification == "AUDIT_ERROR"
     assert result.audit_classification == "AUDIT_ERROR"
+    assert result.identity_status == "STALE_HASH"
+    assert result.stored_artifact_sha256 == "a" * 64
 
 
 def test_completed_audit_error_does_not_overwrite_good_verdict(monkeypatch, tmp_path):
@@ -311,7 +314,12 @@ def test_two_release_round_trip_negative_control(monkeypatch, tmp_path):
     assert second_report.final_classification == "PASS"
     assert set(verdicts[REPOSITORY]) == {"v1.0.0@1", "v2.0.0@2"}
     for release in (first, second):
-        result = ap.classification_for(REPOSITORY, release, verdicts)
+        result = ap.classification_for(
+            REPOSITORY,
+            release,
+            verdicts,
+            current_artifact_sha256=first_report.artifact_sha256,
+        )
         assert result.effective_classification == "PASS"
         assert result.audit_classification == "PASS"
         assert result.blocking_rule_ids == []

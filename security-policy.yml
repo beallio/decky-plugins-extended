@@ -7,7 +7,8 @@ enforcement:
   # "report-only": findings are surfaced in the job summary but do NOT
   #                fail the PR (exit 0 on security findings).
   # "enforce":     BLOCK findings exit 2; MANUAL_REVIEW exits 3.
-  # Internal infrastructure failures always fail CI regardless of mode.
+  # Release-local audit incompleteness exits 4 after safe outputs publish;
+  # run-global policy/store/output integrity failures exit 1 and publish nothing.
   # Enabled on 2026-08-04. The precondition recorded here was that the gate must
   # re-derive classification from blocking_rule_ids rather than trust the stored
   # value; #19 (verdict-rederivation) does exactly that at both trust points, so
@@ -65,6 +66,14 @@ archive:
   max_compression_ratio: 200
   # Maximum depth of nested directories inside the archive.
   max_path_depth: 30
+
+downloads:
+  # Network reads fail closed at these explicit byte and timeout bounds.
+  release_max_bytes: 67108864       # 64 MiB
+  source_max_bytes: 268435456       # 256 MiB
+  connect_timeout_seconds: 10
+  read_timeout_seconds: 60
+  chunk_size_bytes: 1048576         # 1 MiB
 
 vulnerabilities:
   # Minimum CVSSv3-equivalent severity that triggers a BLOCK classification.

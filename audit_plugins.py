@@ -248,8 +248,14 @@ class AuditReport:
     repository: str = ""
     release: str = ""
     release_id: str = ""
+    github_release_id: str = ""
+    asset_id: str = ""
+    release_published_at: str = ""
     artifact_url: str = ""
     artifact_sha256: str = ""
+    identity_status: str = "UNKNOWN"
+    completion_status: str = "incomplete"
+    error_scope: str = "release"
     audit_context_hash: str = ""
     resolved_tag_commit_sha: str = ""
     plugin_name: str = ""
@@ -271,6 +277,17 @@ class VerdictResult:
     effective_classification: str
     audit_classification: str
     blocking_rule_ids: list[str] = field(default_factory=list)
+    identity_status: str = "UNKNOWN"
+    current_artifact_sha256: Optional[str] = None
+    stored_artifact_sha256: Optional[str] = None
+    fail_open: bool = True
+
+
+@dataclass(frozen=True)
+class AuditWorkItem:
+    repository: str
+    release: dict[str, Any]
+    repository_metadata: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -318,6 +335,7 @@ def load_policy(path: str = DEFAULT_POLICY_FILE) -> dict[str, Any]:
     _deep_merge(policy, data)
     _validate_rule_classifications(policy, path)
     _validate_blockable_rules(policy, path)
+    plugin_release_utils.validate_download_policy(policy)
     return policy
 
 
@@ -333,6 +351,13 @@ def _default_policy() -> dict[str, Any]:
             "max_single_file_bytes": 536870912,
             "max_compression_ratio": 200,
             "max_path_depth": 30,
+        },
+        "downloads": {
+            "release_max_bytes": plugin_release_utils.DEFAULT_RELEASE_MAX_BYTES,
+            "source_max_bytes": plugin_release_utils.DEFAULT_SOURCE_MAX_BYTES,
+            "connect_timeout_seconds": plugin_release_utils.DEFAULT_DOWNLOAD_CONNECT_TIMEOUT_SECONDS,
+            "read_timeout_seconds": plugin_release_utils.DEFAULT_DOWNLOAD_READ_TIMEOUT_SECONDS,
+            "chunk_size_bytes": plugin_release_utils.DEFAULT_DOWNLOAD_CHUNK_SIZE_BYTES,
         },
         "vulnerabilities": {
             "block_severity": "critical",
@@ -590,16 +615,16 @@ def apply_allowlist(
 
 
 def _normalise_repo_key(repo: str) -> str:
-    """Normalise 'owner/repo' or full URL to 'owner/repo' lowercase."""
-    repo = repo.rstrip("/")
-    if repo.startswith("https://") or repo.startswith("http://"):
-        parts = repo.split("/")
-        if len(parts) >= 5:
-            return f"{parts[-2]}/{parts[-1]}".lower()
-    if "/" in repo:
-        parts = repo.split("/")
-        return f"{parts[-2]}/{parts[-1]}".lower()
-    return repo.lower()
+    """Normalize a strict GitHub URL or exact owner/repo key."""
+    if not isinstance(repo, str):
+        raise ValueError(f"Invalid GitHub repository identity: {repo!r}")
+    if repo.lower().startswith("https://"):
+        return plugin_release_utils.canonical_repository_key(repo)
+    if repo.count("/") == 1:
+        return plugin_release_utils.canonical_repository_key(
+            f"https://github.com/{repo}"
+        )
+    raise ValueError(f"Invalid GitHub repository identity: {repo!r}")
 
 
 def _scanner_enabled(policy: dict[str, Any], name: str) -> bool:
@@ -782,9 +807,8 @@ def get_repo_metadata(owner: str, repo: str) -> dict[str, Any]:
 
 
 def get_releases(owner: str, repo: str) -> list[dict[str, Any]]:
-    return _gh_get(  # type: ignore
-        f"https://api.github.com/repos/{owner}/{repo}/releases",
-        params={"per_page": 100},
+    return plugin_release_utils.get_releases(
+        owner, repo, session=_gh_session, timeout=REQUEST_TIMEOUT
     )
 
 
@@ -809,13 +833,8 @@ def get_repo_file_raw(owner: str, repo: str, ref: str, path: str) -> Optional[by
 
 
 def parse_owner_repo(url: str) -> tuple[str, str]:
-    """Extract (owner, repo) from a GitHub URL."""
-    url = url.rstrip("/")
-    parsed = urlparse(url)
-    parts = parsed.path.strip("/").split("/")
-    if len(parts) < 2:
-        raise ValueError(f"Cannot parse owner/repo from URL: {url!r}")
-    return parts[0], parts[1]
+    """Parse a strict GitHub repository URL into canonical owner/repo."""
+    return plugin_release_utils.parse_github_repository_url(url)
 
 
 def find_best_release(releases: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
@@ -851,12 +870,13 @@ def read_repo_urls(path: str = PLUGINS_FILE) -> list[str]:
             url = line.strip()
             if not url or url.startswith("#"):
                 continue
-            norm = url.rstrip("/").lower()
+            canonical = plugin_release_utils.canonicalize_github_repository_url(url)
+            norm = canonical.lower()
             if norm in seen:
                 log.warning("Duplicate URL skipped: %s", url)
                 continue
             seen.add(norm)
-            urls.append(url.rstrip("/"))
+            urls.append(canonical)
     return urls
 
 
@@ -2163,7 +2183,7 @@ def run_trivy(
             source_temp = tempfile.TemporaryDirectory(prefix="decky-source-")
             try:
                 source_root = _fetch_source_tree(
-                    owner, repo, commit_sha, source_temp.name
+                    owner, repo, commit_sha, source_temp.name, policy=policy
                 )
                 scan_targets.append(("source", source_root))
             except Exception as exc:
@@ -2851,16 +2871,98 @@ def compare_source_and_artifact(
     return summary, findings, ScannerStatus(name="source-artifact-diff", status=status)
 
 
+def _scanner_runtime_identities(policy: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return executable/version and database freshness identities for scanners."""
+    commands = {
+        "clamav": ("clamscan", ["--version"]),
+        "trivy": ("trivy", ["--version"]),
+        "semgrep": ("semgrep", ["--version"]),
+    }
+    identities: dict[str, dict[str, Any]] = {}
+    for name, (command, version_args) in commands.items():
+        if not _scanner_enabled(policy, name):
+            identities[name] = {"enabled": False}
+            continue
+        executable = shutil.which(command)
+        identity: dict[str, Any] = {
+            "enabled": True,
+            "executable": executable,
+            "version": None,
+        }
+        if executable:
+            try:
+                completed = subprocess.run(
+                    [executable, *version_args],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                output = (completed.stdout or completed.stderr).strip()[:2000]
+                if completed.returncode == 0 and output:
+                    identity["version"] = output
+                    if name == "clamav" and output.count("/") >= 2:
+                        identity["database"] = output
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+        if name == "trivy" and executable:
+            try:
+                completed = subprocess.run(
+                    [executable, "version", "--format", "json"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if completed.returncode == 0:
+                    version_payload = json.loads(completed.stdout)
+                    vulnerability_database = version_payload.get("VulnerabilityDB")
+                    if isinstance(vulnerability_database, dict) and any(
+                        vulnerability_database.get(field)
+                        for field in ("Version", "UpdatedAt", "DownloadedAt")
+                    ):
+                        identity["database"] = vulnerability_database
+            except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+                pass
+
+        if name in {"clamav", "trivy"} and "database" not in identity:
+            identity["database"] = None
+        identities[name] = identity
+    return identities
+
+
+def _scanner_database_freshness_available(
+    policy: dict[str, Any], scanner_identities: dict[str, dict[str, Any]]
+) -> bool:
+    return all(
+        not _scanner_enabled(policy, name)
+        or bool(scanner_identities.get(name, {}).get("database"))
+        for name in ("clamav", "trivy")
+    )
+
+
 def compute_audit_context_hash(
     policy: dict[str, Any],
     exceptions: list[dict[str, Any]],
     policy_path: Optional[str] = None,
     allowlist_path: Optional[str] = None,
+    *,
+    scanner_identities: Optional[dict[str, dict[str, Any]]] = None,
 ) -> str:
     hasher = hashlib.sha256()
 
     hasher.update(json.dumps(policy, sort_keys=True).encode("utf-8"))
     hasher.update(json.dumps(exceptions, sort_keys=True).encode("utf-8"))
+    identities = (
+        scanner_identities
+        if scanner_identities is not None
+        else _scanner_runtime_identities(policy)
+    )
+    hasher.update(json.dumps(identities, sort_keys=True).encode("utf-8"))
+
+    try:
+        hasher.update(Path(SEMGREP_RULES_FILE).read_bytes())
+    except OSError:
+        hasher.update(b"semgrep-rules:unavailable")
 
     try:
         script_path = Path(__file__).resolve()
@@ -2920,7 +3022,13 @@ def load_cached_report_predownload(
                 index = json.load(f)
             entry = index.get(idx_key)
             if entry and isinstance(entry, dict):
-                cache_key = entry.get("cache_key")
+                if (
+                    entry.get("release_id") == release_id
+                    and entry.get("repository", "").rstrip("/") == repo_norm
+                    and entry.get("audit_context_hash") == audit_context_hash
+                    and entry.get("resolved_tag_commit_sha") == resolved_tag_commit_sha
+                ):
+                    cache_key = entry.get("cache_key")
         except Exception as exc:
             log.debug("Index load failed: %s", exc)
 
@@ -2959,6 +3067,7 @@ def load_cached_report_predownload(
             data.get("audit_context_hash") != audit_context_hash
             or data.get("resolved_tag_commit_sha") != resolved_tag_commit_sha
             or data.get("repository", "").rstrip("/") != repo_norm
+            or data.get("release_id") != release_id
         ):
             log.debug("Cache entry rejected due to context or tag commit SHA mismatch.")
             return None
@@ -3076,7 +3185,9 @@ def load_verdicts(cache_dir: str = CACHE_DIR) -> dict[str, dict[str, dict[str, A
         with open(path, encoding="utf-8") as f:
             verdicts = json.load(f)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Verdict store {path} must contain valid JSON: {exc}") from exc
+        raise ValueError(
+            f"Verdict store {path} must contain valid JSON: {exc}"
+        ) from exc
     except OSError as exc:
         raise ValueError(f"Verdict store {path} could not be read: {exc}") from exc
 
@@ -3101,7 +3212,9 @@ def load_verdicts(cache_dir: str = CACHE_DIR) -> dict[str, dict[str, dict[str, A
                 f"verdict repository mappings collide after normalization: {repository}"
             )
         if not isinstance(release_records, dict):
-            raise ValueError(f"verdict repository {raw_repository!r} must map to an object")
+            raise ValueError(
+                f"verdict repository {raw_repository!r} must map to an object"
+            )
 
         canonical_records: dict[str, dict[str, Any]] = {}
         for release_key, record in release_records.items():
@@ -3198,7 +3311,9 @@ def _record_verdict(cache_dir: str, report: AuditReport) -> None:
         return
 
     verdicts = load_verdicts(cache_dir)
-    repository = report.repository.rstrip("/")
+    repository = plugin_release_utils.canonicalize_github_repository_url(
+        report.repository
+    )
     repository_verdicts = verdicts.setdefault(repository, {})
     current = repository_verdicts.get(report.release_id, {})
     updated = {
@@ -3267,6 +3382,8 @@ def classification_for(
     release: AuditReport | dict[str, Any],
     verdicts: dict[str, dict[str, dict[str, Any]]],
     blockable_rules: Collection[str] | None = None,
+    *,
+    current_artifact_sha256: Optional[str] = None,
 ) -> VerdictResult:
     """Return the current and effective classifications for one release.
 
@@ -3274,34 +3391,101 @@ def classification_for(
     AUDIT_ERROR while falling back to a prior durable verdict.  A release
     mapping represents a catalog lookup and reports the durable verdict itself.
     """
-    repository_verdicts = verdicts.get(repository.rstrip("/"), {})
+    canonical_repository = plugin_release_utils.canonicalize_github_repository_url(
+        repository
+    )
+    repository_verdicts = verdicts.get(canonical_repository, {})
+    if not repository_verdicts:
+        for stored_repository, stored_verdicts in verdicts.items():
+            try:
+                candidate = plugin_release_utils.canonicalize_github_repository_url(
+                    stored_repository
+                )
+            except ValueError:
+                continue
+            if candidate == canonical_repository:
+                repository_verdicts = stored_verdicts
+                break
 
     if isinstance(release, AuditReport):
         audit_classification = release.final_classification
         prior = repository_verdicts.get(release.release_id, {})
+        current_hash = release.artifact_sha256 or current_artifact_sha256
         if audit_classification != "AUDIT_ERROR":
             return VerdictResult(
                 effective_classification=audit_classification,
                 audit_classification=audit_classification,
                 blocking_rule_ids=_blocking_rule_ids(release),
+                identity_status="CURRENT",
+                current_artifact_sha256=current_hash or None,
+                stored_artifact_sha256=current_hash or None,
+                fail_open=False,
             )
+        stored_hash = prior.get("artifact_sha256")
+        identity_status = (
+            "UNKNOWN"
+            if not prior
+            else (
+                "CURRENT"
+                if current_hash and stored_hash == current_hash
+                else "STALE_HASH"
+            )
+        )
         prior_classification = prior.get("classification", "AUDIT_ERROR")
-        if prior_classification != "AUDIT_ERROR":
+        if identity_status == "CURRENT" and prior_classification != "AUDIT_ERROR":
             return VerdictResult(
-                effective_classification=prior_classification,
+                effective_classification=effective_stored_classification(
+                    prior, blockable_rules
+                ),
                 audit_classification="AUDIT_ERROR",
                 blocking_rule_ids=list(prior.get("blocking_rule_ids") or []),
+                identity_status=identity_status,
+                current_artifact_sha256=current_hash,
+                stored_artifact_sha256=stored_hash,
+                fail_open=False,
             )
-        return VerdictResult("AUDIT_ERROR", "AUDIT_ERROR", [])
+        return VerdictResult(
+            "AUDIT_ERROR",
+            "AUDIT_ERROR",
+            [],
+            identity_status=identity_status,
+            current_artifact_sha256=current_hash or None,
+            stored_artifact_sha256=stored_hash,
+            fail_open=True,
+        )
 
     entry = repository_verdicts.get(_release_id(release), {})
     classification = entry.get("classification", "AUDIT_ERROR")
+    stored_hash = entry.get("artifact_sha256")
+    if not entry:
+        return VerdictResult(
+            effective_classification="AUDIT_ERROR",
+            audit_classification="AUDIT_ERROR",
+            identity_status="UNKNOWN",
+            current_artifact_sha256=current_artifact_sha256,
+            stored_artifact_sha256=None,
+            fail_open=True,
+        )
+    if not current_artifact_sha256 or stored_hash != current_artifact_sha256:
+        return VerdictResult(
+            effective_classification="AUDIT_ERROR",
+            audit_classification=classification,
+            blocking_rule_ids=list(entry.get("blocking_rule_ids") or []),
+            identity_status="STALE_HASH",
+            current_artifact_sha256=current_artifact_sha256,
+            stored_artifact_sha256=stored_hash,
+            fail_open=True,
+        )
     return VerdictResult(
         effective_classification=effective_stored_classification(
             entry, blockable_rules
         ),
         audit_classification=classification,
         blocking_rule_ids=list(entry.get("blocking_rule_ids") or []),
+        identity_status="CURRENT",
+        current_artifact_sha256=current_artifact_sha256,
+        stored_artifact_sha256=stored_hash,
+        fail_open=False,
     )
 
 
@@ -3585,32 +3769,43 @@ def _fmt_bytes(n: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def download_zip(url: str, dest_path: str) -> str:
+def download_zip(
+    url: str, dest_path: str, policy: Optional[dict[str, Any]] = None
+) -> str:
     """Download a ZIP from url to dest_path.  Returns SHA-256 hex."""
-    sha256 = hashlib.sha256()
-    with _gh_session.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT) as resp:
-        resp.raise_for_status()
-        with open(dest_path, "wb") as fh:
-            for chunk in resp.iter_content(65536):
-                fh.write(chunk)
-                sha256.update(chunk)
-    return sha256.hexdigest()
+    return plugin_release_utils.bounded_stream_download(
+        url,
+        dest_path,
+        session=_gh_session,
+        kind="release",
+        policy=policy,
+    ).sha256
 
 
 def _download_source_archive(
-    owner: str, repo: str, commit_sha: str, dest_path: str | Path
+    owner: str,
+    repo: str,
+    commit_sha: str,
+    dest_path: str | Path,
+    policy: Optional[dict[str, Any]] = None,
 ) -> None:
     """Download the exact commit tarball without invoking repository code."""
     url = f"https://api.github.com/repos/{owner}/{repo}/tarball/{commit_sha}"
-    with _gh_session.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT) as resp:
-        resp.raise_for_status()
-        with open(dest_path, "wb") as archive_file:
-            for chunk in resp.iter_content(65536):
-                archive_file.write(chunk)
+    plugin_release_utils.bounded_stream_download(
+        url,
+        dest_path,
+        session=_gh_session,
+        kind="source",
+        policy=policy,
+    )
 
 
 def _fetch_source_tree(
-    owner: str, repo: str, commit_sha: str, destination: str | Path
+    owner: str,
+    repo: str,
+    commit_sha: str,
+    destination: str | Path,
+    policy: Optional[dict[str, Any]] = None,
 ) -> str:
     """Materialize an exact GitHub source archive without executing its contents."""
     destination_path = Path(destination)
@@ -3618,9 +3813,12 @@ def _fetch_source_tree(
     archive_path = destination_path / "source.tar.gz"
     extracted_path = destination_path / "extracted"
     extracted_path.mkdir()
-    _download_source_archive(owner, repo, commit_sha, archive_path)
+    effective_policy = policy if policy is not None else _default_policy()
+    _download_source_archive(
+        owner, repo, commit_sha, archive_path, policy=effective_policy
+    )
 
-    limits = _default_policy()["archive"]
+    limits = effective_policy["archive"]
     file_count = 0
     total_size = 0
     top_levels: set[str] = set()
@@ -3711,6 +3909,164 @@ def _merge_findings_unique(existing: list[Finding], new_items: list[Finding]) ->
             seen.add(key)
 
 
+def build_audit_worklist(
+    repository_urls: list[str],
+    *,
+    latest_only: bool = False,
+    release_fetcher: Any = None,
+    metadata_fetcher: Any = None,
+) -> tuple[list[AuditWorkItem], list[AuditReport]]:
+    """Build the complete deterministic eligible-release worklist."""
+    if release_fetcher is None:
+        release_fetcher = get_releases
+    if metadata_fetcher is None:
+        metadata_fetcher = get_repo_metadata
+    worklist: list[AuditWorkItem] = []
+    errors: list[AuditReport] = []
+    canonical_urls = plugin_release_utils.sort_repository_urls(repository_urls)
+    for repository in canonical_urls:
+        owner, repo = parse_owner_repo(repository)
+        try:
+            metadata = metadata_fetcher(owner, repo)
+            releases = release_fetcher(owner, repo)
+            eligible = plugin_release_utils.ordered_eligible_releases(
+                releases, allow_prerelease=True
+            )
+        except Exception as exc:
+            errors.append(
+                AuditReport(
+                    repository=repository,
+                    final_classification="AUDIT_ERROR",
+                    completion_status="incomplete",
+                    error_scope="repository",
+                    errors=[f"Failed to enumerate repository releases: {exc}"],
+                )
+            )
+            continue
+        if latest_only:
+            eligible = eligible[:1]
+        if not eligible:
+            errors.append(
+                AuditReport(
+                    repository=repository,
+                    final_classification="AUDIT_ERROR",
+                    completion_status="incomplete",
+                    error_scope="repository",
+                    errors=["No catalog-eligible releases found."],
+                )
+            )
+            continue
+        worklist.extend(
+            AuditWorkItem(repository, release, metadata) for release in eligible
+        )
+    return worklist, errors
+
+
+def select_audit_shard(
+    worklist: list[AuditWorkItem], shard_count: int, shard_index: int
+) -> list[AuditWorkItem]:
+    """Select one deterministic SHA-256 shard from a complete worklist."""
+    if shard_count <= 0:
+        raise ValueError("shard_count must be greater than zero")
+    if shard_index < 0 or shard_index >= shard_count:
+        raise ValueError("shard_index must satisfy 0 <= index < shard_count")
+    selected = []
+    for item in worklist:
+        repository_key = plugin_release_utils.canonical_repository_key(item.repository)
+        release_id = str(item.release.get("id", ""))
+        digest = hashlib.sha256(
+            f"{repository_key}\0{release_id}".encode("utf-8")
+        ).digest()
+        if int.from_bytes(digest, "big") % shard_count == shard_index:
+            selected.append(item)
+    return selected
+
+
+_RESUME_IDENTITY_FIELDS = (
+    "repository",
+    "github_release_id",
+    "asset_id",
+    "artifact_sha256",
+    "resolved_tag_commit_sha",
+    "audit_context_hash",
+    "completion_status",
+)
+
+
+def resume_identity_matches(
+    candidate: dict[str, Any], expected: dict[str, Any]
+) -> bool:
+    """Return whether an exact completed audit identity may be resumed."""
+    return candidate.get("completion_status") == "completed" and all(
+        candidate.get(field) == expected.get(field) for field in _RESUME_IDENTITY_FIELDS
+    )
+
+
+def aggregate_audit_reports(report_paths: list[str]) -> list[AuditReport]:
+    """Load deterministic shard reports and reject duplicate release identities."""
+    reports: list[AuditReport] = []
+    seen: set[tuple[str, str, str]] = set()
+    for report_path in report_paths:
+        with open(report_path, encoding="utf-8") as report_file:
+            payload = json.load(report_file)
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("reports"), list
+        ):
+            raise ValueError(f"Invalid shard report: {report_path}")
+        for raw_report in payload["reports"]:
+            if not isinstance(raw_report, dict):
+                raise ValueError(f"Invalid report record in {report_path}")
+            report = _dict_to_report(raw_report)
+            report.repository = plugin_release_utils.canonicalize_github_repository_url(
+                report.repository
+            )
+            key = (report.repository, report.github_release_id, report.asset_id)
+            if key in seen:
+                raise ValueError(f"duplicate release identity in shard reports: {key}")
+            seen.add(key)
+            reports.append(report)
+    reports.sort(
+        key=lambda report: plugin_release_utils.release_order_key(
+            {
+                "published_at": report.release_published_at,
+                "id": report.github_release_id,
+                "assets": [{"id": report.asset_id, "name": "release.zip"}],
+            }
+        ),
+        reverse=True,
+    )
+    reports.sort(key=lambda report: report.repository)
+    return reports
+
+
+def aggregate_verdict_deltas(
+    delta_paths: list[str],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Merge isolated verdict deltas, rejecting duplicate or conflicting keys."""
+    merged: dict[str, dict[str, dict[str, Any]]] = {}
+    seen: set[tuple[str, str]] = set()
+    for delta_path in delta_paths:
+        with open(delta_path, encoding="utf-8") as delta_file:
+            delta = json.load(delta_file)
+        if not isinstance(delta, dict):
+            raise ValueError(f"Invalid verdict delta: {delta_path}")
+        for repository, releases in delta.items():
+            canonical = plugin_release_utils.canonicalize_github_repository_url(
+                repository
+            )
+            if not isinstance(releases, dict):
+                raise ValueError(f"Invalid verdict delta repository: {repository}")
+            for release_id, record in releases.items():
+                key = (canonical, release_id)
+                if key in seen:
+                    raise ValueError(f"duplicate verdict key in shard deltas: {key}")
+                if not isinstance(record, dict):
+                    raise ValueError(f"Invalid verdict delta record: {key}")
+                seen.add(key)
+                merged.setdefault(canonical, {})[release_id] = record
+    return merged
+
+
 def audit_repository(
     repo_url: str,
     policy: dict[str, Any],
@@ -3795,6 +4151,7 @@ def audit_release(
     _repo_metadata: Optional[dict[str, Any]] = None,
     _policy_path: Optional[str] = DEFAULT_POLICY_FILE,
     _allowlist_path: Optional[str] = DEFAULT_ALLOWLIST_FILE,
+    _persist_verdict: bool = True,
 ) -> AuditReport:
     """Audit exactly one supplied plugin release without selecting another."""
     report = AuditReport(
@@ -3824,7 +4181,15 @@ def audit_release(
 
     asset = zips[0]
     report.release_id = f"{tag_name}@{asset.get('id', '')}"
+    report.github_release_id = str(release.get("id", ""))
+    report.asset_id = str(asset.get("id", ""))
+    report.release_published_at = str(
+        release.get("published_at") or release.get("created_at") or ""
+    )
     report.artifact_url = asset.get("browser_download_url", "")
+    github_artifact_sha256 = plugin_release_utils.normalize_github_sha256_digest(
+        asset.get("digest")
+    )
 
     try:
         meta = (
@@ -3872,15 +4237,27 @@ def audit_release(
     # --- Cache check ---
     release_id = report.release_id
 
+    scanner_identities = _scanner_runtime_identities(policy)
     audit_ctx_hash = compute_audit_context_hash(
         policy,
         exceptions,
         policy_path=_policy_path,
         allowlist_path=_allowlist_path,
+        scanner_identities=scanner_identities,
     )
     report.audit_context_hash = audit_ctx_hash
+    scheduled_cache_requires_freshness = os.environ.get("AUDIT_SCHEDULED") == "1"
+    cache_bypassed = skip_cache or (
+        scheduled_cache_requires_freshness
+        and not _scanner_database_freshness_available(policy, scanner_identities)
+    )
+    if cache_bypassed and not skip_cache:
+        log.warning(
+            "Scheduled report cache bypassed because scanner database freshness "
+            "could not be established."
+        )
 
-    if not skip_cache:
+    if not cache_bypassed and github_artifact_sha256:
         cached = load_cached_report_predownload(
             cache_dir=cache_dir,
             repository=repo_url,
@@ -3888,8 +4265,14 @@ def audit_release(
             audit_context_hash=audit_ctx_hash,
             resolved_tag_commit_sha=resolved_tag_commit_sha,
         )
-        if cached:
-            _record_verdict(cache_dir, cached)
+        if cached and cached.artifact_sha256 == github_artifact_sha256:
+            cached.github_release_id = report.github_release_id
+            cached.asset_id = report.asset_id
+            cached.release_published_at = report.release_published_at
+            cached.identity_status = "CURRENT"
+            cached.completion_status = "completed"
+            if _persist_verdict:
+                _record_verdict(cache_dir, cached)
             return cached
 
     # --- Download ZIP ---
@@ -3900,16 +4283,22 @@ def audit_release(
 
     try:
         try:
-            artifact_sha256 = download_zip(artifact_url, zip_path)
+            artifact_sha256 = download_zip(artifact_url, zip_path, policy=policy)
         except Exception as exc:
             report.errors.append(f"Failed to download release artifact: {exc}")
             report.final_classification = "AUDIT_ERROR"
             return report
 
         report.artifact_sha256 = artifact_sha256
+        if github_artifact_sha256 and artifact_sha256 != github_artifact_sha256:
+            report.errors.append(
+                "Downloaded artifact SHA-256 does not match GitHub's release digest."
+            )
+            report.final_classification = "AUDIT_ERROR"
+            return report
 
         # --- Cache check with known SHA ---
-        if not skip_cache:
+        if not cache_bypassed:
             cached = load_cached_report(
                 cache_dir,
                 repo_url,
@@ -3919,7 +4308,13 @@ def audit_release(
                 resolved_tag_commit_sha=resolved_tag_commit_sha,
             )
             if cached:
-                _record_verdict(cache_dir, cached)
+                cached.github_release_id = report.github_release_id
+                cached.asset_id = report.asset_id
+                cached.release_published_at = report.release_published_at
+                cached.identity_status = "CURRENT"
+                cached.completion_status = "completed"
+                if _persist_verdict:
+                    _record_verdict(cache_dir, cached)
                 return cached
 
         # --- ZIP inspection ---
@@ -4137,9 +4532,15 @@ def audit_release(
             scanner_statuses=report.scanner_statuses,
             policy=policy,
         )
+        report.identity_status = "CURRENT" if report.artifact_sha256 else "UNKNOWN"
+        report.completion_status = (
+            "completed"
+            if report.final_classification != "AUDIT_ERROR"
+            else "incomplete"
+        )
 
         # --- Cache result ---
-        if report.final_classification != "AUDIT_ERROR" and not skip_cache:
+        if report.final_classification != "AUDIT_ERROR" and not cache_bypassed:
             save_cached_report(
                 cache_dir,
                 report,
@@ -4147,7 +4548,8 @@ def audit_release(
                 audit_context_hash=audit_ctx_hash,
                 resolved_tag_commit_sha=resolved_tag_commit_sha,
             )
-        _record_verdict(cache_dir, report)
+        if _persist_verdict:
+            _record_verdict(cache_dir, report)
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -4288,9 +4690,91 @@ def generate_run_summary(
     return "\n".join(lines) + "\n"
 
 
+def _atomic_write_text(path: str | Path, content: str) -> None:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _report_identity_key(report: AuditReport) -> str:
+    return "\0".join((report.repository, report.github_release_id, report.asset_id))
+
+
+def _progress_record(report: AuditReport) -> dict[str, Any]:
+    return {
+        "repository": report.repository,
+        "github_release_id": report.github_release_id,
+        "asset_id": report.asset_id,
+        "artifact_sha256": report.artifact_sha256,
+        "resolved_tag_commit_sha": report.resolved_tag_commit_sha,
+        "audit_context_hash": report.audit_context_hash,
+        "completion_status": report.completion_status,
+        "report": _report_to_dict(report),
+    }
+
+
+def _write_progress_manifest(
+    path: str | Path, records: dict[str, dict[str, Any]]
+) -> None:
+    _atomic_write_text(
+        path,
+        json.dumps(
+            {"schema_version": "1", "entries": records},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+    )
+
+
+def _load_progress_manifest(path: str | Path) -> dict[str, dict[str, Any]]:
+    if not Path(path).is_file():
+        return {}
+    with open(path, encoding="utf-8") as progress_file:
+        payload = json.load(progress_file)
+    if not isinstance(payload, dict) or not isinstance(payload.get("entries"), dict):
+        raise ValueError(f"Invalid progress manifest: {path}")
+    return payload["entries"]
+
+
+def _verdict_delta_from_reports(
+    reports: list[AuditReport],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    delta: dict[str, dict[str, dict[str, Any]]] = {}
+    for report in reports:
+        if report.completion_status != "completed" or not report.release_id:
+            continue
+        repository = plugin_release_utils.canonicalize_github_repository_url(
+            report.repository
+        )
+        delta.setdefault(repository, {})[report.release_id] = {
+            "classification": report.final_classification,
+            "blocking_rule_ids": _blocking_rule_ids(report),
+            "review_rule_ids": _rationale_rule_ids(report, "MANUAL_REVIEW"),
+            "warning_rule_ids": _rationale_rule_ids(report, "PASS_WITH_WARNINGS"),
+            "artifact_sha256": report.artifact_sha256,
+            "audit_context_hash": report.audit_context_hash,
+            "audited_at": report.audit_timestamp,
+        }
+    return delta
+
+
 def write_reports(
     reports: list[AuditReport],
     output_dir: str,
+    *,
+    verdicts: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
 ) -> tuple[str, str]:
     """Write JSON and Markdown aggregate reports to output_dir.
 
@@ -4302,18 +4786,21 @@ def write_reports(
     json_path = os.path.join(output_dir, "security-report.json")
     md_path = os.path.join(output_dir, "security-report.md")
 
+    generated_at = max(
+        (report.audit_timestamp for report in reports if report.audit_timestamp),
+        default="",
+    )
     agg = {
         "schema_version": AUDIT_SCHEMA_VERSION,
         "policy_version": POLICY_VERSION,
-        "generated_at": datetime.datetime.now(datetime.UTC)
-        .isoformat()
-        .replace("+00:00", "Z"),
+        "generated_at": generated_at,
         "report_count": len(reports),
         "reports": [_report_to_dict(r) for r in reports],
     }
 
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(agg, f, indent=2, sort_keys=True, default=str)
+    _atomic_write_text(
+        json_path, json.dumps(agg, indent=2, sort_keys=True, default=str) + "\n"
+    )
 
     if not reports:
         md_content = (
@@ -4328,7 +4815,7 @@ def write_reports(
             f"Generated: {agg['generated_at']}",
             f"Reports: {len(reports)}",
             "",
-            generate_run_summary(reports).rstrip(),
+            generate_run_summary(reports, verdicts=verdicts).rstrip(),
             "",
             "---",
             "",
@@ -4338,10 +4825,24 @@ def write_reports(
             md_parts.append("\n---\n")
         md_content = "\n".join(md_parts)
 
-    with open(md_path, "w", encoding="utf-8") as f:
-        f.write(md_content)
+    _atomic_write_text(md_path, md_content)
 
     return json_path, md_path
+
+
+def _release_outcome_exit_code(
+    reports: list[AuditReport], enforcement_mode: str
+) -> int:
+    """Apply the documented mixed release-outcome precedence 4, 2, 3, 0."""
+    if any(report.final_classification == "AUDIT_ERROR" for report in reports):
+        return 4
+    if enforcement_mode != "enforce":
+        return 0
+    if any(report.final_classification == "BLOCK" for report in reports):
+        return 2
+    if any(report.final_classification == "MANUAL_REVIEW" for report in reports):
+        return 3
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -4374,6 +4875,34 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--repository",
         metavar="URL",
         help="Audit one explicit repository URL",
+    )
+    mode_group.add_argument(
+        "--aggregate-reports",
+        nargs="+",
+        metavar="REPORT",
+        help="Aggregate isolated shard report JSON files",
+    )
+    parser.add_argument(
+        "--aggregate-verdict-deltas",
+        nargs="*",
+        default=[],
+        metavar="DELTA",
+        help="Verdict delta JSON files to aggregate with shard reports",
+    )
+    parser.add_argument(
+        "--latest-only",
+        action="store_true",
+        help="Audit one latest eligible release; valid only with --repository",
+    )
+    parser.add_argument("--shard-count", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument(
+        "--progress-manifest",
+        help="Atomic resume manifest path (defaults under --output-dir)",
+    )
+    parser.add_argument(
+        "--verdict-delta",
+        help="Isolated verdict delta path (defaults under --output-dir)",
     )
     parser.add_argument(
         "--plugins-file",
@@ -4418,6 +4947,13 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     args = parser.parse_args(argv)
 
+    if args.latest_only and not args.repository:
+        parser.error("--latest-only is valid only with --repository")
+    try:
+        select_audit_shard([], args.shard_count, args.shard_index)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
@@ -4434,11 +4970,35 @@ def main(argv: Optional[list[str]] = None) -> int:
         log.error("Invalid allowlist: %s", exc)
         return 1
 
+    try:
+        verdict_snapshot = load_verdicts(args.cache_dir)
+    except ValueError as exc:
+        log.error("Invalid verdict store: %s", exc)
+        return 1
+
     expiry_warnings = check_allowlist_expiry(exceptions)
     for w in expiry_warnings:
         log.warning("%s", w)
 
     enforcement_mode = policy.get("enforcement", {}).get("mode", "report-only")
+
+    if args.aggregate_reports:
+        try:
+            reports = aggregate_audit_reports(args.aggregate_reports)
+            write_reports(reports, args.output_dir, verdicts=verdict_snapshot)
+            if args.aggregate_verdict_deltas:
+                delta = aggregate_verdict_deltas(args.aggregate_verdict_deltas)
+                destination = args.verdict_delta or os.path.join(
+                    args.output_dir, "security-verdict-delta.json"
+                )
+                _atomic_write_text(
+                    destination,
+                    json.dumps(delta, indent=2, sort_keys=True) + "\n",
+                )
+        except Exception as exc:
+            log.error("Shard aggregation failed: %s", exc)
+            return 1
+        return _release_outcome_exit_code(reports, enforcement_mode)
 
     # Determine repositories to audit
     try:
@@ -4458,7 +5018,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         # upload always finds files and CI does not produce a spurious
         # "No files were found" warning.
         try:
-            json_path, md_path = write_reports([], args.output_dir)
+            json_path, md_path = write_reports(
+                [], args.output_dir, verdicts=verdict_snapshot
+            )
             log.info("Empty reports written: %s, %s", json_path, md_path)
         except Exception as exc:
             log.error("Failed to write empty reports: %s", exc)
@@ -4477,24 +5039,121 @@ def main(argv: Optional[list[str]] = None) -> int:
                 pass
         return 0
 
-    log.info("Auditing %d repository/repositories.", len(repo_urls))
+    log.info("Enumerating %d repository/repositories.", len(repo_urls))
+    try:
+        worklist, repository_errors = build_audit_worklist(
+            repo_urls, latest_only=args.latest_only
+        )
+        worklist = select_audit_shard(worklist, args.shard_count, args.shard_index)
+    except Exception as exc:
+        log.error("Failed to build audit worklist: %s", exc)
+        return 1
+
+    log.info(
+        "Auditing shard %d/%d with %d eligible release(s).",
+        args.shard_index,
+        args.shard_count,
+        len(worklist),
+    )
+    progress_path = args.progress_manifest or os.path.join(
+        args.output_dir, f"progress-shard-{args.shard_index}.json"
+    )
+    verdict_delta_path = args.verdict_delta or os.path.join(
+        args.output_dir, f"verdict-delta-shard-{args.shard_index}.json"
+    )
+    try:
+        progress_records = _load_progress_manifest(progress_path)
+    except Exception as exc:
+        log.error("Failed to load progress manifest: %s", exc)
+        return 1
 
     reports: list[AuditReport] = []
-    for url in repo_urls:
-        log.info("Auditing %s ...", url)
-        report = audit_repository(
-            url,
+    if args.shard_index == 0:
+        reports.extend(repository_errors)
+
+    for item in worklist:
+        release = item.release
+        asset = plugin_release_utils.get_zip_asset(release) or {}
+        key = "\0".join(
+            (
+                item.repository,
+                str(release.get("id", "")),
+                str(asset.get("id", "")),
+            )
+        )
+        resumed_report: Optional[AuditReport] = None
+        digest = plugin_release_utils.normalize_github_sha256_digest(
+            asset.get("digest")
+        )
+        if digest and key in progress_records:
+            commit_sha, _tree_sha, _error = _resolve_ref_to_commit_and_tree_sha(
+                *parse_owner_repo(item.repository), release.get("tag_name", "")
+            )
+            scanner_identities = _scanner_runtime_identities(policy)
+            expected = {
+                "repository": item.repository,
+                "github_release_id": str(release.get("id", "")),
+                "asset_id": str(asset.get("id", "")),
+                "artifact_sha256": digest,
+                "resolved_tag_commit_sha": commit_sha or "",
+                "audit_context_hash": compute_audit_context_hash(
+                    policy,
+                    exceptions,
+                    policy_path=args.policy,
+                    allowlist_path=args.allowlist,
+                    scanner_identities=scanner_identities,
+                ),
+                "completion_status": "completed",
+            }
+            if resume_identity_matches(progress_records[key], expected):
+                raw_report = progress_records[key].get("report")
+                if isinstance(raw_report, dict):
+                    resumed_report = _dict_to_report(raw_report)
+                    log.info(
+                        "Resuming completed release %s %s.",
+                        item.repository,
+                        resumed_report.release_id,
+                    )
+
+        report = resumed_report or audit_release(
+            item.repository,
+            release,
             policy=policy,
             exceptions=exceptions,
             cache_dir=args.cache_dir,
             skip_cache=args.skip_cache,
-            policy_path=args.policy,
-            allowlist_path=args.allowlist,
+            _repo_metadata=item.repository_metadata,
+            _policy_path=args.policy,
+            _allowlist_path=args.allowlist,
+            _persist_verdict=False,
         )
         reports.append(report)
+        progress_records[key] = _progress_record(report)
+        try:
+            _write_progress_manifest(progress_path, progress_records)
+            write_reports(reports, args.output_dir, verdicts=verdict_snapshot)
+            _atomic_write_text(
+                verdict_delta_path,
+                json.dumps(
+                    _verdict_delta_from_reports(reports),
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+            )
+        except Exception as exc:
+            log.error("Failed to checkpoint audit outputs: %s", exc)
+            return 1
         cls = report.final_classification
         cls_emoji = _CLASS_EMOJI.get(cls, "❓")
-        log.info("%s %s → %s (score %d)", cls_emoji, url, cls, report.risk_score)
+        log.info(
+            "%s %s %s → %s (score %d)",
+            cls_emoji,
+            item.repository,
+            report.release_id,
+            cls,
+            report.risk_score,
+        )
 
     classifications, top_rules = _run_summary_stats(reports)
     classification_tally = ", ".join(
@@ -4513,7 +5172,14 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # Write reports
     try:
-        json_path, md_path = write_reports(reports, args.output_dir)
+        json_path, md_path = write_reports(
+            reports, args.output_dir, verdicts=verdict_snapshot
+        )
+        _atomic_write_text(
+            verdict_delta_path,
+            json.dumps(_verdict_delta_from_reports(reports), indent=2, sort_keys=True)
+            + "\n",
+        )
         log.info("JSON report: %s", json_path)
         log.info("Markdown report: %s", md_path)
     except Exception as exc:
@@ -4525,7 +5191,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if summary_file:
         try:
             with open(summary_file, "a", encoding="utf-8") as f:
-                f.write(generate_run_summary(reports))
+                f.write(generate_run_summary(reports, verdicts=verdict_snapshot))
                 f.write("\n---\n\n")
                 for report in reports:
                     f.write(generate_markdown_report(report))
@@ -4533,26 +5199,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         except Exception as exc:
             log.warning("Could not write step summary: %s", exc)
 
-    # Determine exit code
-    errors = [r for r in reports if r.final_classification == "AUDIT_ERROR"]
-    if errors:
-        log.error("%d audit(s) failed with internal errors.", len(errors))
-        return 1  # Infrastructure failures always exit 1
-
-    if enforcement_mode == "enforce":
-        blocks = [r for r in reports if r.final_classification == "BLOCK"]
-        reviews = [r for r in reports if r.final_classification == "MANUAL_REVIEW"]
-        if blocks:
-            log.error("%d plugin(s) BLOCKED. See %s for details.", len(blocks), md_path)
-            return 2
-        if reviews:
-            log.warning(
-                "%d plugin(s) require MANUAL_REVIEW. See %s for details.",
-                len(reviews),
-                md_path,
-            )
-            return 3
-    else:
+    # Apply release-local outcome status only after every safe report and verdict
+    # delta has been published. Run-global integrity failures return above.
+    outcome = _release_outcome_exit_code(reports, enforcement_mode)
+    if enforcement_mode != "enforce":
         # Report-only mode: surface findings prominently but exit 0
         blocks = [r for r in reports if r.final_classification == "BLOCK"]
         reviews = [r for r in reports if r.final_classification == "MANUAL_REVIEW"]
@@ -4566,8 +5216,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "[REPORT-ONLY] %d plugin(s) would require MANUAL_REVIEW in enforcement mode.",
                 len(reviews),
             )
-
-    return 0
+    return outcome
 
 
 if __name__ == "__main__":
