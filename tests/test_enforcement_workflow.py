@@ -71,7 +71,7 @@ def _run_audit_step(
     return result, outputs.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("audit_exit", [0, 2, 3])
+@pytest.mark.parametrize("audit_exit", [0, 2, 3, 4])
 def test_audit_step_lets_publication_proceed_for_audit_results(tmp_path, audit_exit):
     result, outputs = _run_audit_step(tmp_path, audit_exit)
 
@@ -79,11 +79,30 @@ def test_audit_step_lets_publication_proceed_for_audit_results(tmp_path, audit_e
     assert f"audit_exit={audit_exit}" in outputs
 
 
-def test_audit_step_still_fails_immediately_on_internal_error(tmp_path):
+def test_audit_step_records_internal_error_for_the_aggregate_guard(tmp_path):
     result, outputs = _run_audit_step(tmp_path, 1)
 
-    assert result.returncode == 1
+    # Every shard must upload its exit record so the aggregate job can reject
+    # exit 1 before merging or publishing any delta.
+    assert result.returncode == 0
     assert "audit_exit=1" in outputs
+
+
+def test_aggregate_guard_rejects_a_run_global_error_before_publication(tmp_path):
+    artifacts = tmp_path / "shard-artifacts"
+    for index in range(4):
+        shard = artifacts / f"shard-{index}"
+        shard.mkdir(parents=True)
+        (shard / "audit-exit.txt").write_text("1\n", encoding="utf-8")
+
+    result = _bash(
+        _run_block(SCHEDULED, "Aggregate safe shard reports and deltas"),
+        tmp_path,
+        {},
+    )
+
+    assert result.returncode == 1
+    assert "no verdicts will be published" in result.stdout
 
 
 def _run_enforcement_step(tmp_path: Path, audit_exit: str):
@@ -107,6 +126,13 @@ def test_enforcement_result_warns_but_passes_on_manual_review(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "::warning::" in result.stdout
     assert "::error::" not in result.stdout
+
+
+def test_enforcement_result_fails_on_publishable_release_incompleteness(tmp_path):
+    result = _run_enforcement_step(tmp_path, "4")
+
+    assert result.returncode == 4
+    assert "::error::" in result.stdout
 
 
 def test_enforcement_result_passes_when_clean(tmp_path):
@@ -139,5 +165,10 @@ def test_pull_request_audit_still_fails_on_enforcement_exit_codes():
     """The PR audit is the gate for newly added plugins and must stay strict."""
     text = (WORKFLOWS / "plugin-security-audit.yml").read_text(encoding="utf-8")
 
-    assert "audit_exit" not in text
-    assert "continue-on-error: false" in text
+    assert "Apply PR enforcement result after publication" in text
+    assert '2) echo "::error::Audit produced BLOCK findings."; exit 2' in text
+    assert '3) echo "::error::Audit produced MANUAL_REVIEW findings."; exit 3' in text
+    assert (
+        '4) echo "::error::Audit has publishable release-local incompleteness."; exit 4'
+        in text
+    )

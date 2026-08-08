@@ -1,22 +1,15 @@
 # Scheduled Plugin Security Audit
 #
-# Re-audits every configured plugin repository on a schedule to detect
-# new releases or updated artifacts that may introduce security issues.
-#
-# Cache results by artifact SHA-256 so unchanged releases are not re-audited.
-# Never automatically approves allowlist entries or modifies the allowlist.
-#
-# Cache key design:
-#   - Restore key: audit-cache-v{POLICY_VERSION}-{hash(policy+impl)}
-#   - Save key: audit-cache-v{POLICY_VERSION}-{hash(policy+impl)}-{run_id}
-# This allows cache hits for compatible policy versions while writing a new
-# entry after each run (so changes propagate on the next run).
+# Every six hours this runs the full eligible-release corpus in four isolated
+# shards. AUDIT_SCHEDULED tells the runtime not to claim scanner database
+# freshness from a report cache when a database identity cannot be measured.
+# The workflow cache keys still include the static scanner inputs; the runtime
+# makes the final freshness decision.
 
 name: Scheduled Security Audit
 
 on:
   schedule:
-    # Every 6 hours — matches the existing catalog-refresh schedule.
     - cron: "0 */6 * * *"
   workflow_dispatch:
 
@@ -24,56 +17,54 @@ permissions:
   contents: read
 
 concurrency:
-  group: "scheduled-security-audit"
+  group: scheduled-security-audit
   cancel-in-progress: false
 
 jobs:
   scheduled-audit:
-    name: Scheduled Audit (all plugins)
+    name: Scheduled Audit (shard ${{ matrix.shard_index }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    permissions:
-      contents: write
-
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_index: [0, 1, 2, 3]
+    env:
+      SHARD_INDEX: ${{ matrix.shard_index }}
+      AUDIT_SCHEDULED: "1"
     steps:
       - name: Checkout repository
-        # actions/checkout v4.2.2
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Install uv
-        # astral-sh/setup-uv v9.0.0
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
         with:
           enable-cache: true
 
       - name: Set up Python
-        # actions/setup-python v7.0.0
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
-          python-version-file: "pyproject.toml"
+          python-version-file: pyproject.toml
 
       - name: Compute audit cache key
         id: cache-key
         run: |
-          # Incorporate policy version, implementation, and allowlist into the
-          # cache key so the cache is invalidated when any of them change.
-          POLICY_HASH=$(sha256sum security-policy.yml security-allowlist.yml semgrep-rules.yml audit_plugins.py plugin_release_utils.py pyproject.toml | sha256sum | cut -c1-16)
-          echo "restore_key=audit-cache-v1-${POLICY_HASH}" >> "$GITHUB_OUTPUT"
-          echo "save_key=audit-cache-v1-${POLICY_HASH}-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+          POLICY_HASH=$(sha256sum security-policy.yml security-allowlist.yml security-verdicts.json semgrep-rules.yml audit_plugins.py plugin_release_utils.py pyproject.toml uv.lock | sha256sum | cut -c1-16)
+          echo "restore_key=audit-cache-v2-${POLICY_HASH}-shard-${SHARD_INDEX}" >> "$GITHUB_OUTPUT"
+          echo "save_key=audit-cache-v2-${POLICY_HASH}-shard-${SHARD_INDEX}-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
 
       - name: Restore audit cache
-        # actions/cache v4.2.3
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684
         with:
           path: .audit-cache
           key: ${{ steps.cache-key.outputs.save_key }}
           restore-keys: |
             ${{ steps.cache-key.outputs.restore_key }}
 
-      - name: Install optional security scanners
+      - name: Install required security scanners
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends wget apt-transport-https gnupg lsb-release
+          sudo apt-get install -y --no-install-recommends wget apt-transport-https gnupg lsb-release clamav
           wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
             | gpg --dearmor \
             | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
@@ -81,30 +72,21 @@ jobs:
             $(lsb_release -sc) main" \
             | sudo tee /etc/apt/sources.list.d/trivy.list
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends trivy || echo "::warning::trivy install failed"
+          sudo apt-get install -y --no-install-recommends trivy
           uv tool install --python 3.12 --with setuptools==70.3.0 semgrep==1.132.0
           SEMGREP_BIN_DIR=$(uv tool dir --bin)
           echo "$SEMGREP_BIN_DIR" >> "$GITHUB_PATH"
           export PATH="$SEMGREP_BIN_DIR:$PATH"
-          semgrep --version --disable-version-check
-          sudo apt-get install -y --no-install-recommends clamav || {
-            echo "::error::clamav install failed"
+          semgrep_version="$(semgrep --version --disable-version-check)"
+          [[ "$semgrep_version" == "1.132.0" ]] || {
+            echo "::error::expected Semgrep 1.132.0, got $semgrep_version"
             exit 1
           }
-          # Stop the auto-updater daemon so freshclam can run without lock conflicts.
           sudo systemctl stop clamav-freshclam || true
-          # Update signature databases; fail loudly on error.
           sudo freshclam
-          # Verify that usable signature databases are present.
-          clamscan --version || { echo "::error::clamscan unavailable after install"; exit 1; }
-          ls /var/lib/clamav/*.c?d 2>/dev/null || {
-            echo "::error::No ClamAV signature databases found after freshclam"
-            exit 1
-          }
-        timeout-minutes: 10
-
-      - name: Snapshot published verdicts
-        run: cp security-verdicts.json "$RUNNER_TEMP/security-verdicts-before.json"
+          clamscan --version
+          ls /var/lib/clamav/*.c?d >/dev/null
+        timeout-minutes: 12
 
       - name: Run audit on all configured repositories
         id: audit
@@ -115,27 +97,140 @@ jobs:
           set +e
           uv run python audit_plugins.py \
             --all \
+            --shard-count 4 \
+            --shard-index "$SHARD_INDEX" \
             --output-dir security-reports \
-            --cache-dir .audit-cache
+            --cache-dir .audit-cache \
+            --verdict-delta security-reports/security-verdict-delta.json
           audit_exit=$?
           set -e
+          printf '%s\n' "$audit_exit" > security-reports/audit-exit.txt
           echo "audit_exit=${audit_exit}" >> "$GITHUB_OUTPUT"
-
-          # Under enforcement, exit 2 (BLOCK) and exit 3 (MANUAL_REVIEW) are
-          # audit RESULTS, not failures of this step. Letting them fail here
-          # would skip "Publish updated verdicts" and freeze the verdict store
-          # at whatever it held before - which is precisely the stale-verdict
-          # condition enforcement depends on the store not being in. Publish
-          # first; the "Enforcement result" step below fails the job afterwards.
-          # Exit 1 is an internal audit error and still fails immediately,
-          # because a partially-written store must not be published.
-          case "${audit_exit}" in
-            0 | 2 | 3) exit 0 ;;
-            *) exit "${audit_exit}" ;;
+          case "$audit_exit" in
+            0 | 1 | 2 | 3 | 4) exit 0 ;;
+            *) echo "::error::unexpected audit exit $audit_exit"; exit 1 ;;
           esac
         timeout-minutes: 45
 
+      - name: Save audit cache
+        if: always()
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: .audit-cache
+          key: ${{ steps.cache-key.outputs.save_key }}
+
+      - name: Upload isolated scheduled evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: scheduled-security-audit-shard-${{ matrix.shard_index }}
+          path: security-reports
+          retention-days: 90
+          if-no-files-found: warn
+
+  aggregate-and-publish:
+    name: Aggregate and publish scheduled verdicts
+    needs: scheduled-audit
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version-file: pyproject.toml
+
+      - name: Download isolated scheduled evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: scheduled-security-audit-shard-*
+          path: shard-artifacts
+
+      - name: Aggregate safe shard reports and deltas
+        id: aggregate
+        run: |
+          shopt -s globstar nullglob
+          exit_files=(shard-artifacts/**/audit-exit.txt)
+          (( ${#exit_files[@]} == 4 )) || {
+            echo "::error::expected four shard exit records"
+            exit 1
+          }
+          for exit_file in "${exit_files[@]}"; do
+            [[ "$(<"$exit_file")" != "1" ]] || {
+              echo "::error::run-global audit integrity failure; no verdicts will be published"
+              exit 1
+            }
+          done
+          reports=(shard-artifacts/**/security-report.json)
+          deltas=(shard-artifacts/**/security-verdict-delta.json)
+          (( ${#reports[@]} == 4 && ${#deltas[@]} == 4 )) || {
+            echo "::error::every shard must publish report and verdict delta"
+            exit 1
+          }
+          mkdir -p security-reports
+          set +e
+          uv run python audit_plugins.py \
+            --aggregate-reports "${reports[@]}" \
+            --aggregate-verdict-deltas "${deltas[@]}" \
+            --output-dir security-reports \
+            --verdict-delta security-reports/security-verdict-delta.json
+          audit_exit=$?
+          set -e
+          echo "audit_exit=${audit_exit}" >> "$GITHUB_OUTPUT"
+          case "$audit_exit" in
+            0 | 2 | 3 | 4) exit 0 ;;
+            *) exit "$audit_exit" ;;
+          esac
+
+      - name: Merge publishable verdict delta
+        if: steps.aggregate.outputs.audit_exit != ''
+        run: |
+          uv run python - security-verdicts.json security-reports/security-verdict-delta.json <<'PY'
+          import json
+          import os
+          import sys
+          import tempfile
+
+          verdict_path, delta_path = map(os.fspath, sys.argv[1:])
+          with open(verdict_path, encoding="utf-8") as verdict_file:
+              verdicts = json.load(verdict_file)
+          with open(delta_path, encoding="utf-8") as delta_file:
+              delta = json.load(delta_file)
+          if not isinstance(verdicts, dict) or not isinstance(delta, dict):
+              raise SystemExit("verdict store or delta root is not an object")
+          for repository, releases in delta.items():
+              if not isinstance(releases, dict):
+                  raise SystemExit(f"invalid delta repository: {repository}")
+              verdicts.setdefault(repository, {}).update(releases)
+          descriptor, temporary = tempfile.mkstemp(
+              dir=os.path.dirname(verdict_path) or ".",
+              prefix=".security-verdicts.",
+              suffix=".tmp",
+          )
+          with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+              json.dump(verdicts, output, indent=2, sort_keys=True)
+              output.write("\n")
+              output.flush()
+              os.fsync(output.fileno())
+          os.replace(temporary, verdict_path)
+          PY
+
+      - name: Snapshot published verdicts
+        if: steps.aggregate.outputs.audit_exit != ''
+        run: git show HEAD:security-verdicts.json > "$RUNNER_TEMP/security-verdicts-before.json"
+
       - name: Publish updated verdicts
+        if: steps.aggregate.outputs.audit_exit != ''
         env:
           BEFORE_VERDICTS: ${{ runner.temp }}/security-verdicts-before.json
         run: |
@@ -183,62 +278,23 @@ jobs:
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Enforcement result
-        if: always() && steps.audit.outputs.audit_exit != ''
+        if: always() && steps.aggregate.outputs.audit_exit != ''
         env:
-          AUDIT_EXIT: ${{ steps.audit.outputs.audit_exit }}
+          AUDIT_EXIT: ${{ steps.aggregate.outputs.audit_exit }}
         run: |
-          # Runs after publication so an enforcement result can never withhold
-          # the verdicts that produced it.
-          case "${AUDIT_EXIT}" in
-            0)
-              echo "Audit clean under the current enforcement mode."
-              ;;
-            2)
-              echo "::error::Audit produced BLOCK findings; see the job summary."
-              exit 2
-              ;;
-            3)
-              # MANUAL_REVIEW is a standing queue on a six-hourly sweep of the
-              # whole corpus, not a regression. Failing the scheduled job on it
-              # would keep this workflow permanently red and destroy the signal
-              # that a real BLOCK would carry. New plugins are gated by the
-              # pull_request audit, which still fails on exit 3.
-              echo "::warning::Audit flagged releases for MANUAL_REVIEW; see the job summary."
-              ;;
-            *)
-              echo "::error::Unexpected audit exit code ${AUDIT_EXIT}."
-              exit 1
-              ;;
+          case "$AUDIT_EXIT" in
+            0) echo "Audit clean under the current enforcement mode." ;;
+            2) echo "::error::Audit produced BLOCK findings."; exit 2 ;;
+            3) echo "::warning::Audit produced MANUAL_REVIEW findings." ;;
+            4) echo "::error::Audit has publishable release-local incompleteness."; exit 4 ;;
+            *) echo "::error::unexpected audit exit $AUDIT_EXIT"; exit 1 ;;
           esac
 
-      - name: Save audit cache
-        # Save cache after scanning so updated entries persist on the next run.
-        # A cache-save failure must not be interpreted as a passing audit.
+      - name: Upload aggregate scheduled evidence
         if: always()
-        # actions/cache v4.2.3
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684
-        with:
-          path: .audit-cache
-          key: ${{ steps.cache-key.outputs.save_key }}
-
-      - name: Add audit summary to job summary
-        if: always()
-        run: |
-          if [[ -f security-reports/security-report.md ]]; then
-            cat security-reports/security-report.md >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## Scheduled Security Audit" >> "$GITHUB_STEP_SUMMARY"
-            echo "⚠️ No report generated." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload audit reports
-        if: always()
-        # actions/upload-artifact v4.6.2
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: scheduled-security-audit-reports
-          path: |
-            security-reports/security-report.json
-            security-reports/security-report.md
+          name: scheduled-security-audit-aggregate
+          path: security-reports
           retention-days: 90
           if-no-files-found: warn

@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Project quality gates. Invoked by orchestration/run-quality-gates from the repo
+# root. Exit non-zero to fail the gate. The engine separately enforces that
+# review notes are not deleted, so that is not repeated here.
+set -euo pipefail
+
+fail() { echo "GATE FAILED: $*" >&2; exit 1; }
+
+# --- preconditions -----------------------------------------------------------
+# An absent tool must fail the gate, not skip it. Without this, `uv` missing from
+# PATH would surface as a bare "command not found" and could read as a skip.
+command -v uv >/dev/null 2>&1 || fail "uv is not on PATH"
+command -v gh >/dev/null 2>&1 || fail "gh is not on PATH"
+command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is not on PATH"
+command -v tar >/dev/null 2>&1 || fail "tar is not on PATH"
+[[ -f pyproject.toml ]] || fail "not at repo root: no pyproject.toml"
+
+# The suite is worthless if it silently collects nothing. tests/ must exist and
+# hold at least one test module before we trust a green run.
+[[ -d tests ]] || fail "tests/ directory is missing"
+shopt -s nullglob
+test_files=(tests/test_*.py)
+(( ${#test_files[@]} > 0 )) || fail "tests/ contains no test_*.py modules"
+
+# --- workflow syntax --------------------------------------------------------
+# actionlint is deliberately obtained only from its official GitHub release.
+# The cached item is the archive, never a trusted executable: every gate run
+# verifies the release checksum, extracts into a new temporary directory, and
+# then executes that freshly extracted binary. A failed download, checksum,
+# extraction, or invocation is therefore fail-closed.
+ACTIONLINT_VERSION="1.7.12"
+case "$(uname -m)" in
+  x86_64) actionlint_arch="amd64" ;;
+  aarch64 | arm64) actionlint_arch="arm64" ;;
+  *) fail "unsupported actionlint architecture: $(uname -m)" ;;
+esac
+actionlint_name="actionlint_${ACTIONLINT_VERSION}_linux_${actionlint_arch}.tar.gz"
+actionlint_root="/tmp/decky-plugins-extended/actionlint-v${ACTIONLINT_VERSION}-linux-${actionlint_arch}"
+actionlint_archive="$actionlint_root/$actionlint_name"
+actionlint_checksums="$actionlint_root/actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+mkdir -p "$actionlint_root"
+
+if [[ ! -f "$actionlint_archive" || ! -f "$actionlint_checksums" ]]; then
+  echo "== download verified actionlint v${ACTIONLINT_VERSION} =="
+  gh release download "v${ACTIONLINT_VERSION}" \
+    --repo rhysd/actionlint \
+    --pattern "$actionlint_name" \
+    --pattern "$(basename "$actionlint_checksums")" \
+    --dir "$actionlint_root" \
+    --clobber || fail "could not download official actionlint release assets"
+fi
+
+actionlint_expected_checksum="$(awk -v name="$actionlint_name" '
+  { candidate = $2; sub(/^\\*/, "", candidate); if (candidate == name) { print $1; exit } }
+' "$actionlint_checksums")"
+[[ "$actionlint_expected_checksum" =~ ^[0-9a-fA-F]{64}$ ]] || fail "official actionlint checksum is missing or invalid"
+if ! printf '%s  %s\n' "$actionlint_expected_checksum" "$actionlint_archive" | sha256sum --check --status -; then
+  fail "official actionlint archive checksum mismatch"
+fi
+
+actionlint_extract_dir="$(mktemp -d "$actionlint_root/extract.XXXXXX")"
+trap 'rm -rf "$actionlint_extract_dir"' EXIT
+tar --extract --gzip --file "$actionlint_archive" \
+  --directory "$actionlint_extract_dir" actionlint \
+  || fail "could not extract verified actionlint binary"
+actionlint_bin="$actionlint_extract_dir/actionlint"
+[[ -x "$actionlint_bin" ]] || fail "verified actionlint archive did not contain an executable"
+
+echo "== actionlint =="
+"$actionlint_bin" -version || fail "verified actionlint binary could not execute"
+"$actionlint_bin" .github/workflows/*.yml || fail "actionlint reported workflow violations"
+
+# --- lint --------------------------------------------------------------------
+# Rule set is pinned in pyproject.toml [tool.ruff.lint]. The whole tree was
+# linted and formatted clean on main before this plan started, so both gates run
+# repo-wide rather than scoped to changed files.
+echo "== ruff check =="
+uv run ruff check . || fail "ruff check reported violations"
+
+echo "== ruff format --check =="
+uv run ruff format --check . || fail "ruff format would reformat files; run 'uv run ruff format .'"
+
+# --- tests -------------------------------------------------------------------
+# pythonpath=["."] in pyproject makes bare `pytest` able to import the root-level
+# modules. Without it pytest collects nothing and exits 5, which is caught below.
+echo "== pytest =="
+set +e
+uv run pytest -q
+pytest_status=$?
+set -e
+
+# Exit 5 is pytest's "no tests collected". Treat it as a failure: a suite that
+# vanished must not read as a pass.
+case "$pytest_status" in
+  0) ;;
+  5) fail "pytest collected no tests (exit 5)" ;;
+  *) fail "pytest failed (exit $pytest_status)" ;;
+esac
+
+echo "quality gates OK: ruff clean, pytest green"
