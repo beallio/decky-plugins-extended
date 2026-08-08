@@ -615,14 +615,22 @@ def classify_findings(
 ) -> tuple[str, int]:
     """Aggregate findings into a final classification and risk score.
 
-    Required scanner failures (status "failed" or "unavailable") cause
-    AUDIT_ERROR regardless of findings.  "unsupported" on a required scanner
-    causes at least MANUAL_REVIEW.
+    A deterministic block takes precedence over behavioral scanner failures.
+    Otherwise required scanner failures (status "failed" or "unavailable")
+    cause AUDIT_ERROR. "unsupported" on a required scanner causes at least
+    MANUAL_REVIEW.
 
     Returns (classification_string, risk_score).
     """
     if has_error:
         return "AUDIT_ERROR", 0
+
+    active = [f for f in findings if not f.allowlisted]
+    score = sum(SEVERITY_SCORE.get(f.severity, 0) for f in active)
+    classifications = {f.classification for f in active}
+
+    if "BLOCK" in classifications:
+        return "BLOCK", score
 
     # Check required scanner statuses.
     if scanner_statuses and policy:
@@ -636,11 +644,6 @@ def classify_findings(
             if status in ("failed", "unavailable"):
                 return "AUDIT_ERROR", 0
 
-    active = [f for f in findings if not f.allowlisted]
-    score = sum(SEVERITY_SCORE.get(f.severity, 0) for f in active)
-
-    classifications = {f.classification for f in active}
-
     # Unsupported required scanner → at least MANUAL_REVIEW.
     if scanner_statuses and policy:
         for ss in scanner_statuses:
@@ -651,8 +654,6 @@ def classify_findings(
             if _scanner_required(policy, name) and status == "unsupported":
                 classifications.add("MANUAL_REVIEW")
 
-    if "BLOCK" in classifications:
-        return "BLOCK", score
     if "MANUAL_REVIEW" in classifications:
         return "MANUAL_REVIEW", score
     if "PASS_WITH_WARNINGS" in classifications:
@@ -931,8 +932,8 @@ def inspect_zip(
         findings.append(
             Finding(
                 rule_id="CORRUPT_ARCHIVE",
-                severity="critical",
-                classification="BLOCK",
+                severity="high",
+                classification="PASS_WITH_WARNINGS",
                 path="<archive>",
                 line=0,
                 message=f"ZIP file is corrupt or invalid: {exc}",
@@ -2138,7 +2139,7 @@ def run_trivy(
             # Trivy exits 0 on a completed scan because no --exit-code override is
             # used. Parse any JSON it emits even if the process reports non-zero so
             # useful findings survive alongside an infrastructure error.
-            _ok, stdout, stderr = _run_scanner(
+            ok, stdout, stderr = _run_scanner(
                 ["trivy", "fs", "--format", "json", "--quiet", scan_dir],
                 "trivy",
             )
@@ -2152,6 +2153,10 @@ def run_trivy(
             except (json.JSONDecodeError, ValueError) as exc:
                 errors.append(f"{scope} scan JSON parse error: {exc}")
                 continue
+
+            if not ok:
+                detail = stderr[:500] if stderr else "scanner exited non-zero"
+                errors.append(f"{scope} scan failed: {detail}")
 
             before = len(findings)
             for result in data.get("Results") or []:
@@ -2349,6 +2354,16 @@ def run_semgrep(
             )
     except Exception as exc:
         return ScannerStatus(name="semgrep", status="failed", detail=str(exc)), []
+
+    if not ok:
+        return (
+            ScannerStatus(
+                name="semgrep",
+                status="failed",
+                detail=(stderr or "semgrep exited non-zero")[:500],
+            ),
+            findings,
+        )
 
     status = "found_issue" if findings else "passed"
     return ScannerStatus(name="semgrep", status=status), findings
@@ -3807,6 +3822,9 @@ def audit_release(
         zip_stats, zip_findings = inspect_zip(zip_path, policy)
         report.archive_stats = zip_stats
         report.findings.extend(zip_findings)
+
+        if any(finding.rule_id == "CORRUPT_ARCHIVE" for finding in zip_findings):
+            report.errors.append("Archive inspection could not complete: corrupt ZIP.")
 
         if not zip_stats.safe:
             # If archive is fundamentally unsafe, report without extracting

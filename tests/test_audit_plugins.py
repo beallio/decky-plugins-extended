@@ -285,13 +285,14 @@ class TestZipInspection(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    def test_corrupt_zip_blocked(self):
+    def test_corrupt_zip_is_not_a_fabricated_structural_block(self):
         path = _make_temp_zip(b"not a zip file at all!!!")
         try:
             stats, findings = ap.inspect_zip(path)
             self.assertFalse(stats.safe)
-            rule_ids = {f.rule_id for f in findings}
-            self.assertIn("CORRUPT_ARCHIVE", rule_ids)
+            corrupt = [f for f in findings if f.rule_id == "CORRUPT_ARCHIVE"]
+            self.assertEqual(len(corrupt), 1)
+            self.assertNotEqual(corrupt[0].classification, "BLOCK")
         finally:
             os.unlink(path)
 
@@ -1217,6 +1218,52 @@ class TestSemgrepSeverityMapping(unittest.TestCase):
             patch.object(ap, "_run_scanner", return_value=(True, payload, "")),
         ):
             return ap.run_semgrep("/tmp/fake", self._policy())
+
+    def _run(self, stdout: str, ok: bool):
+        with (
+            patch("shutil.which", return_value="/usr/bin/semgrep"),
+            patch.object(
+                ap,
+                "_run_scanner",
+                return_value=(ok, stdout, "semgrep exited nonzero"),
+            ),
+        ):
+            return ap.run_semgrep("/tmp/fake", self._policy())
+
+    def test_valid_json_nonzero_exit_preserves_findings_but_fails(self):
+        payload = json.dumps(
+            {
+                "results": [
+                    {
+                        "check_id": "rule.id",
+                        "path": "/tmp/fake/main.py",
+                        "start": {"line": 3},
+                        "extra": {
+                            "severity": "ERROR",
+                            "message": "x",
+                            "lines": "x",
+                        },
+                    }
+                ]
+            }
+        )
+
+        status, findings = self._run(payload, ok=False)
+
+        self.assertEqual(status.status, "failed")
+        self.assertEqual(len(findings), 1)
+
+    def test_empty_output_nonzero_exit_fails(self):
+        status, findings = self._run("", ok=False)
+
+        self.assertEqual(status.status, "failed")
+        self.assertEqual(findings, [])
+
+    def test_valid_json_zero_exit_passes(self):
+        status, findings = self._run(json.dumps({"results": []}), ok=True)
+
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(findings, [])
 
     def test_uses_vendored_rules_without_registry_or_telemetry(self):
         calls = []
@@ -3046,11 +3093,10 @@ class TestTrivyStructuredFindings(unittest.TestCase):
         self.assertEqual(status.status, "failed")
         self.assertEqual(findings, [])
 
-    def test_findings_parsed_even_with_nonzero_exit(self):
-        # Trivy can exit non-zero (1) when vulnerabilities are found.
+    def test_findings_preserved_but_status_failed_with_nonzero_exit(self):
         stdout = self._trivy_json([self._vuln("critical")])
         status, findings = self._run(stdout, ok=False)
-        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(status.status, "failed")
         self.assertTrue(len(findings) > 0)
 
     def test_scans_artifact_and_exact_commit_source_lockfile(self):
