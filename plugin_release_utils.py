@@ -8,11 +8,13 @@ This module is side-effect free and safe to import from either context.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import os
 import re
+import sys
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -352,6 +354,77 @@ def bounded_stream_download(
 
 
 # ---------------------------------------------------------------------------
+# Pull-request audit-mode selection
+# ---------------------------------------------------------------------------
+
+_CHANGED_REPOSITORIES_PATH = "additional_plugins.txt"
+_FULL_AUDIT_PATHS = frozenset(
+    {
+        "audit_plugins.py",
+        "generate_json.py",
+        "check_for_updates.py",
+        "plugin_release_utils.py",
+        "security-policy.yml",
+        "security-allowlist.yml",
+        "security-verdicts.json",
+        "semgrep-rules.yml",
+        "pyproject.toml",
+        "uv.lock",
+        "scripts/orchestration/run-quality-gates",
+        ".github/workflows/plugin-security-audit.yml",
+        ".github/workflows/scheduled-security-audit.yml",
+    }
+)
+
+
+def _normalize_changed_path(path: str) -> str:
+    normalized = path.strip().replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def _requires_full_audit(path: str) -> bool:
+    if path in _FULL_AUDIT_PATHS or path.startswith("tests/"):
+        return True
+    return path.startswith("scripts/") and "quality-gate" in path
+
+
+def select_audit_mode(changed_paths: Iterable[str] | str) -> str:
+    """Return ``all``, ``changed``, or ``none`` for a side-effect-free diff."""
+    paths = [changed_paths] if isinstance(changed_paths, str) else changed_paths
+    plugin_list_changed = False
+    for raw_path in paths:
+        if not isinstance(raw_path, str):
+            raise TypeError("changed paths must be strings")
+        path = _normalize_changed_path(raw_path)
+        if not path:
+            continue
+        if _requires_full_audit(path):
+            return "all"
+        if path == _CHANGED_REPOSITORIES_PATH:
+            plugin_list_changed = True
+    return "changed" if plugin_list_changed else "none"
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """Run the small executable interface used by audit workflows."""
+    parser = argparse.ArgumentParser(description="Shared Decky release utilities")
+    parser.add_argument(
+        "--select-audit-mode",
+        action="store_true",
+        help="print all, changed, or none for the supplied changed paths",
+    )
+    parser.add_argument("paths", nargs="*")
+    args = parser.parse_args(argv)
+    if not args.select_audit_mode:
+        parser.error("--select-audit-mode is required")
+    paths = args.paths if args.paths else sys.stdin.read().splitlines()
+    print(select_audit_mode(paths))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Version parsing
 # ---------------------------------------------------------------------------
 
@@ -516,3 +589,7 @@ def select_best_release(
 
     eligible.sort(key=_key, reverse=True)
     return eligible[0]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

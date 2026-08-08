@@ -1,3 +1,7 @@
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 import plugin_release_utils as pru
@@ -400,6 +404,80 @@ def test_bounded_stream_download_rejects_unknown_kind_without_request(tmp_path):
             policy=_small_download_policy(),
         )
     assert session.calls == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "audit_plugins.py",
+        "generate_json.py",
+        "check_for_updates.py",
+        "plugin_release_utils.py",
+        "security-policy.yml",
+        "security-allowlist.yml",
+        "security-verdicts.json",
+        "semgrep-rules.yml",
+        "pyproject.toml",
+        "uv.lock",
+        "tests/test_catalog_gate.py",
+        "scripts/orchestration/run-quality-gates",
+        ".github/workflows/plugin-security-audit.yml",
+        ".github/workflows/scheduled-security-audit.yml",
+    ],
+)
+def test_select_audit_mode_security_pipeline_changes_select_full_corpus(path):
+    assert pru.select_audit_mode([path]) == "all"
+
+
+def test_select_audit_mode_plugin_list_only_selects_changed_repositories():
+    assert pru.select_audit_mode(["additional_plugins.txt"]) == "changed"
+
+
+def test_select_audit_mode_security_change_wins_over_plugin_list():
+    assert (
+        pru.select_audit_mode(["additional_plugins.txt", "security-policy.yml"])
+        == "all"
+    )
+
+
+def test_select_audit_mode_ignores_unrelated_paths_and_empty_entries():
+    assert pru.select_audit_mode(["", "./README.md", "static/index.html"]) == "none"
+    assert pru.select_audit_mode(["README.md", "./additional_plugins.txt"]) == "changed"
+
+
+def test_select_audit_mode_executable_accepts_paths_as_arguments():
+    repository_root = Path(pru.__file__).resolve().parent
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "plugin_release_utils",
+            "--select-audit-mode",
+            "additional_plugins.txt",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=repository_root,
+    )
+    assert completed.returncode == 0
+    assert completed.stdout == "changed\n"
+    assert completed.stderr == ""
+
+
+def test_select_audit_mode_executable_reads_newline_paths_from_stdin():
+    repository_root = Path(pru.__file__).resolve().parent
+    completed = subprocess.run(
+        [sys.executable, "-m", "plugin_release_utils", "--select-audit-mode"],
+        input="additional_plugins.txt\nplugin_release_utils.py\n",
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=repository_root,
+    )
+    assert completed.returncode == 0
+    assert completed.stdout == "all\n"
+    assert completed.stderr == ""
 
 
 def test_select_best_release_testing_prefers_higher_prerelease():
