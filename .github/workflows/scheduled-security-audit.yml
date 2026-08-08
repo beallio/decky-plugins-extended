@@ -192,6 +192,16 @@ jobs:
             *) exit "$audit_exit" ;;
           esac
 
+      - name: Record aggregation summary
+        if: always() && steps.aggregate.outputs.audit_exit != ''
+        run: |
+          {
+            echo "## Scheduled security audit aggregation"
+            echo
+            echo "Four isolated shard reports and verdict deltas were merged."
+            echo "Aggregate exit: ${{ steps.aggregate.outputs.audit_exit }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Merge publishable verdict delta
         if: steps.aggregate.outputs.audit_exit != ''
         run: |

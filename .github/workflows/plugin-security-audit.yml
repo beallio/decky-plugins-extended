@@ -154,6 +154,15 @@ jobs:
           echo "audit_mode=$audit_mode" >> "$GITHUB_OUTPUT"
           echo "summary_state=$summary_state" >> "$GITHUB_OUTPUT"
 
+      - name: Record audit selection summary
+        run: |
+          {
+            echo "## Security audit selection"
+            echo
+            echo "${{ steps.selection.outputs.summary_state }}"
+            echo "Shard ${{ matrix.shard_index }} of 4"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run isolated audit shard
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -250,6 +259,16 @@ jobs:
             0 | 2 | 3 | 4) exit 0 ;;
             *) exit "$audit_exit" ;;
           esac
+
+      - name: Record aggregation summary
+        if: always() && steps.aggregate.outputs.audit_exit != ''
+        run: |
+          {
+            echo "## Security audit aggregation"
+            echo
+            echo "Four isolated shard reports and verdict deltas were merged."
+            echo "Aggregate exit: ${{ steps.aggregate.outputs.audit_exit }}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload aggregate audit evidence
         if: always()
