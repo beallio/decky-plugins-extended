@@ -38,6 +38,7 @@ import time
 import unicodedata
 import zipfile
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Collection, Optional
@@ -2887,6 +2888,37 @@ def compare_source_and_artifact(
     return summary, findings, ScannerStatus(name="source-artifact-diff", status=status)
 
 
+def _trivy_database_identity(version_payload: Any) -> Optional[dict[str, Any]]:
+    """Return a fail-safe Trivy database identity from its JSON version payload."""
+    if not isinstance(version_payload, Mapping):
+        return None
+
+    vulnerability_database = version_payload.get("VulnerabilityDB")
+    if not isinstance(vulnerability_database, Mapping):
+        return None
+
+    database_version = vulnerability_database.get("Version")
+    if (
+        not isinstance(database_version, int)
+        or isinstance(database_version, bool)
+        or database_version < 1
+    ):
+        return None
+
+    freshness_values = []
+    for freshness_field in ("UpdatedAt", "DownloadedAt"):
+        if freshness_field not in vulnerability_database:
+            continue
+        value = vulnerability_database[freshness_field]
+        if not isinstance(value, str) or not value.strip():
+            return None
+        freshness_values.append(value)
+
+    if not freshness_values:
+        return None
+    return dict(vulnerability_database)
+
+
 def _scanner_runtime_identities(policy: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Return executable/version and database freshness identities for scanners."""
     commands = {
@@ -2931,11 +2963,8 @@ def _scanner_runtime_identities(policy: dict[str, Any]) -> dict[str, dict[str, A
                 )
                 if completed.returncode == 0:
                     version_payload = json.loads(completed.stdout)
-                    vulnerability_database = version_payload.get("VulnerabilityDB")
-                    if isinstance(vulnerability_database, dict) and any(
-                        vulnerability_database.get(field)
-                        for field in ("Version", "UpdatedAt", "DownloadedAt")
-                    ):
+                    vulnerability_database = _trivy_database_identity(version_payload)
+                    if vulnerability_database is not None:
                         identity["database"] = vulnerability_database
             except (OSError, subprocess.SubprocessError, ValueError, TypeError):
                 pass

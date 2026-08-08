@@ -109,6 +109,137 @@ class TestAuditCacheInvalidation(unittest.TestCase):
         self.assertIsNone(identities["trivy"]["database"])
         self.assertFalse(ap._scanner_database_freshness_available(policy, identities))
 
+    def test_invalid_trivy_identity_payloads_cannot_authorize_scheduled_cache(self):
+        policy = {
+            "scanners": {
+                "clamav": {"enabled": False},
+                "trivy": {"enabled": True},
+                "semgrep": {"enabled": False},
+            }
+        }
+        invalid_payloads = {
+            "array": "[]",
+            "scalar": json.dumps("not-an-object"),
+            "missing-database": json.dumps({"Version": "0.66.0"}),
+            "missing-freshness-fields": json.dumps({"VulnerabilityDB": {"Version": 2}}),
+            "wrong-version-type": json.dumps(
+                {
+                    "VulnerabilityDB": {
+                        "Version": [],
+                        "UpdatedAt": "2026-08-08T12:00:00Z",
+                    }
+                }
+            ),
+            "wrong-timestamp-type": json.dumps(
+                {
+                    "VulnerabilityDB": {
+                        "Version": 2,
+                        "UpdatedAt": 123,
+                    }
+                }
+            ),
+            "malformed-json": "{not-json",
+        }
+
+        for label, payload in invalid_payloads.items():
+            with self.subTest(label=label):
+
+                def run(command, **_kwargs):
+                    output = (
+                        "Version: 0.66.0" if command[1:] == ["--version"] else payload
+                    )
+                    return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+                with (
+                    patch("audit_plugins.shutil.which", return_value="/tools/trivy"),
+                    patch("audit_plugins.subprocess.run", side_effect=run),
+                ):
+                    identities = ap._scanner_runtime_identities(policy)
+
+                self.assertEqual(identities["trivy"]["version"], "Version: 0.66.0")
+                self.assertIsNone(identities["trivy"]["database"])
+                self.assertFalse(
+                    ap._scanner_database_freshness_available(policy, identities)
+                )
+
+    def test_valid_trivy_identity_authorizes_scheduled_cache_hit(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_dir = os.path.join(tmp_dir, ".audit-cache")
+            policy = ap._default_policy()
+            for scanner in policy["scanners"].values():
+                scanner["enabled"] = False
+                scanner["required"] = False
+            policy["scanners"]["trivy"]["enabled"] = True
+            zip_bytes = _make_zip([_regular("plugin.json", '{"name":"test"}')])
+            zip_sha = hashlib.sha256(zip_bytes).hexdigest()
+            release_data = {
+                "id": 123,
+                "tag_name": "v1.0.0",
+                "assets": [
+                    {
+                        "id": 456,
+                        "name": "plugin.zip",
+                        "browser_download_url": "https://example.com/plugin.zip",
+                        "digest": f"sha256:{zip_sha}",
+                    }
+                ],
+            }
+            scanner_identities = {
+                "clamav": {"enabled": False},
+                "trivy": {
+                    "enabled": True,
+                    "executable": "/tools/trivy",
+                    "version": "Version: 0.66.0",
+                    "database": {
+                        "Version": 2,
+                        "UpdatedAt": "2026-08-08T12:00:00Z",
+                    },
+                },
+                "semgrep": {"enabled": False},
+            }
+            download_count = 0
+            trivy_count = 0
+
+            def download(_url, destination, policy=None):
+                self.assertIs(policy, audit_policy)
+                nonlocal download_count
+                download_count += 1
+                Path(destination).write_bytes(zip_bytes)
+                return zip_sha
+
+            def trivy(*_args, **_kwargs):
+                nonlocal trivy_count
+                trivy_count += 1
+                return ap.ScannerStatus(name="trivy", status="passed"), []
+
+            audit_policy = policy
+            with (
+                patch("audit_plugins.get_repo_metadata", return_value={"name": "repo"}),
+                patch("audit_plugins.get_releases", return_value=[release_data]),
+                patch(
+                    "audit_plugins._resolve_ref_to_commit_and_tree_sha",
+                    return_value=("commit123", "tree123", None),
+                ),
+                patch("audit_plugins.get_repo_file_raw", return_value=None),
+                patch("audit_plugins.download_zip", side_effect=download),
+                patch("audit_plugins.run_trivy", side_effect=trivy),
+                patch(
+                    "audit_plugins._scanner_runtime_identities",
+                    return_value=scanner_identities,
+                ),
+                patch.dict(os.environ, {"AUDIT_SCHEDULED": "1"}),
+            ):
+                first = ap.audit_repository(
+                    "https://github.com/owner/repo", policy, [], cache_dir=cache_dir
+                )
+                second = ap.audit_repository(
+                    "https://github.com/owner/repo", policy, [], cache_dir=cache_dir
+                )
+
+        self.assertEqual(first.final_classification, "PASS")
+        self.assertEqual(second.final_classification, "PASS")
+        self.assertEqual((download_count, trivy_count), (1, 1))
+
     def test_context_hash_covers_semgrep_rules_and_scanner_freshness(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             rules = os.path.join(tmp_dir, "semgrep-rules.yml")
