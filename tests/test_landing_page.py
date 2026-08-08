@@ -1,7 +1,6 @@
 import re
 from pathlib import Path
 
-
 LANDING_PAGE = Path(__file__).parents[1] / "static" / "index.html"
 
 
