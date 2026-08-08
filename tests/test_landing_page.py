@@ -10,9 +10,7 @@ def _landing_page() -> str:
 
 def test_audit_and_github_links_use_compact_top_right_utility_group():
     html = _landing_page()
-    utility_css = re.search(
-        r"\.utility-links\s*\{(?P<declarations>[^}]*)\}", html
-    )
+    utility_css = re.search(r"\.utility-links\s*\{(?P<declarations>[^}]*)\}", html)
 
     assert utility_css
     declarations = utility_css.group("declarations")
@@ -21,8 +19,7 @@ def test_audit_and_github_links_use_compact_top_right_utility_group():
     assert "right:" in declarations
     assert '<div class="utility-links" aria-label="Site links">' in html
     assert (
-        '<a href="audit.html" class="utility-link audit" '
-        'aria-label="View audit log"'
+        '<a href="audit.html" class="utility-link audit" aria-label="View audit log"'
     ) in html
     assert (
         '<a href="https://github.com/beallio/decky-plugins-extended" '

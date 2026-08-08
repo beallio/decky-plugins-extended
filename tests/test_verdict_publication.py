@@ -95,9 +95,7 @@ def test_tracked_verdicts_win_over_legacy_cache(monkeypatch, tmp_path):
     assert loaded[REPOSITORY]["v1.0.0@1"]["classification"] == "BLOCK"
 
 
-def test_missing_tracked_store_is_empty_and_ignores_legacy_cache(
-    monkeypatch, tmp_path
-):
+def test_missing_tracked_store_is_empty_and_ignores_legacy_cache(monkeypatch, tmp_path):
     tracked = tmp_path / "security-verdicts.json"
     cache_dir = tmp_path / ".audit-cache"
     cache_dir.mkdir()
