@@ -549,6 +549,127 @@ def test_upstream_update_gate_requires_the_audited_hash(monkeypatch):
     ) == [("Plugin", "2.0.0")]
 
 
+def test_upstream_update_check_rejects_zero_current_release_matches(monkeypatch):
+    upstream = [_plugin([_version("v2.0.0", "a" * 64)])]
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json,
+        "get_releases",
+        lambda *_args: [_release("v1.0.0", 1, "a" * 64)],
+    )
+
+    with pytest.raises(
+        check_for_updates.UpstreamArtifactIdentityError,
+        match=(
+            r"repository=https://github\.com/owner/plugin.*version=2\.0\.0.*"
+            r"no eligible release matches"
+        ),
+    ):
+        check_for_updates.check_upstream(
+            {"Plugin": {("2.0.0", "a" * 64)}}, {}, BLOCKABLE_RULES
+        )
+
+
+def test_upstream_update_check_rejects_multiple_current_release_matches(monkeypatch):
+    upstream = [_plugin([_version("v2.0.0", "a" * 64)])]
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json,
+        "get_releases",
+        lambda *_args: [
+            _release("v2.0.0", 2, "b" * 64),
+            _release("v2.0.0", 3, "c" * 64),
+        ],
+    )
+
+    with pytest.raises(
+        check_for_updates.UpstreamArtifactIdentityError,
+        match=r"repository=https://github\.com/owner/plugin.*version=2\.0\.0.*ambiguous.*2 eligible releases",
+    ):
+        check_for_updates.check_upstream({}, {}, BLOCKABLE_RULES)
+
+
+def test_upstream_update_check_rejects_changed_asset_for_same_normalized_version(
+    monkeypatch,
+):
+    upstream_version = _version("Release-2.0.0", "a" * 64)
+    current_release = _release("v2.0.0", 2, "b" * 64)
+    monkeypatch.setattr(
+        generate_json, "fetch_json", lambda _url: [_plugin([upstream_version])]
+    )
+    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: [current_release])
+
+    with pytest.raises(
+        check_for_updates.UpstreamArtifactIdentityError,
+        match=(
+            r"repository=https://github\.com/owner/plugin.*version=2\.0\.0.*"
+            r"no ZIP asset matches the upstream artifact URL"
+        ),
+    ):
+        check_for_updates.check_upstream({}, {}, BLOCKABLE_RULES)
+
+
+def test_upstream_update_check_rejects_stale_upstream_url_and_hash(monkeypatch):
+    upstream_version = _version("v2.0.0", "a" * 64)
+    upstream_version["artifact"] = (
+        "https://github.com/owner/plugin/releases/download/v2.0.0/old-plugin.zip"
+    )
+    current_release = _release("v2.0.0", 2, "b" * 64)
+    monkeypatch.setattr(
+        generate_json, "fetch_json", lambda _url: [_plugin([upstream_version])]
+    )
+    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: [current_release])
+
+    with pytest.raises(
+        check_for_updates.UpstreamArtifactIdentityError,
+        match=(
+            r"repository=https://github\.com/owner/plugin.*version=2\.0\.0.*"
+            r"no ZIP asset matches the upstream artifact URL"
+        ),
+    ):
+        check_for_updates.check_upstream(
+            {"Plugin": {("2.0.0", "a" * 64)}}, {}, BLOCKABLE_RULES
+        )
+
+
+def test_upstream_update_check_uses_unique_current_hash_not_catalog_hash(monkeypatch):
+    upstream = [_plugin([_version("v2.0.0", "a" * 64)])]
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json,
+        "get_releases",
+        lambda *_args: [_release("v2.0.0", 2, "b" * 64)],
+    )
+
+    assert check_for_updates.check_upstream(
+        {"Plugin": {("2.0.0", "a" * 64)}}, {}, BLOCKABLE_RULES
+    ) == [("Plugin", "2.0.0")]
+
+
+def test_update_check_main_reports_unresolved_upstream_identity(monkeypatch, capsys):
+    upstream = [_plugin([_version("v2.0.0", "a" * 64)])]
+
+    def fetch_json(url):
+        return [] if url == check_for_updates.LIVE_URL else upstream
+
+    monkeypatch.setattr(generate_json, "fetch_json", fetch_json)
+    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: [])
+    monkeypatch.setattr(generate_json, "load_verdicts", lambda: {})
+    monkeypatch.setattr(
+        generate_json,
+        "load_policy",
+        lambda: {"blockable_rules": sorted(BLOCKABLE_RULES)},
+    )
+
+    assert check_for_updates.main() == 1
+    output = capsys.readouterr().out
+    assert "Fatal artifact identity failure" in output
+    assert "repository=https://github.com/owner/plugin" in output
+    assert "version=2.0.0" in output
+    assert "no eligible release matches" in output
+    assert "changed=false" not in output
+
+
 def test_two_consecutive_update_checks_stay_false_for_blocked_releases(
     monkeypatch, tmp_path, capsys
 ):

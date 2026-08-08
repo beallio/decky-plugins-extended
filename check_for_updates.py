@@ -24,6 +24,18 @@ LIVE_URL = os.environ.get(
 )
 
 
+class UpstreamArtifactIdentityError(RuntimeError):
+    """The current GitHub artifact behind an upstream version is unresolved."""
+
+    def __init__(self, repository, normalized_version, reason):
+        self.repository = repository
+        self.normalized_version = normalized_version
+        self.reason = reason
+        super().__init__(
+            f"repository={repository} version={normalized_version}: {reason}"
+        )
+
+
 def version_index(plugins):
     return {
         p["name"]: {(v.get("name"), v.get("hash")) for v in p.get("versions") or []}
@@ -44,28 +56,64 @@ def report(missing, label):
 def _resolve_upstream_release(version, release_cache, download_policy=None):
     """Resolve and hash the exact current release behind an upstream version."""
     artifact = version.get("artifact", "")
+    normalized_version = g.normalize_version(str(version.get("name") or ""))
     try:
         repository = g.canonicalize_github_release_asset_repository_url(artifact)
         owner, repo = g.parse_github_repository_url(repository)
-    except ValueError:
-        return None, None
+    except ValueError as exc:
+        raise UpstreamArtifactIdentityError(
+            "<unresolved>",
+            normalized_version,
+            f"invalid upstream GitHub release asset URL {artifact!r}",
+        ) from exc
     if repository not in release_cache:
         release_cache[repository] = g.get_releases(owner, repo)
     releases = release_cache[repository]
-    candidates = []
+    version_candidates = []
+    artifact_candidates = []
     for release in releases:
         if not g.is_release_eligible(release, allow_prerelease=True):
             continue
+        if g.normalize_version(release.get("tag_name", "")) != normalized_version:
+            continue
+        version_candidates.append(release)
         asset = g.get_zip_asset(release) or {}
-        if (
-            g.normalize_version(release.get("tag_name", "")) == version.get("name")
-            and asset.get("browser_download_url") == artifact
-        ):
-            candidates.append(release)
-    if len(candidates) != 1:
-        return None, None
-    current = g.build_version_object(candidates[0], policy=download_policy)
-    return candidates[0], current
+        if asset.get("browser_download_url") == artifact:
+            artifact_candidates.append(release)
+    if not version_candidates:
+        raise UpstreamArtifactIdentityError(
+            repository,
+            normalized_version,
+            "no eligible release matches the normalized version",
+        )
+    if not artifact_candidates:
+        raise UpstreamArtifactIdentityError(
+            repository,
+            normalized_version,
+            (
+                f"{len(version_candidates)} eligible release(s) match the normalized "
+                "version, but no ZIP asset matches the upstream artifact URL"
+            ),
+        )
+    if len(artifact_candidates) != 1:
+        raise UpstreamArtifactIdentityError(
+            repository,
+            normalized_version,
+            (
+                "ambiguous current artifact: "
+                f"{len(artifact_candidates)} eligible releases match the normalized "
+                "version and upstream artifact URL"
+            ),
+        )
+    release = artifact_candidates[0]
+    current = g.build_version_object(release, policy=download_policy)
+    if current is None:
+        raise UpstreamArtifactIdentityError(
+            repository,
+            normalized_version,
+            "the uniquely matched release did not yield a current ZIP artifact",
+        )
+    return release, current
 
 
 def check_upstream(live, verdicts, blockable_rules=None, *, download_policy=None):
@@ -77,7 +125,7 @@ def check_upstream(live, verdicts, blockable_rules=None, *, download_policy=None
             release, current = _resolve_upstream_release(
                 version, release_cache, download_policy=download_policy
             )
-            current_hash = current.get("hash") if current else None
+            current_hash = current.get("hash")
             if not g.catalog_version_is_blocked(
                 version,
                 verdicts,
@@ -85,7 +133,7 @@ def check_upstream(live, verdicts, blockable_rules=None, *, download_policy=None
                 release=release,
                 current_artifact_sha256=current_hash,
             ):
-                newest = current or version
+                newest = current
                 break
         if newest is None:
             continue
@@ -151,7 +199,7 @@ def main():
         upstream = check_upstream(
             live, verdicts, blockable_rules, download_policy=policy
         )
-    except g.ArtifactDownloadError as exc:
+    except (g.ArtifactDownloadError, UpstreamArtifactIdentityError) as exc:
         print(f"Fatal artifact identity failure: {exc}")
         return 1
     report(upstream, "Upstream versions missing")
