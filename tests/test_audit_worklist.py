@@ -159,6 +159,39 @@ def test_aggregation_rejects_duplicate_and_conflicting_release_keys(tmp_path):
         ap.aggregate_audit_reports([str(first), str(second)])
 
 
+@pytest.mark.parametrize(
+    "second_classification", ["PASS", "BLOCK"], ids=["duplicate", "conflicting"]
+)
+def test_verdict_delta_aggregation_rejects_repeated_canonical_keys(
+    tmp_path, second_classification
+):
+    repository = "https://github.com/owner/repo"
+    first_record = {
+        "classification": "PASS",
+        "blocking_rule_ids": [],
+        "artifact_sha256": "a" * 64,
+    }
+    second_record = {
+        **first_record,
+        "classification": second_classification,
+        "blocking_rule_ids": (
+            ["ARCHIVE_TRAVERSAL"] if second_classification == "BLOCK" else []
+        ),
+    }
+    first = tmp_path / "first-delta.json"
+    second = tmp_path / "second-delta.json"
+    first.write_text(
+        json.dumps({repository: {"v1@10": first_record}}), encoding="utf-8"
+    )
+    second.write_text(
+        json.dumps({"https://github.com/OWNER/REPO/": {"v1@10": second_record}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="duplicate verdict key"):
+        ap.aggregate_verdict_deltas([str(first), str(second)])
+
+
 def test_shard_aggregation_restores_unsharded_deterministic_order(tmp_path):
     reports = [
         ap.AuditReport(
@@ -285,3 +318,83 @@ def test_mixed_release_run_checkpoints_success_and_publishes_error_before_exit_4
         (tmp_path / "reports/verdict-delta-shard-0.json").read_text(encoding="utf-8")
     )
     assert list(delta[repository]) == ["v2@20"]
+
+
+def test_main_reruns_completed_progress_when_audit_context_mismatches(
+    monkeypatch, tmp_path
+):
+    repository = "https://github.com/owner/repo"
+    release = _release("v1", 1, 10)
+    release["assets"][0]["digest"] = f"sha256:{'a' * 64}"
+    worklist = [ap.AuditWorkItem(repository, release, {})]
+    prior = ap.AuditReport(
+        repository=repository,
+        release="v1",
+        release_id="v1@10",
+        github_release_id="1",
+        asset_id="10",
+        artifact_sha256="a" * 64,
+        resolved_tag_commit_sha="commit-v1",
+        audit_context_hash="stale-context",
+        final_classification="PASS",
+        completion_status="completed",
+    )
+    progress_path = tmp_path / "progress.json"
+    ap._write_progress_manifest(
+        progress_path, {ap._report_identity_key(prior): ap._progress_record(prior)}
+    )
+    audited = []
+
+    def fake_audit(repository_arg, release_arg, **_kwargs):
+        audited.append((repository_arg, release_arg["id"]))
+        return ap.AuditReport(
+            repository=repository_arg,
+            release=release_arg["tag_name"],
+            release_id="v1@10",
+            github_release_id="1",
+            asset_id="10",
+            artifact_sha256="a" * 64,
+            resolved_tag_commit_sha="commit-v1",
+            audit_context_hash="current-context",
+            final_classification="PASS",
+            completion_status="completed",
+        )
+
+    monkeypatch.setattr(ap, "load_policy", lambda *_args: ap._default_policy())
+    monkeypatch.setattr(ap, "load_allowlist", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ap, "load_verdicts", lambda *_args: {})
+    monkeypatch.setattr(ap, "read_repo_urls", lambda *_args: [repository])
+    monkeypatch.setattr(
+        ap, "build_audit_worklist", lambda *_args, **_kwargs: (worklist, [])
+    )
+    monkeypatch.setattr(
+        ap,
+        "_resolve_ref_to_commit_and_tree_sha",
+        lambda *_args: ("commit-v1", "tree-v1", None),
+    )
+    monkeypatch.setattr(ap, "_scanner_runtime_identities", lambda *_args: {})
+    monkeypatch.setattr(
+        ap, "compute_audit_context_hash", lambda *_args, **_kwargs: "current-context"
+    )
+    monkeypatch.setattr(ap, "audit_release", fake_audit)
+
+    code = ap.main(
+        [
+            "--all",
+            "--plugins-file",
+            str(tmp_path / "plugins.txt"),
+            "--output-dir",
+            str(tmp_path / "reports"),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+            "--progress-manifest",
+            str(progress_path),
+        ]
+    )
+
+    assert code == 0
+    assert audited == [(repository, 1)]
+    progress = ap._load_progress_manifest(progress_path)
+    assert progress[ap._report_identity_key(prior)]["audit_context_hash"] == (
+        "current-context"
+    )

@@ -218,6 +218,42 @@ def test_completed_audit_error_does_not_overwrite_good_verdict(monkeypatch, tmp_
     assert ap.load_verdicts(str(tmp_path)) == prior
 
 
+@pytest.mark.parametrize("scanners_enabled", [False, True], ids=["disabled", "healthy"])
+def test_corrupt_archive_preserves_prior_verdict_bytes(
+    monkeypatch, tmp_path, scanners_enabled
+):
+    release = _release("v1.0.0", 1)
+    _seed_pass_verdict(tmp_path, "v1.0.0@1")
+    verdict_path = Path(ap.VERDICTS_FILE)
+    prior_bytes = verdict_path.read_bytes()
+    _configure_successful_audit(monkeypatch, b"not a zip")
+    policy = _policy()
+    for scanner in policy["scanners"].values():
+        scanner["enabled"] = scanners_enabled
+
+    report = ap.audit_release(
+        REPOSITORY,
+        release,
+        policy,
+        [],
+        cache_dir=str(tmp_path),
+        skip_cache=True,
+    )
+
+    corrupt_findings = [
+        finding for finding in report.findings if finding.rule_id == "CORRUPT_ARCHIVE"
+    ]
+    assert report.final_classification == "AUDIT_ERROR"
+    assert report.completion_status == "incomplete"
+    assert len(corrupt_findings) == 1
+    assert not any(
+        finding.classification == "BLOCK" and not finding.allowlisted
+        for finding in report.findings
+    )
+    assert any("corrupt ZIP" in error for error in report.errors)
+    assert verdict_path.read_bytes() == prior_bytes
+
+
 def test_first_seen_audit_error_is_not_laundered_into_pass(monkeypatch, tmp_path):
     release = _release("v1.0.0", 1)
     _configure_successful_audit(monkeypatch, _zip_bytes())
