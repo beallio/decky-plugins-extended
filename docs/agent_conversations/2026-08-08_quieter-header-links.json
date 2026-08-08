@@ -1,0 +1,27 @@
+{
+  "date": "2026-08-08",
+  "task_objective": "Make the landing-page audit and GitHub links less prominent, move them to the top-right corner, use the conventional GitHub mark, remove the repeated audit URL, and choose a suitable audit icon.",
+  "branch": "feat/quieter-header-links-20260808",
+  "plan": "docs/plans/2026-08-08_quieter-header-links.md",
+  "commits": [
+    "8f4f45e docs(plan): add quieter header links implementation plan",
+    "e944efe test(site): cover quieter landing page links",
+    "067a526 style(site): quiet audit and GitHub header links",
+    "27fbc38 style(test): format landing page contract"
+  ],
+  "implementation": [
+    "Added a compact absolute-positioned utility group in the container's top-right corner.",
+    "Replaced the large audit and GitHub neon buttons with subdued compact links that retain visible labels and keyboard focus states.",
+    "Added inline SVG icons: the conventional GitHub mark and a shield/check mark for the audit log.",
+    "Removed the repeated audit.html entry from the visible catalog URL list while retaining the audit link itself.",
+    "Added responsive spacing and typography adjustments for narrow screens."
+  ],
+  "verification": {
+    "baseline": "314 passed; Ruff clean.",
+    "focused_tests": "3 passed.",
+    "final_tests": "317 passed in 1.64s before the import-only lint fix; the focused suite passed again afterward.",
+    "lint": "Ruff clean after removing the extra blank line in the new test import block.",
+    "regression_contract": "The focused tests verify top/right absolute positioning, both utility destinations, distinct accessible SVG icons, and absence of audit.html from the visible URL list.",
+    "not_verified": "No browser or deployed Cloudflare rendering check was performed; validation was static markup/CSS inspection plus automated tests."
+  }
+}
