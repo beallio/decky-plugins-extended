@@ -546,13 +546,17 @@ class TestSecretsScanning(unittest.TestCase):
             self.assertNotIn("ghp_AAA", f.evidence)
             self.assertIn(ap.SECRET_REDACT, f.evidence)
 
-    def test_test_fixture_has_lower_severity(self):
+    def test_fixture_comment_and_filename_substring_do_not_lower_severity(self):
         content = "# test fixture: password = 'my_test_password_here'\n"
         findings = ap.scan_for_secrets(content, "test_config.py")
-        # Fixtures may be classified with lower severity
-        for f in findings:
-            if "password" in f.rule_id.lower():
-                self.assertIn(f.severity, ("low", "info", "medium"))
+        password_findings = [
+            finding
+            for finding in findings
+            if finding.rule_id == "SECRET_PASSWORD_LITERAL"
+        ]
+        self.assertEqual(len(password_findings), 1)
+        self.assertEqual(password_findings[0].severity, "critical")
+        self.assertEqual(password_findings[0].classification, "BLOCK")
 
     def test_github_token_pattern_detected(self):
         content = "token = 'ghp_" + "A" * 36 + "'\n"
@@ -1372,7 +1376,9 @@ class TestSourceArtifactDiff(unittest.TestCase):
         self.assertEqual(status.status, "found_issue")
         self.assertIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
 
-    def _compare_metadata_files(self, source_files, artifact_files):
+    def _compare_metadata_files(
+        self, source_files, artifact_files, ref="v1.0.1-dev.gabc"
+    ):
         extract = self._mk_extract(
             {f"plugin/{path}": content for path, content in artifact_files.items()}
         )
@@ -1404,7 +1410,114 @@ class TestSourceArtifactDiff(unittest.TestCase):
             ),
             patch.object(ap, "get_repo_file_raw", side_effect=get_source),
         ):
-            return ap.compare_source_and_artifact(extract, "o", "r", "v1")
+            return ap.compare_source_and_artifact(extract, "o", "r", ref)
+
+    def _build_stamp(self, path, source, artifact, version="1.0.1-dev.gabc"):
+        return ap._metadata_diff_is_build_stamped(
+            path,
+            json.dumps(source).encode(),
+            json.dumps(artifact).encode(),
+            version,
+        )
+
+    def test_exact_package_version_build_stamp_is_allowed(self):
+        self.assertTrue(
+            self._build_stamp(
+                "package.json",
+                {"name": "plugin", "version": "1.0.0"},
+                {"name": "plugin", "version": "1.0.1-dev.gabc"},
+            )
+        )
+
+    def test_exact_debug_flag_removal_build_stamp_is_allowed(self):
+        self.assertTrue(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "flags": ["debug", "root"],
+                },
+                {"name": "Plugin", "version": "1.0.1-dev.gabc", "flags": ["root"]},
+            )
+        )
+
+    def test_exact_publish_image_build_stamp_is_allowed(self):
+        self.assertTrue(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/main/icon.png"
+                    },
+                },
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/icon.png"
+                    },
+                },
+            )
+        )
+
+    def test_arbitrary_version_build_stamp_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "package.json",
+                {"name": "plugin", "version": "1.0.0"},
+                {"name": "plugin", "version": "999.0.0"},
+            )
+        )
+
+    def test_combined_unrelated_build_drift_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "plugin.json",
+                {"name": "Plugin", "version": "1.0.0", "flags": ["debug"]},
+                {"name": "Renamed", "version": "1.0.1-dev.gabc", "flags": []},
+            )
+        )
+
+    def test_reordered_flags_build_stamp_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "flags": ["root", "debug", "network"],
+                },
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "flags": ["network", "root"],
+                },
+            )
+        )
+
+    def test_near_match_publish_image_build_stamp_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/mainly/icon.png"
+                    },
+                },
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/icon.png"
+                    },
+                },
+            )
+        )
 
     def test_version_only_metadata_drift_is_allowed(self):
         source_files = {

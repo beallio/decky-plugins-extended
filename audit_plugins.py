@@ -1805,19 +1805,26 @@ def extract_urls_and_domains(content: str) -> tuple[list[str], list[str]]:
 # ---------------------------------------------------------------------------
 
 
-def _looks_like_test_fixture(context_line: str) -> bool:
-    markers = (
-        "test",
-        "example",
-        "placeholder",
-        "dummy",
-        "fake",
-        "mock",
-        "TODO",
-        "FIXME",
+_FIXTURE_PATH_SEGMENTS = {
+    "test",
+    "tests",
+    "fixture",
+    "fixtures",
+    "example",
+    "examples",
+    "mock",
+    "mocks",
+}
+
+
+def _looks_like_test_fixture(path: str) -> bool:
+    """Return whether ``path`` is explicitly scoped as test/example material."""
+    normalized = path.replace("\\", "/")
+    parts = tuple(part.lower() for part in PurePosixPath(normalized).parts)
+    filename = parts[-1] if parts else ""
+    return any(part in _FIXTURE_PATH_SEGMENTS for part in parts) or (
+        ".example." in filename
     )
-    low = context_line.lower()
-    return any(m.lower() in low for m in markers)
 
 
 _PLACEHOLDER_SECRET_PATTERNS = {
@@ -1828,31 +1835,36 @@ _PLACEHOLDER_SECRET_PATTERNS = {
 
 
 def _looks_like_secret_placeholder(value: str) -> bool:
-    stripped = value.strip()
-    if not stripped:
+    """Match only complete, explicitly enumerated placeholder values."""
+    if not value or value != value.strip():
         return False
-    if len(set(stripped)) == 1:
+    low = value.lower()
+    if low in {"changeme", "placeholder"}:
         return True
-    low = stripped.lower()
-    return any(
-        marker in low
-        for marker in (
-            "example",
-            "placeholder",
-            "changeme",
-            "your-",
-            "xxx",
-            "<",
-            ">",
-            "{{",
-            "todo",
+    if re.fullmatch(r"your_[a-z0-9_]+", low):
+        return True
+    if any(
+        re.fullmatch(pattern, value)
+        for pattern in (
+            r"<[^<>]+>",
+            r"\[[^\[\]]+\]",
+            r"\$\{[^{}]+\}",
+            r"\{\{[^{}]+\}\}",
         )
+    ):
+        return True
+
+    provider_shapes = (
+        ("ghp_", 36),
+        ("ghs_", 36),
+        ("github_pat_", 82),
+        ("AKIA", 16),
     )
-
-
-def _looks_like_credential_value(value: str) -> bool:
-    """Return whether a matched literal has the minimum shape of a credential."""
-    return not any(character.isspace() for character in value)
+    for prefix, suffix_length in provider_shapes:
+        if value.startswith(prefix):
+            suffix = value[len(prefix) :]
+            return len(suffix) == suffix_length and len(set(suffix)) == 1
+    return False
 
 
 def _secret_value_shape(value: str) -> tuple[int, bool, bool]:
@@ -1882,17 +1894,10 @@ def scan_for_secrets(content: str, path: str) -> list[Finding]:
         for name, pattern in _SECRET_PATTERNS:
             m = pattern.search(line)
             if m:
-                is_fixture = _looks_like_test_fixture(line)
+                is_fixture = _looks_like_test_fixture(path)
                 matched_value = _matched_secret_value(name, m)
-                is_placeholder = (
-                    name in _PLACEHOLDER_SECRET_PATTERNS
-                    and _looks_like_secret_placeholder(matched_value)
-                )
-                is_noncredential_shaped = (
-                    name in _PLACEHOLDER_SECRET_PATTERNS
-                    and not _looks_like_credential_value(matched_value)
-                )
-                is_warning = is_fixture or is_placeholder or is_noncredential_shaped
+                is_placeholder = _looks_like_secret_placeholder(matched_value)
+                is_warning = is_fixture and is_placeholder
                 value_length, contains_whitespace, entirely_alphabetic = (
                     _secret_value_shape(matched_value)
                 )
@@ -1915,9 +1920,7 @@ def scan_for_secrets(content: str, path: str) -> list[Finding]:
                         line=lineno,
                         message=(
                             f"Potential {name} detected (redacted)."
-                            f"{' May be test fixture.' if is_fixture else ''}"
-                            f"{' Looks like a placeholder.' if is_placeholder else ''}"
-                            f"{' Does not look credential-shaped.' if is_noncredential_shaped else ''}"
+                            f"{' Recognized fixture placeholder.' if is_warning else ''}"
                         ),
                         evidence=evidence,
                         scanner="secrets-scanner",
@@ -2440,7 +2443,10 @@ def _looks_like_script_asset(path: str, data: bytes, executable_bits: bool) -> b
 
 
 def _metadata_diff_is_build_stamped(
-    path: str, source_raw: bytes, artifact_raw: bytes
+    path: str,
+    source_raw: bytes,
+    artifact_raw: bytes,
+    normalized_release_version: str,
 ) -> bool:
     """Return whether metadata drift is limited to Decky's exact build stamps."""
     filename = posixpath.basename(path).lower()
@@ -2453,6 +2459,8 @@ def _metadata_diff_is_build_stamped(
         return False
     if not isinstance(source, dict) or not isinstance(artifact, dict):
         return False
+    if not normalized_release_version:
+        return False
 
     source_version = source.get("version")
     artifact_version = artifact.get("version")
@@ -2460,6 +2468,7 @@ def _metadata_diff_is_build_stamped(
         source_version != artifact_version
         and isinstance(source_version, str)
         and isinstance(artifact_version, str)
+        and artifact_version == normalized_release_version
     ):
         source["version"] = artifact_version
 
@@ -2486,14 +2495,10 @@ def _metadata_diff_is_build_stamped(
             source_image != artifact_image
             and isinstance(source_image, str)
             and isinstance(artifact_image, str)
-            and isinstance(artifact_version, str)
+            and source_image.count("/main/") == 1
         ):
-            release_tag = (
-                artifact_version
-                if artifact_version.startswith("v")
-                else f"v{artifact_version}"
-            )
-            if source_image.replace("/main/", f"/{release_tag}/") == artifact_image:
+            release_tag = f"v{normalized_release_version}"
+            if source_image.replace("/main/", f"/{release_tag}/", 1) == artifact_image:
                 source_publish["image"] = artifact_image
 
     return source == artifact
@@ -2595,6 +2600,7 @@ def compare_source_and_artifact(
         "unexpected_urls": [],
     }
     findings: list[Finding] = []
+    normalized_release_version = plugin_release_utils.normalize_version(ref)
 
     if not os.path.isdir(extract_dir):
         return (
@@ -2738,7 +2744,10 @@ def compare_source_and_artifact(
                                 if source_raw is not None:
                                     build_stamped_metadata = (
                                         _metadata_diff_is_build_stamped(
-                                            source_path, source_raw, raw
+                                            source_path,
+                                            source_raw,
+                                            raw,
+                                            normalized_release_version,
                                         )
                                     )
                             if not build_stamped_metadata:
