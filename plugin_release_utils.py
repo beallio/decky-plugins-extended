@@ -135,6 +135,7 @@ def parse_github_repository_url(url: str) -> tuple[str, str]:
         parsed.scheme.lower() != "https"
         or parsed.hostname is None
         or parsed.hostname.lower() != "github.com"
+        or parsed.netloc.lower() != "github.com"
         or parsed.username is not None
         or parsed.password is not None
         or port is not None
@@ -161,6 +162,77 @@ def parse_github_repository_url(url: str) -> tuple[str, str]:
     if repo.lower().endswith(".git"):
         raise ValueError(error)
     return owner.lower(), repo.lower()
+
+
+def parse_github_release_asset_url(url: str) -> tuple[str, str]:
+    """Extract canonical ``(owner, repo)`` from a browser release-asset URL.
+
+    This intentionally accepts only GitHub's
+    ``/<owner>/<repo>/releases/download/<tag>/<asset>`` shape. It is separate
+    from :func:`parse_github_repository_url` so repository configuration never
+    starts accepting artifact paths by accident.
+    """
+    error = f"Invalid GitHub release asset URL: {url!r}"
+    if not isinstance(url, str) or not url or url != url.strip():
+        raise ValueError(error)
+
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except (TypeError, ValueError) as exc:
+        raise ValueError(error) from exc
+
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.hostname is None
+        or parsed.hostname.lower() != "github.com"
+        or parsed.netloc.lower() != "github.com"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.query
+        or parsed.fragment
+        or not parsed.path.startswith("/")
+        or parsed.path.endswith("/")
+    ):
+        raise ValueError(error)
+
+    raw_parts = parsed.path[1:].split("/")
+    if (
+        len(raw_parts) != 6
+        or not all(raw_parts)
+        or raw_parts[2:4] != ["releases", "download"]
+    ):
+        raise ValueError(error)
+    raw_owner, raw_repo, _, _, raw_tag, raw_asset = raw_parts
+    if _ENCODED_PATH_SEPARATOR.search(raw_owner + "/" + raw_repo + "/" + raw_asset):
+        raise ValueError(error)
+
+    try:
+        owner, repo = parse_github_repository_url(
+            f"https://github.com/{raw_owner}/{raw_repo}"
+        )
+    except ValueError as exc:
+        raise ValueError(error) from exc
+
+    tag = unquote(raw_tag)
+    asset = unquote(raw_asset)
+    if (
+        not tag
+        or "\\" in tag
+        or not asset
+        or asset in {".", ".."}
+        or "/" in asset
+        or "\\" in asset
+    ):
+        raise ValueError(error)
+    return owner, repo
+
+
+def canonicalize_github_release_asset_repository_url(url: str) -> str:
+    """Return the canonical repository URL owning a strict release asset URL."""
+    owner, repo = parse_github_release_asset_url(url)
+    return f"https://github.com/{owner}/{repo}"
 
 
 def canonicalize_github_repository_url(url: str) -> str:

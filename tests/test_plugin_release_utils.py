@@ -47,6 +47,7 @@ def test_github_repository_url_canonicalization(url, expected_url, expected_part
         "http://github.com/owner/repo",
         "https://user@github.com/owner/repo",
         "https://github.com:443/owner/repo",
+        "https://github.com:/owner/repo",
         "https://github.com/owner/repo?download=1",
         "https://github.com/owner/repo#readme",
         "https://github.com/owner/repo.git",
@@ -63,6 +64,53 @@ def test_github_repository_url_canonicalization(url, expected_url, expected_part
 def test_github_repository_url_rejects_noncanonical_or_hostile_input(url):
     with pytest.raises(ValueError, match="GitHub repository URL"):
         pru.parse_github_repository_url(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/Owner/Repo/releases/download/v1.2.3/plugin.zip",
+        "https://GITHUB.COM/Owner/Repo/releases/download/release-1/Plugin%20Name.ZIP",
+    ],
+)
+def test_github_release_asset_url_extracts_canonical_repository(url):
+    assert pru.parse_github_release_asset_url(url) == ("owner", "repo")
+    assert (
+        pru.canonicalize_github_release_asset_repository_url(url)
+        == "https://github.com/owner/repo"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://github.com/owner/repo/releases/download/v1/plugin.zip",
+        "https://user@github.com/owner/repo/releases/download/v1/plugin.zip",
+        "https://github.com:443/owner/repo/releases/download/v1/plugin.zip",
+        "https://github.com/owner/repo/releases/download/v1/plugin.zip?raw=1",
+        "https://github.com/owner/repo/releases/download/v1/plugin.zip#asset",
+        "https://github.com.example/owner/repo/releases/download/v1/plugin.zip",
+        "https://github.com/owner/repo.git/releases/download/v1/plugin.zip",
+        "https://github.com/owner%2Frepo/releases/download/v1/plugin.zip",
+        "https://github.com/owner/repo/releases/tag/v1/plugin.zip",
+        "https://github.com/owner/repo/releases/download//plugin.zip",
+        "https://github.com/owner/repo/releases/download/v1/plugin%2Fpart.zip",
+        "https://github.com/owner/repo/releases/download/v1/plugin.zip/extra",
+        "https://github.com/owner/repo/releases/download/v1/plugin.zip/",
+        "https://github.com/owner/repo/releases/download/v1",
+        "https://objects.githubusercontent.com/owner/repo/releases/download/v1/plugin.zip",
+    ],
+)
+def test_github_release_asset_url_rejects_hostile_or_non_asset_urls(url):
+    with pytest.raises(ValueError, match="GitHub release asset URL"):
+        pru.parse_github_release_asset_url(url)
+
+
+def test_repository_url_parser_remains_repo_only_after_asset_parser_is_added():
+    with pytest.raises(ValueError, match="GitHub repository URL"):
+        pru.parse_github_repository_url(
+            "https://github.com/owner/repo/releases/download/v1/plugin.zip"
+        )
 
 
 def _release(
