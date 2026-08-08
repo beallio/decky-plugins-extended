@@ -65,17 +65,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: scripts/orchestration-hooks/quality-gates
 
-      - name: Assert CI collection includes security regression modules
+      - name: Assert CI collection includes exact security regression node IDs
         run: |
-          collection="$(uv run pytest --collect-only -q)"
-          for module in \
-            tests/test_catalog_gate.py \
-            tests/test_enforcement_workflow.py \
-            tests/test_workflow_selection.py \
-            tests/test_audit_cache_invalidation.py
+          set -o pipefail
+          collection_file="$RUNNER_TEMP/pytest-collection.txt"
+          uv run pytest --collect-only -q > "$collection_file"
+          cat "$collection_file"
+          for node_id in \
+            tests/test_catalog_gate.py::test_unknown_verdict_fails_open_with_explicit_identity_status \
+            tests/test_enforcement_workflow.py::test_pull_request_audit_still_fails_on_enforcement_exit_codes \
+            tests/test_workflow_selection.py::test_full_corpus_is_four_isolated_shards \
+            tests/test_workflow_selection.py::test_workflow_executes_selector_for_required_path_classes[audit-only] \
+            tests/test_audit_cache_invalidation.py::TestAuditCacheInvalidation::test_context_hash_covers_semgrep_rules_and_scanner_freshness
           do
-            [[ "$collection" == *"$module"* ]] || {
-              echo "::error::pytest collection missed $module"
+            grep -Fqx -- "$node_id" "$collection_file" || {
+              echo "::error::pytest collection missed node ID $node_id"
               exit 1
             }
           done

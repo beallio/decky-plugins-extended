@@ -59,7 +59,11 @@ if ! printf '%s  %s\n' "$actionlint_expected_checksum" "$actionlint_archive" | s
 fi
 
 actionlint_extract_dir="$(mktemp -d "$actionlint_root/extract.XXXXXX")"
-trap 'rm -rf "$actionlint_extract_dir"' EXIT
+actionlint_mutation_dir="$(mktemp -d "$actionlint_root/mutations.XXXXXX")"
+cleanup_actionlint() {
+  rm -rf -- "$actionlint_extract_dir" "$actionlint_mutation_dir"
+}
+trap cleanup_actionlint EXIT
 tar --extract --gzip --file "$actionlint_archive" \
   --directory "$actionlint_extract_dir" actionlint \
   || fail "could not extract verified actionlint binary"
@@ -69,6 +73,48 @@ actionlint_bin="$actionlint_extract_dir/actionlint"
 echo "== actionlint =="
 "$actionlint_bin" -version || fail "verified actionlint binary could not execute"
 "$actionlint_bin" .github/workflows/*.yml || fail "actionlint reported workflow violations"
+
+# Negative controls prove this exact binary rejects syntax, expression, and job
+# dependency corruption. Each source anchor must exist so a workflow edit cannot
+# silently turn a mutation into a no-op.
+expect_actionlint_failure() {
+  local label="$1"
+  local expected_rule="$2"
+  local workflow="$3"
+  local output status
+  set +e
+  output="$("$actionlint_bin" "$workflow" 2>&1)"
+  status=$?
+  set -e
+  (( status != 0 )) || fail "actionlint mutation unexpectedly passed: $label"
+  [[ "$output" == *"[$expected_rule]"* ]] \
+    || fail "actionlint mutation $label missed expected [$expected_rule] diagnostic"
+  echo "actionlint mutation rejected as expected: $label [$expected_rule]"
+}
+
+plugin_workflow=".github/workflows/plugin-security-audit.yml"
+scheduled_workflow=".github/workflows/scheduled-security-audit.yml"
+
+grep -Fq 'name: Plugin Security Audit' "$plugin_workflow" \
+  || fail "actionlint syntax mutation anchor is missing"
+sed 's/^name: Plugin Security Audit$/name: [/' \
+  "$plugin_workflow" > "$actionlint_mutation_dir/invalid-yaml.yml"
+expect_actionlint_failure \
+  "invalid YAML" "syntax-check" "$actionlint_mutation_dir/invalid-yaml.yml"
+
+grep -Fq 'github.ref }}' "$plugin_workflow" \
+  || fail "actionlint expression mutation anchor is missing"
+sed 's/github\.ref }}/github.ref \&\& }}/' \
+  "$plugin_workflow" > "$actionlint_mutation_dir/invalid-expression.yml"
+expect_actionlint_failure \
+  "invalid expression" "expression" "$actionlint_mutation_dir/invalid-expression.yml"
+
+grep -Fq 'needs: scheduled-audit' "$scheduled_workflow" \
+  || fail "actionlint dependency mutation anchor is missing"
+sed 's/needs: scheduled-audit/needs: missing-job/' \
+  "$scheduled_workflow" > "$actionlint_mutation_dir/invalid-needs.yml"
+expect_actionlint_failure \
+  "invalid job dependency" "job-needs" "$actionlint_mutation_dir/invalid-needs.yml"
 
 # --- lint --------------------------------------------------------------------
 # Rule set is pinned in pyproject.toml [tool.ruff.lint]. The whole tree was
