@@ -164,6 +164,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run isolated audit shard
+        id: audit
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AUDIT_MODE: ${{ steps.selection.outputs.audit_mode }}
@@ -183,14 +184,26 @@ jobs:
           audit_exit=$?
           set -e
           printf '%s\n' "$audit_exit" > security-reports/audit-exit.txt
+          echo "audit_exit=${audit_exit}" >> "$GITHUB_OUTPUT"
           case "$audit_exit" in
-            0 | 1 | 2 | 3 | 4) exit 0 ;;
-            *) echo "::error::unexpected audit exit $audit_exit"; exit 1 ;;
+            0 | 2 | 3 | 4)
+              echo "publishable=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            1)
+              echo "publishable=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            *)
+              echo "publishable=false" >> "$GITHUB_OUTPUT"
+              echo "::error::unexpected audit exit $audit_exit"
+              exit 1
+              ;;
           esac
         timeout-minutes: 22
 
       - name: Upload isolated shard evidence
-        if: always()
+        if: always() && steps.audit.outputs.publishable == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: security-audit-shard-${{ matrix.shard_index }}
@@ -254,10 +267,16 @@ jobs:
             --verdict-delta security-reports/security-verdict-delta.json
           audit_exit=$?
           set -e
-          printf '%s\n' "$audit_exit" >> "$GITHUB_OUTPUT"
+          echo "audit_exit=${audit_exit}" >> "$GITHUB_OUTPUT"
           case "$audit_exit" in
-            0 | 2 | 3 | 4) exit 0 ;;
-            *) exit "$audit_exit" ;;
+            0 | 2 | 3 | 4)
+              echo "publishable=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            *)
+              echo "publishable=false" >> "$GITHUB_OUTPUT"
+              exit "$audit_exit"
+              ;;
           esac
 
       - name: Record aggregation summary
@@ -266,12 +285,16 @@ jobs:
           {
             echo "## Security audit aggregation"
             echo
-            echo "Four isolated shard reports and verdict deltas were merged."
+            if [[ "${{ steps.aggregate.outputs.publishable }}" == "true" ]]; then
+              echo "Four isolated shard reports and verdict deltas were merged."
+            else
+              echo "Aggregation failed integrity checks; no aggregate evidence was published."
+            fi
             echo "Aggregate exit: ${{ steps.aggregate.outputs.audit_exit }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload aggregate audit evidence
-        if: always()
+        if: always() && steps.aggregate.outputs.publishable == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: security-audit-aggregate
@@ -331,17 +354,32 @@ jobs:
         timeout-minutes: 12
 
       - name: Run fast single-release smoke audit
+        id: smoke
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set +e
           uv run python audit_plugins.py \
             --repository https://github.com/beallio/SDH-Ludusavi \
             --latest-only \
             --skip-cache \
             --output-dir smoke-reports
+          audit_exit=$?
+          set -e
+          echo "audit_exit=${audit_exit}" >> "$GITHUB_OUTPUT"
+          case "$audit_exit" in
+            0 | 2 | 3 | 4)
+              echo "publishable=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            *)
+              echo "publishable=false" >> "$GITHUB_OUTPUT"
+              exit "$audit_exit"
+              ;;
+          esac
 
       - name: Upload smoke audit report
-        if: always()
+        if: always() && steps.smoke.outputs.publishable == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: security-audit-smoke

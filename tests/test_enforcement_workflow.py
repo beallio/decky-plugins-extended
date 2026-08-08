@@ -17,6 +17,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 SCHEDULED = WORKFLOWS / "scheduled-security-audit.yml"
+PULL_REQUEST = WORKFLOWS / "plugin-security-audit.yml"
 
 
 def _run_block(workflow: Path, step_name: str) -> str:
@@ -27,6 +28,17 @@ def _run_block(workflow: Path, step_name: str) -> str:
     for terminator in ("\n      - name:", "\n        timeout-minutes:"):
         body = body.split(terminator, maxsplit=1)[0]
     return textwrap.dedent(body)
+
+
+def _step_if(workflow: Path, step_name: str) -> str:
+    """Return the exact `if` expression attached to one workflow step."""
+    text = workflow.read_text(encoding="utf-8")
+    step = text.split(f"      - name: {step_name}\n", maxsplit=1)[1]
+    step = step.split("\n      - name:", maxsplit=1)[0]
+    for line in step.splitlines():
+        if line.startswith("        if: "):
+            return line.removeprefix("        if: ")
+    raise AssertionError(f"workflow step has no if condition: {step_name}")
 
 
 def _bash(script: str, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess:
@@ -55,13 +67,60 @@ def _stub_uv(tmp_path: Path, exit_code: int) -> Path:
 
 
 def _run_audit_step(
+    tmp_path: Path, exit_code: int, workflow: Path = SCHEDULED
+) -> tuple[subprocess.CompletedProcess, str]:
+    bin_dir = _stub_uv(tmp_path, exit_code)
+    outputs = tmp_path / "github_output"
+    outputs.write_text("", encoding="utf-8")
+    step_name = (
+        "Run isolated audit shard"
+        if workflow == PULL_REQUEST
+        else "Run audit on all configured repositories"
+    )
+    result = _bash(
+        _run_block(workflow, step_name).replace("${{ matrix.shard_index }}", "0"),
+        tmp_path,
+        {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "GITHUB_OUTPUT": str(outputs),
+            "AUDIT_MODE": "all",
+            "BASE_REF": "origin/dev",
+        },
+    )
+    return result, outputs.read_text(encoding="utf-8")
+
+
+def _run_smoke_step(
     tmp_path: Path, exit_code: int
 ) -> tuple[subprocess.CompletedProcess, str]:
     bin_dir = _stub_uv(tmp_path, exit_code)
     outputs = tmp_path / "github_output"
     outputs.write_text("", encoding="utf-8")
     result = _bash(
-        _run_block(SCHEDULED, "Run audit on all configured repositories"),
+        _run_block(PULL_REQUEST, "Run fast single-release smoke audit"),
+        tmp_path,
+        {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "GITHUB_OUTPUT": str(outputs),
+        },
+    )
+    return result, outputs.read_text(encoding="utf-8")
+
+
+def _run_aggregate_step(
+    tmp_path: Path, exit_code: int, workflow: Path = PULL_REQUEST
+) -> tuple[subprocess.CompletedProcess, str]:
+    bin_dir = _stub_uv(tmp_path, exit_code)
+    outputs = tmp_path / "github_output"
+    outputs.write_text("", encoding="utf-8")
+    for index in range(4):
+        shard = tmp_path / "shard-artifacts" / f"shard-{index}"
+        shard.mkdir(parents=True)
+        (shard / "audit-exit.txt").write_text("0\n", encoding="utf-8")
+        (shard / "security-report.json").write_text("{}\n", encoding="utf-8")
+        (shard / "security-verdict-delta.json").write_text("{}\n", encoding="utf-8")
+    result = _bash(
+        _run_block(workflow, "Aggregate safe shard reports and deltas"),
         tmp_path,
         {
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -77,15 +136,124 @@ def test_audit_step_lets_publication_proceed_for_audit_results(tmp_path, audit_e
 
     assert result.returncode == 0, result.stderr
     assert f"audit_exit={audit_exit}" in outputs
+    assert "publishable=true" in outputs
 
 
 def test_audit_step_records_internal_error_for_the_aggregate_guard(tmp_path):
     result, outputs = _run_audit_step(tmp_path, 1)
 
-    # Every shard must upload its exit record so the aggregate job can reject
-    # exit 1 before merging or publishing any delta.
     assert result.returncode == 0
     assert "audit_exit=1" in outputs
+    assert "publishable=false" in outputs
+
+
+@pytest.mark.parametrize("workflow", [PULL_REQUEST, SCHEDULED])
+def test_shard_step_rejects_unexpected_exit_without_publishable_output(
+    tmp_path, workflow
+):
+    result, outputs = _run_audit_step(tmp_path, 7, workflow)
+
+    assert result.returncode == 1
+    assert "audit_exit=7" in outputs
+    assert "publishable=false" in outputs
+
+
+@pytest.mark.parametrize("audit_exit", [0, 2, 3, 4])
+def test_smoke_step_marks_only_safe_results_publishable(tmp_path, audit_exit):
+    result, outputs = _run_smoke_step(tmp_path, audit_exit)
+
+    assert result.returncode == 0, result.stderr
+    assert f"audit_exit={audit_exit}" in outputs
+    assert "publishable=true" in outputs
+
+
+@pytest.mark.parametrize("audit_exit", [1, 7, 130])
+def test_smoke_step_rejects_unsafe_results(tmp_path, audit_exit):
+    result, outputs = _run_smoke_step(tmp_path, audit_exit)
+
+    assert result.returncode == audit_exit
+    assert f"audit_exit={audit_exit}" in outputs
+    assert "publishable=false" in outputs
+
+
+@pytest.mark.parametrize("workflow", [PULL_REQUEST, SCHEDULED])
+@pytest.mark.parametrize("audit_exit", [0, 2, 3, 4])
+def test_aggregate_step_marks_only_safe_results_publishable(
+    tmp_path, workflow, audit_exit
+):
+    result, outputs = _run_aggregate_step(tmp_path, audit_exit, workflow)
+
+    assert result.returncode == 0, result.stderr
+    assert f"audit_exit={audit_exit}" in outputs
+    assert "publishable=true" in outputs
+
+
+@pytest.mark.parametrize("workflow", [PULL_REQUEST, SCHEDULED])
+@pytest.mark.parametrize("audit_exit", [1, 7])
+def test_aggregate_step_rejects_unsafe_results(tmp_path, workflow, audit_exit):
+    result, outputs = _run_aggregate_step(tmp_path, audit_exit, workflow)
+
+    assert result.returncode == audit_exit
+    assert f"audit_exit={audit_exit}" in outputs
+    assert "publishable=false" in outputs
+
+
+@pytest.mark.parametrize(
+    ("workflow", "step_name", "condition"),
+    [
+        (
+            PULL_REQUEST,
+            "Upload isolated shard evidence",
+            "always() && steps.audit.outputs.publishable == 'true'",
+        ),
+        (
+            PULL_REQUEST,
+            "Upload aggregate audit evidence",
+            "always() && steps.aggregate.outputs.publishable == 'true'",
+        ),
+        (
+            PULL_REQUEST,
+            "Upload smoke audit report",
+            "always() && steps.smoke.outputs.publishable == 'true'",
+        ),
+        (
+            SCHEDULED,
+            "Save audit cache",
+            "always() && steps.audit.outputs.publishable == 'true'",
+        ),
+        (
+            SCHEDULED,
+            "Upload isolated scheduled evidence",
+            "always() && steps.audit.outputs.publishable == 'true'",
+        ),
+        (
+            SCHEDULED,
+            "Merge publishable verdict delta",
+            "steps.aggregate.outputs.publishable == 'true'",
+        ),
+        (
+            SCHEDULED,
+            "Snapshot published verdicts",
+            "steps.aggregate.outputs.publishable == 'true'",
+        ),
+        (
+            SCHEDULED,
+            "Publish updated verdicts",
+            "steps.aggregate.outputs.publishable == 'true'",
+        ),
+        (
+            SCHEDULED,
+            "Upload aggregate scheduled evidence",
+            "always() && steps.aggregate.outputs.publishable == 'true'",
+        ),
+    ],
+)
+def test_publication_steps_require_executed_publishable_output(
+    workflow, step_name, condition
+):
+    actual = _step_if(workflow, step_name)
+
+    assert actual == condition
 
 
 def test_aggregate_guard_rejects_a_run_global_error_before_publication(tmp_path):

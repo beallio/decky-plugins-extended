@@ -107,20 +107,31 @@ jobs:
           printf '%s\n' "$audit_exit" > security-reports/audit-exit.txt
           echo "audit_exit=${audit_exit}" >> "$GITHUB_OUTPUT"
           case "$audit_exit" in
-            0 | 1 | 2 | 3 | 4) exit 0 ;;
-            *) echo "::error::unexpected audit exit $audit_exit"; exit 1 ;;
+            0 | 2 | 3 | 4)
+              echo "publishable=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            1)
+              echo "publishable=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            *)
+              echo "publishable=false" >> "$GITHUB_OUTPUT"
+              echo "::error::unexpected audit exit $audit_exit"
+              exit 1
+              ;;
           esac
         timeout-minutes: 45
 
       - name: Save audit cache
-        if: always()
+        if: always() && steps.audit.outputs.publishable == 'true'
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684
         with:
           path: .audit-cache
           key: ${{ steps.cache-key.outputs.save_key }}
 
       - name: Upload isolated scheduled evidence
-        if: always()
+        if: always() && steps.audit.outputs.publishable == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: scheduled-security-audit-shard-${{ matrix.shard_index }}
@@ -188,8 +199,14 @@ jobs:
           set -e
           echo "audit_exit=${audit_exit}" >> "$GITHUB_OUTPUT"
           case "$audit_exit" in
-            0 | 2 | 3 | 4) exit 0 ;;
-            *) exit "$audit_exit" ;;
+            0 | 2 | 3 | 4)
+              echo "publishable=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            *)
+              echo "publishable=false" >> "$GITHUB_OUTPUT"
+              exit "$audit_exit"
+              ;;
           esac
 
       - name: Record aggregation summary
@@ -198,12 +215,16 @@ jobs:
           {
             echo "## Scheduled security audit aggregation"
             echo
-            echo "Four isolated shard reports and verdict deltas were merged."
+            if [[ "${{ steps.aggregate.outputs.publishable }}" == "true" ]]; then
+              echo "Four isolated shard reports and verdict deltas were merged."
+            else
+              echo "Aggregation failed integrity checks; no aggregate evidence was published."
+            fi
             echo "Aggregate exit: ${{ steps.aggregate.outputs.audit_exit }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Merge publishable verdict delta
-        if: steps.aggregate.outputs.audit_exit != ''
+        if: steps.aggregate.outputs.publishable == 'true'
         run: |
           uv run python - security-verdicts.json security-reports/security-verdict-delta.json <<'PY'
           import json
@@ -236,11 +257,11 @@ jobs:
           PY
 
       - name: Snapshot published verdicts
-        if: steps.aggregate.outputs.audit_exit != ''
+        if: steps.aggregate.outputs.publishable == 'true'
         run: git show HEAD:security-verdicts.json > "$RUNNER_TEMP/security-verdicts-before.json"
 
       - name: Publish updated verdicts
-        if: steps.aggregate.outputs.audit_exit != ''
+        if: steps.aggregate.outputs.publishable == 'true'
         env:
           BEFORE_VERDICTS: ${{ runner.temp }}/security-verdicts-before.json
         run: |
@@ -301,7 +322,7 @@ jobs:
           esac
 
       - name: Upload aggregate scheduled evidence
-        if: always()
+        if: always() && steps.aggregate.outputs.publishable == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: scheduled-security-audit-aggregate
