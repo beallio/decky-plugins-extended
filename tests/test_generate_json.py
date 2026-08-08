@@ -49,6 +49,60 @@ class GenerateJsonTests(unittest.TestCase):
         self.assertEqual(version["hash"], current_hash)
         self.assertEqual(version["artifact"], artifact)
 
+    def test_build_version_object_passes_non_default_download_policy(self):
+        artifact = "https://example.invalid/plugin.zip"
+        current_hash = "b" * 64
+        policy = {
+            "downloads": {
+                "release_max_bytes": 7,
+                "source_max_bytes": 11,
+                "connect_timeout_seconds": 2,
+                "read_timeout_seconds": 3,
+                "chunk_size_bytes": 2,
+            }
+        }
+        release = {
+            "tag_name": "v1.2.3",
+            "assets": [{"name": "plugin.zip", "browser_download_url": artifact}],
+        }
+
+        with patch.object(
+            generate_json, "calculate_hash", return_value=current_hash
+        ) as calculate_hash:
+            version = generate_json.build_version_object(release, policy=policy)
+
+        calculate_hash.assert_called_once_with(artifact, policy=policy)
+        self.assertEqual(version["hash"], current_hash)
+
+    def test_calculate_hash_delegates_to_bounded_release_stream(self):
+        artifact = "https://example.invalid/plugin.zip"
+        current_hash = "b" * 64
+        policy = {
+            "downloads": {
+                "release_max_bytes": 7,
+                "source_max_bytes": 11,
+                "connect_timeout_seconds": 2,
+                "read_timeout_seconds": 3,
+                "chunk_size_bytes": 2,
+            }
+        }
+
+        class Result:
+            sha256 = current_hash
+
+        with patch.object(
+            generate_json, "bounded_stream_download", return_value=Result()
+        ) as bounded_download:
+            observed_hash = generate_json.calculate_hash(artifact, policy=policy)
+
+        args, kwargs = bounded_download.call_args
+        self.assertEqual(args[0], artifact)
+        self.assertEqual(Path(args[1]).name, "release.zip")
+        self.assertIs(kwargs["session"], generate_json.anon_session)
+        self.assertEqual(kwargs["kind"], "release")
+        self.assertIs(kwargs["policy"], policy)
+        self.assertEqual(observed_hash, current_hash)
+
     def test_build_version_object_accepts_only_exact_github_digest(self):
         artifact = "https://example.invalid/plugin.zip"
         current_hash = "b" * 64

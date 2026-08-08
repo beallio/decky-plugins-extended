@@ -107,6 +107,14 @@ def _seed_pass_verdict(cache_dir: Path, release_id: str) -> dict:
     return verdicts
 
 
+def _snapshot_files(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
 def test_audit_release_audits_the_exact_release_passed(monkeypatch, tmp_path):
     older = _release("v1.0.0", 1)
     _configure_successful_audit(monkeypatch, _zip_bytes())
@@ -252,6 +260,97 @@ def test_corrupt_archive_preserves_prior_verdict_bytes(
     )
     assert any("corrupt ZIP" in error for error in report.errors)
     assert verdict_path.read_bytes() == prior_bytes
+
+
+def test_bounded_release_failure_preserves_cache_and_verdict_bytes(
+    monkeypatch, tmp_path
+):
+    release = _release("v1.0.0", 1)
+    _seed_pass_verdict(tmp_path, "v1.0.0@1")
+    verdict_path = Path(ap.VERDICTS_FILE)
+    prior_verdict_bytes = verdict_path.read_bytes()
+    cache_dir = tmp_path / "cache"
+    prior_report = ap.AuditReport(
+        repository=REPOSITORY,
+        release="v1.0.0",
+        release_id="v1.0.0@1",
+        artifact_sha256="a" * 64,
+        audit_context_hash="prior-context",
+        resolved_tag_commit_sha="commit-v1.0.0",
+        final_classification="PASS",
+        completion_status="completed",
+    )
+    ap.save_cached_report(
+        str(cache_dir),
+        prior_report,
+        prior_report.release_id,
+        prior_report.audit_context_hash,
+        prior_report.resolved_tag_commit_sha,
+    )
+    prior_cache_bytes = _snapshot_files(cache_dir)
+
+    class OversizedResponse:
+        headers = {"Content-Length": "8"}
+        iterated = False
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        def iter_content(self, _chunk_size):
+            self.iterated = True
+            yield b"12345678"
+
+        @staticmethod
+        def close():
+            return None
+
+    response = OversizedResponse()
+    policy = _policy()
+    policy["downloads"].update(
+        {
+            "release_max_bytes": 7,
+            "connect_timeout_seconds": 2,
+            "read_timeout_seconds": 3,
+            "chunk_size_bytes": 2,
+        }
+    )
+    audit_tmp = tmp_path / "audit-temp"
+
+    monkeypatch.setattr(
+        ap,
+        "_resolve_ref_to_commit_and_tree_sha",
+        lambda _owner, _repo, ref: (f"commit-{ref}", f"tree-{ref}", None),
+    )
+    monkeypatch.setattr(ap, "get_repo_metadata", lambda *_args: {"archived": False})
+    monkeypatch.setattr(ap, "get_repo_file_raw", lambda *_args: None)
+    monkeypatch.setattr(ap._gh_session, "get", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(ap.tempfile, "mkdtemp", lambda **_kwargs: str(audit_tmp))
+    for downstream in ("inspect_zip", "run_clamav", "run_trivy", "run_semgrep"):
+        monkeypatch.setattr(
+            ap,
+            downstream,
+            lambda *_args, _downstream=downstream, **_kwargs: pytest.fail(
+                f"{_downstream} must not run after a bounded download failure"
+            ),
+        )
+
+    report = ap.audit_release(
+        REPOSITORY,
+        release,
+        policy,
+        [],
+        cache_dir=str(cache_dir),
+        skip_cache=False,
+    )
+
+    assert report.final_classification == "AUDIT_ERROR"
+    assert any("Content-Length 8 exceeds 7 bytes" in error for error in report.errors)
+    assert not response.iterated
+    assert _snapshot_files(cache_dir) == prior_cache_bytes
+    assert verdict_path.read_bytes() == prior_verdict_bytes
+    assert not audit_tmp.exists()
+    assert list(tmp_path.rglob("*.part")) == []
 
 
 def test_first_seen_audit_error_is_not_laundered_into_pass(monkeypatch, tmp_path):

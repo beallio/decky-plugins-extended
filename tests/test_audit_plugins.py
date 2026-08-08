@@ -3169,9 +3169,12 @@ class TestTrivyStructuredFindings(unittest.TestCase):
 
     def test_scans_artifact_and_exact_commit_source_lockfile(self):
         scanned_paths = []
+        supplied_policy = self._policy()
+        supplied_policy["downloads"]["source_max_bytes"] = 11
 
         def fake_fetch(owner, repo, commit_sha, destination, policy=None):
-            self.assertIsNotNone(policy)
+            self.assertIs(policy, supplied_policy)
+            self.assertEqual(policy["downloads"]["source_max_bytes"], 11)
             self.assertEqual((owner, repo, commit_sha), ("owner", "plugin", "abc123"))
             source_root = Path(destination) / "owner-plugin-abc123"
             source_root.mkdir()
@@ -3204,7 +3207,7 @@ class TestTrivyStructuredFindings(unittest.TestCase):
             ):
                 status, findings = ap.run_trivy(
                     artifact_dir,
-                    self._policy(),
+                    supplied_policy,
                     source_repo=("owner", "plugin", "abc123"),
                 )
 
@@ -3245,6 +3248,8 @@ class TestTrivyStructuredFindings(unittest.TestCase):
 class TestSourceTreeFetch(unittest.TestCase):
     def test_source_archive_is_materialized_without_executing_hooks(self):
         with tempfile.TemporaryDirectory() as td:
+            supplied_policy = ap._default_policy()
+            supplied_policy["downloads"]["source_max_bytes"] = 11
             sentinel = Path(td) / "executed"
             archive_path = Path(td) / "source.tar.gz"
             with tarfile.open(archive_path, "w:gz") as tf:
@@ -3269,7 +3274,8 @@ class TestSourceTreeFetch(unittest.TestCase):
             archive_bytes = archive_path.read_bytes()
 
             def fake_download(_owner, _repo, _commit_sha, destination, policy=None):
-                del policy
+                self.assertIs(policy, supplied_policy)
+                self.assertEqual(policy["downloads"]["source_max_bytes"], 11)
                 Path(destination).write_bytes(archive_bytes)
 
             destination = Path(td) / "source"
@@ -3277,7 +3283,13 @@ class TestSourceTreeFetch(unittest.TestCase):
                 ap, "_download_source_archive", side_effect=fake_download
             ):
                 source_root = Path(
-                    ap._fetch_source_tree("owner", "plugin", "abc123", destination)
+                    ap._fetch_source_tree(
+                        "owner",
+                        "plugin",
+                        "abc123",
+                        destination,
+                        policy=supplied_policy,
+                    )
                 )
 
             self.assertTrue((source_root / "package.json").is_file())
