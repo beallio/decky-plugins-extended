@@ -4140,7 +4140,7 @@ def audit_repository(
     )
 
 
-_RELEASE_LOCAL_ARCHIVE_EXCEPTIONS = (
+_SCOPED_ARCHIVE_INSPECTION_EXCEPTIONS = (
     OSError,
     EOFError,
     zipfile.BadZipFile,
@@ -4171,41 +4171,6 @@ def _record_release_local_error(
     report.completion_status = "incomplete"
     report.error_scope = "release"
     return report
-
-
-def _release_local_exception_report(
-    repository: str,
-    release: dict[str, Any],
-    exc: BaseException,
-) -> AuditReport:
-    """Build an identity-complete fallback when one work item raises unexpectedly."""
-    asset = plugin_release_utils.get_zip_asset(release) or {}
-    tag_name = str(release.get("tag_name", ""))
-    asset_id = str(asset.get("id", ""))
-    report = AuditReport(
-        audit_timestamp=datetime.datetime.now(datetime.UTC)
-        .isoformat()
-        .replace("+00:00", "Z"),
-        repository=repository.rstrip("/"),
-        release=tag_name,
-        release_id=f"{tag_name}@{asset_id}" if asset_id else "",
-        github_release_id=str(release.get("id", "")),
-        asset_id=asset_id,
-        release_published_at=str(
-            release.get("published_at") or release.get("created_at") or ""
-        ),
-        artifact_url=str(asset.get("browser_download_url", "")),
-        artifact_sha256=(
-            plugin_release_utils.normalize_github_sha256_digest(asset.get("digest"))
-            or ""
-        ),
-    )
-    return _record_release_local_error(
-        report,
-        label="Release audit failed",
-        status_name="release-audit",
-        exc=exc,
-    )
 
 
 def audit_release(
@@ -4258,6 +4223,7 @@ def audit_release(
     github_artifact_sha256 = plugin_release_utils.normalize_github_sha256_digest(
         asset.get("digest")
     )
+    report.artifact_sha256 = github_artifact_sha256 or ""
 
     try:
         meta = (
@@ -4352,7 +4318,11 @@ def audit_release(
     try:
         try:
             artifact_sha256 = download_zip(artifact_url, zip_path, policy=policy)
-        except Exception as exc:
+        except (
+            OSError,
+            requests.RequestException,
+            plugin_release_utils.DownloadLimitError,
+        ) as exc:
             return _record_release_local_error(
                 report,
                 label="Failed to download release artifact",
@@ -4391,7 +4361,7 @@ def audit_release(
         # --- ZIP inspection ---
         try:
             zip_stats, zip_findings = inspect_zip(zip_path, policy)
-        except _RELEASE_LOCAL_ARCHIVE_EXCEPTIONS as exc:
+        except _SCOPED_ARCHIVE_INSPECTION_EXCEPTIONS as exc:
             return _record_release_local_error(
                 report,
                 label="Archive inspection failed",
@@ -5212,14 +5182,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                     _allowlist_path=args.allowlist,
                     _persist_verdict=False,
                 )
-            except _RELEASE_LOCAL_ARCHIVE_EXCEPTIONS as exc:
-                report = _release_local_exception_report(item.repository, release, exc)
+            except Exception as exc:
                 log.error(
-                    "Release-local audit failure for %s %s: %s",
+                    "Run-global audit failure while processing %s release %s: %s",
                     item.repository,
-                    report.release_id,
+                    release.get("id", ""),
                     _redacted_exception_detail(exc),
                 )
+                return 1
         reports.append(report)
         progress_records[key] = _progress_record(report)
         try:

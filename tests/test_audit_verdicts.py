@@ -177,7 +177,9 @@ def test_audit_error_preserves_good_verdict_and_reports_both_states(
     _seed_pass_verdict(tmp_path, "v1.0.0@1")
     _configure_successful_audit(monkeypatch, _zip_bytes())
     monkeypatch.setattr(
-        ap, "download_zip", lambda *_args: (_ for _ in ()).throw(OSError("offline"))
+        ap,
+        "download_zip",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
     )
 
     report = ap.audit_release(
@@ -297,6 +299,7 @@ def test_archive_inspection_oserror_returns_identity_complete_audit_error(
     assert report.artifact_url == "https://example.com/v1.0.0.zip"
     assert report.artifact_sha256 == hashlib.sha256(_zip_bytes()).hexdigest()
     assert report.resolved_tag_commit_sha == "commit-v1.0.0"
+    assert report.audit_context_hash
     assert report.identity_status == "CURRENT"
     assert report.scanner_statuses == [
         ap.ScannerStatus(
@@ -405,7 +408,9 @@ def test_first_seen_audit_error_is_not_laundered_into_pass(monkeypatch, tmp_path
     release = _release("v1.0.0", 1)
     _configure_successful_audit(monkeypatch, _zip_bytes())
     monkeypatch.setattr(
-        ap, "download_zip", lambda *_args: (_ for _ in ()).throw(OSError("offline"))
+        ap,
+        "download_zip",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
     )
 
     report = ap.audit_release(
