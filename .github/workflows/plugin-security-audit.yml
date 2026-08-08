@@ -142,12 +142,35 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           DISPATCH_MODE: ${{ github.event.inputs.mode }}
         run: |
+          audit_mode=""
+          base_ref=""
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            base_ref="origin/${GITHUB_BASE_REF}"
-            changed_paths="$(git diff --name-only "${base_ref}...HEAD")"
+            [[ -n "$GITHUB_BASE_REF" ]] || {
+              echo "::error::pull-request base ref is unavailable"
+              exit 1
+            }
+            candidate_base_ref="origin/${GITHUB_BASE_REF}"
+            git rev-parse --verify --quiet "${candidate_base_ref}^{commit}" >/dev/null || {
+              echo "::error::pull-request base ${candidate_base_ref} is unavailable"
+              exit 1
+            }
+            changed_paths="$(git diff --name-only "${candidate_base_ref}...HEAD")"
             audit_mode="$(printf '%s\n' "$changed_paths" | uv run python -m plugin_release_utils --select-audit-mode)"
-          else
+            if [[ "$audit_mode" != "all" ]]; then
+              base_ref="$candidate_base_ref"
+            fi
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             audit_mode="${DISPATCH_MODE:-changed}"
+            if [[ "$audit_mode" == "changed" ]]; then
+              base_ref="HEAD~1"
+              git rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null || {
+                echo "::error::dispatch changed-mode base HEAD~1 is unavailable"
+                exit 1
+              }
+            fi
+          else
+            echo "::error::unsupported audit event: $EVENT_NAME"
+            exit 1
           fi
           case "$audit_mode" in
             all) summary_state="full corpus selected (four shards)" ;;
@@ -156,14 +179,25 @@ jobs:
             *) echo "::error::invalid audit mode: $audit_mode"; exit 1 ;;
           esac
           echo "audit_mode=$audit_mode" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
           echo "summary_state=$summary_state" >> "$GITHUB_OUTPUT"
 
       - name: Record audit selection summary
+        env:
+          SELECTED_AUDIT_MODE: ${{ steps.selection.outputs.audit_mode }}
+          SELECTED_BASE_REF: ${{ steps.selection.outputs.base_ref }}
+          SELECTION_SUMMARY_STATE: ${{ steps.selection.outputs.summary_state }}
         run: |
           {
             echo "## Security audit selection"
             echo
-            echo "${{ steps.selection.outputs.summary_state }}"
+            echo "$SELECTION_SUMMARY_STATE"
+            echo "Mode: $SELECTED_AUDIT_MODE"
+            if [[ -n "$SELECTED_BASE_REF" ]]; then
+              echo "Base ref: $SELECTED_BASE_REF"
+            else
+              echo "Base ref: not required"
+            fi
             echo "Shard ${{ matrix.shard_index }} of 4"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -172,7 +206,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AUDIT_MODE: ${{ steps.selection.outputs.audit_mode }}
-          BASE_REF: origin/${{ github.base_ref }}
+          BASE_REF: ${{ steps.selection.outputs.base_ref }}
         run: |
           mkdir -p security-reports
           case "$AUDIT_MODE" in
