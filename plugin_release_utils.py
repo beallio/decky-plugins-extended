@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import tempfile
+import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,6 +32,34 @@ _GITHUB_SHA256_DIGEST = re.compile(r"sha256:([0-9a-fA-F]{64})")
 
 class ReleasePaginationError(RuntimeError):
     """A repository's complete GitHub release history could not be loaded."""
+
+
+def _parse_github_repository_atoms(
+    raw_owner: str,
+    raw_repo: str,
+    *,
+    error: str,
+) -> tuple[str, str]:
+    """Decode and validate the two path atoms that identify a repository."""
+
+    def decode_atom(raw_atom: str) -> str:
+        atom = unquote(raw_atom)
+        if (
+            not atom
+            or atom in {".", ".."}
+            or any(
+                character in "%?#/\\" or unicodedata.category(character) == "Cc"
+                for character in atom
+            )
+        ):
+            raise ValueError(error)
+        return atom
+
+    owner = decode_atom(raw_owner)
+    repo = decode_atom(raw_repo)
+    if repo.lower().endswith(".git"):
+        raise ValueError(error)
+    return owner.lower(), repo.lower()
 
 
 def get_releases(
@@ -155,13 +184,7 @@ def parse_github_repository_url(url: str) -> tuple[str, str]:
     if len(raw_parts) != 2 or not all(raw_parts):
         raise ValueError(error)
 
-    parts = tuple(unquote(part) for part in raw_parts)
-    if any(not part or "/" in part or "\\" in part for part in parts):
-        raise ValueError(error)
-    owner, repo = parts
-    if repo.lower().endswith(".git"):
-        raise ValueError(error)
-    return owner.lower(), repo.lower()
+    return _parse_github_repository_atoms(*raw_parts, error=error)
 
 
 def parse_github_release_asset_url(url: str) -> tuple[str, str]:
@@ -208,12 +231,7 @@ def parse_github_release_asset_url(url: str) -> tuple[str, str]:
     if _ENCODED_PATH_SEPARATOR.search(raw_owner + "/" + raw_repo + "/" + raw_asset):
         raise ValueError(error)
 
-    try:
-        owner, repo = parse_github_repository_url(
-            f"https://github.com/{raw_owner}/{raw_repo}"
-        )
-    except ValueError as exc:
-        raise ValueError(error) from exc
+    owner, repo = _parse_github_repository_atoms(raw_owner, raw_repo, error=error)
 
     tag = unquote(raw_tag)
     asset = unquote(raw_asset)

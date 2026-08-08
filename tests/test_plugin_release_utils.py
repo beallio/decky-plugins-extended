@@ -67,6 +67,35 @@ def test_github_repository_url_rejects_noncanonical_or_hostile_input(url):
 
 
 @pytest.mark.parametrize(
+    "repository_path",
+    [
+        "owner/repo%3Fquery",
+        "owner/repo%23fragment",
+        "owner/repo%252Fextra",
+        "%2E%2E/repo",
+        "owner/%2E",
+        "owner/repo%00control",
+    ],
+)
+def test_github_url_parsers_reject_decoded_delimiters_and_traversal_atoms(
+    repository_path,
+):
+    repository_url = f"https://github.com/{repository_path}"
+    release_asset_url = (
+        f"https://github.com/{repository_path}/releases/download/v1/plugin.zip"
+    )
+
+    with pytest.raises(ValueError, match="GitHub repository URL"):
+        pru.parse_github_repository_url(repository_url)
+    with pytest.raises(ValueError, match="GitHub repository URL"):
+        pru.canonicalize_github_repository_url(repository_url)
+    with pytest.raises(ValueError, match="GitHub release asset URL"):
+        pru.parse_github_release_asset_url(release_asset_url)
+    with pytest.raises(ValueError, match="GitHub release asset URL"):
+        pru.canonicalize_github_release_asset_repository_url(release_asset_url)
+
+
+@pytest.mark.parametrize(
     "url",
     [
         "https://github.com/Owner/Repo/releases/download/v1.2.3/plugin.zip",
