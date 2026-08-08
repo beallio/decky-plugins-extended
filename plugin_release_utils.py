@@ -459,6 +459,10 @@ def _normalize_changed_path(path: str) -> str:
 def _requires_full_audit(path: str) -> bool:
     if path in _FULL_AUDIT_PATHS or path.startswith("tests/"):
         return True
+    if path.startswith(".github/workflows/"):
+        workflow_name = path.rsplit("/", 1)[-1].lower()
+        if "audit" in workflow_name:
+            return True
     return path.startswith("scripts/") and "quality-gate" in path
 
 

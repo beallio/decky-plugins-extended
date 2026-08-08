@@ -471,6 +471,7 @@ def test_bounded_stream_download_rejects_unknown_kind_without_request(tmp_path):
         "scripts/orchestration/run-quality-gates",
         ".github/workflows/plugin-security-audit.yml",
         ".github/workflows/scheduled-security-audit.yml",
+        ".github/workflows/future-audit-contract.yml",
     ],
 )
 def test_select_audit_mode_security_pipeline_changes_select_full_corpus(path):
