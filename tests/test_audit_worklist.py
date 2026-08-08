@@ -626,3 +626,223 @@ def test_main_reruns_completed_progress_when_audit_context_mismatches(
     assert progress[ap._report_identity_key(prior)]["audit_context_hash"] == (
         "current-context"
     )
+
+
+def _run_embedded_report_resume_case(monkeypatch, tmp_path, embedded_report):
+    repository = "https://github.com/owner/repo"
+    release = _release("v1", 1, 10)
+    release["assets"][0]["digest"] = f"sha256:{'a' * 64}"
+    worklist = [ap.AuditWorkItem(repository, release, {})]
+    current_report = ap.AuditReport(
+        repository=repository,
+        release="v1",
+        release_id="v1@10",
+        github_release_id="1",
+        asset_id="10",
+        artifact_url="https://example.invalid/v1-0.zip",
+        artifact_sha256="a" * 64,
+        identity_status="CURRENT",
+        resolved_tag_commit_sha="commit-v1",
+        audit_context_hash="current-context",
+        plugin_name="checkpoint-report",
+        final_classification="PASS",
+        completion_status="completed",
+    )
+    progress_record = ap._progress_record(current_report)
+    progress_record["report"] = embedded_report
+    progress_path = tmp_path / "progress.json"
+    ap._write_progress_manifest(
+        progress_path, {ap._report_identity_key(current_report): progress_record}
+    )
+    audited = []
+
+    def fake_audit(repository_arg, release_arg, **_kwargs):
+        audited.append((repository_arg, release_arg["id"]))
+        return ap.AuditReport(
+            repository=repository_arg,
+            release=release_arg["tag_name"],
+            release_id="v1@10",
+            github_release_id="1",
+            asset_id="10",
+            artifact_url=release_arg["assets"][0]["browser_download_url"],
+            artifact_sha256="a" * 64,
+            identity_status="CURRENT",
+            resolved_tag_commit_sha="commit-v1",
+            audit_context_hash="current-context",
+            plugin_name="replacement-report",
+            final_classification="PASS",
+            completion_status="completed",
+        )
+
+    monkeypatch.setattr(ap, "load_policy", lambda *_args: ap._default_policy())
+    monkeypatch.setattr(ap, "load_allowlist", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ap, "load_verdicts", lambda *_args: {})
+    monkeypatch.setattr(ap, "read_repo_urls", lambda *_args: [repository])
+    monkeypatch.setattr(
+        ap, "build_audit_worklist", lambda *_args, **_kwargs: (worklist, [])
+    )
+    monkeypatch.setattr(
+        ap,
+        "_resolve_ref_to_commit_and_tree_sha",
+        lambda *_args: ("commit-v1", "tree-v1", None),
+    )
+    monkeypatch.setattr(ap, "_scanner_runtime_identities", lambda *_args: {})
+    monkeypatch.setattr(
+        ap, "compute_audit_context_hash", lambda *_args, **_kwargs: "current-context"
+    )
+    monkeypatch.setattr(ap, "audit_release", fake_audit)
+
+    output_dir = tmp_path / "reports"
+    code = ap.main(
+        [
+            "--all",
+            "--plugins-file",
+            str(tmp_path / "plugins.txt"),
+            "--output-dir",
+            str(output_dir),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+            "--progress-manifest",
+            str(progress_path),
+        ]
+    )
+    payload = json.loads(
+        (output_dir / "security-report.json").read_text(encoding="utf-8")
+    )
+    return code, audited, payload["reports"][0]
+
+
+_CURRENT_EMBEDDED_REPORT_IDENTITY = {
+    "repository": "https://github.com/owner/repo",
+    "release": "v1",
+    "release_id": "v1@10",
+    "github_release_id": "1",
+    "asset_id": "10",
+    "artifact_url": "https://example.invalid/v1-0.zip",
+    "artifact_sha256": "a" * 64,
+    "identity_status": "CURRENT",
+    "resolved_tag_commit_sha": "commit-v1",
+    "audit_context_hash": "current-context",
+    "completion_status": "completed",
+    "final_classification": "PASS",
+}
+
+
+def _embedded_report_identity(report):
+    return {field: report[field] for field in _CURRENT_EMBEDDED_REPORT_IDENTITY}
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("repository", "https://github.com/attacker/spliced"),
+        ("release", "v2"),
+        ("release_id", "v2@10"),
+        ("github_release_id", "2"),
+        ("asset_id", "20"),
+        ("artifact_url", "https://example.invalid/spliced.zip"),
+        ("artifact_sha256", "b" * 64),
+        ("identity_status", "STALE_HASH"),
+        ("resolved_tag_commit_sha", "spliced-commit"),
+        ("audit_context_hash", "spliced-context"),
+        ("completion_status", "incomplete"),
+        ("final_classification", "AUDIT_ERROR"),
+    ],
+)
+def test_main_rejects_mismatched_embedded_report_before_resume(
+    monkeypatch, tmp_path, field, replacement
+):
+    report = ap.AuditReport(
+        repository="https://github.com/owner/repo",
+        release="v1",
+        release_id="v1@10",
+        github_release_id="1",
+        asset_id="10",
+        artifact_url="https://example.invalid/v1-0.zip",
+        artifact_sha256="a" * 64,
+        identity_status="CURRENT",
+        resolved_tag_commit_sha="commit-v1",
+        audit_context_hash="current-context",
+        plugin_name="spliced-report",
+        final_classification="PASS",
+        completion_status="completed",
+    )
+    embedded_report = ap._report_to_dict(report)
+    embedded_report[field] = replacement
+
+    code, audited, emitted_report = _run_embedded_report_resume_case(
+        monkeypatch, tmp_path, embedded_report
+    )
+
+    assert code == 0
+    assert audited == [("https://github.com/owner/repo", 1)]
+    assert emitted_report["plugin_name"] == "replacement-report"
+    assert _embedded_report_identity(emitted_report) == (
+        _CURRENT_EMBEDDED_REPORT_IDENTITY
+    )
+
+
+@pytest.mark.parametrize("malformation", ["missing", "invalid-nested-report"])
+def test_main_reruns_malformed_or_incomplete_embedded_report(
+    monkeypatch, tmp_path, malformation
+):
+    report = ap.AuditReport(
+        repository="https://github.com/owner/repo",
+        release="v1",
+        release_id="v1@10",
+        github_release_id="1",
+        asset_id="10",
+        artifact_url="https://example.invalid/v1-0.zip",
+        artifact_sha256="a" * 64,
+        identity_status="CURRENT",
+        resolved_tag_commit_sha="commit-v1",
+        audit_context_hash="current-context",
+        plugin_name="spliced-report",
+        final_classification="PASS",
+        completion_status="completed",
+    )
+    embedded_report = ap._report_to_dict(report)
+    if malformation == "missing":
+        embedded_report.pop("artifact_url")
+    else:
+        embedded_report["findings"] = [{"unexpected": True}]
+
+    code, audited, emitted_report = _run_embedded_report_resume_case(
+        monkeypatch, tmp_path, embedded_report
+    )
+
+    assert code == 0
+    assert audited == [("https://github.com/owner/repo", 1)]
+    assert emitted_report["plugin_name"] == "replacement-report"
+    assert _embedded_report_identity(emitted_report) == (
+        _CURRENT_EMBEDDED_REPORT_IDENTITY
+    )
+
+
+def test_main_resumes_only_an_exact_publishable_embedded_report(monkeypatch, tmp_path):
+    report = ap.AuditReport(
+        repository="https://github.com/owner/repo",
+        release="v1",
+        release_id="v1@10",
+        github_release_id="1",
+        asset_id="10",
+        artifact_url="https://example.invalid/v1-0.zip",
+        artifact_sha256="a" * 64,
+        identity_status="CURRENT",
+        resolved_tag_commit_sha="commit-v1",
+        audit_context_hash="current-context",
+        plugin_name="checkpoint-report",
+        final_classification="PASS",
+        completion_status="completed",
+    )
+
+    code, audited, emitted_report = _run_embedded_report_resume_case(
+        monkeypatch, tmp_path, ap._report_to_dict(report)
+    )
+
+    assert code == 0
+    assert audited == []
+    assert emitted_report["plugin_name"] == "checkpoint-report"
+    assert _embedded_report_identity(emitted_report) == (
+        _CURRENT_EMBEDDED_REPORT_IDENTITY
+    )

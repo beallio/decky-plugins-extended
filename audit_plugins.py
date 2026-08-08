@@ -4013,9 +4013,91 @@ def resume_identity_matches(
     candidate: dict[str, Any], expected: dict[str, Any]
 ) -> bool:
     """Return whether an exact completed audit identity may be resumed."""
-    return candidate.get("completion_status") == "completed" and all(
-        candidate.get(field) == expected.get(field) for field in _RESUME_IDENTITY_FIELDS
+    return (
+        isinstance(candidate, dict)
+        and candidate.get("completion_status") == "completed"
+        and all(
+            candidate.get(field) == expected.get(field)
+            for field in _RESUME_IDENTITY_FIELDS
+        )
     )
+
+
+_RESUME_REPORT_REQUIRED_FIELDS = (
+    "repository",
+    "release",
+    "release_id",
+    "github_release_id",
+    "asset_id",
+    "artifact_url",
+    "artifact_sha256",
+    "identity_status",
+    "resolved_tag_commit_sha",
+    "audit_context_hash",
+    "final_classification",
+    "completion_status",
+)
+
+
+def _resumable_progress_report(
+    candidate: dict[str, Any],
+    expected: dict[str, Any],
+    progress_key: str,
+) -> Optional[AuditReport]:
+    """Deserialize a checkpoint report only when its full identity is current."""
+    if not resume_identity_matches(candidate, expected):
+        return None
+
+    expected_key = "\0".join(
+        (
+            expected["repository"],
+            expected["github_release_id"],
+            expected["asset_id"],
+        )
+    )
+    if progress_key != expected_key:
+        return None
+
+    raw_report = candidate.get("report")
+    if not isinstance(raw_report, dict) or any(
+        field not in raw_report for field in _RESUME_REPORT_REQUIRED_FIELDS
+    ):
+        return None
+
+    try:
+        report = _dict_to_report(raw_report)
+        report_repository = plugin_release_utils.canonicalize_github_repository_url(
+            report.repository
+        )
+        expected_repository = plugin_release_utils.canonicalize_github_repository_url(
+            expected["repository"]
+        )
+    except Exception:
+        return None
+
+    expected_report_identity = {
+        "release": expected["release"],
+        "release_id": expected["release_id"],
+        "github_release_id": expected["github_release_id"],
+        "asset_id": expected["asset_id"],
+        "artifact_url": expected["artifact_url"],
+        "artifact_sha256": expected["artifact_sha256"],
+        "resolved_tag_commit_sha": expected["resolved_tag_commit_sha"],
+        "audit_context_hash": expected["audit_context_hash"],
+        "completion_status": "completed",
+    }
+    if report_repository != expected_repository or any(
+        getattr(report, field) != value
+        for field, value in expected_report_identity.items()
+    ):
+        return None
+    if (
+        report.identity_status != "CURRENT"
+        or not isinstance(report.final_classification, str)
+        or report.final_classification not in RULE_CLASSIFICATION_VALUES
+    ):
+        return None
+    return report
 
 
 def aggregate_audit_reports(report_paths: list[str]) -> list[AuditReport]:
@@ -5159,8 +5241,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             scanner_identities = _scanner_runtime_identities(policy)
             expected = {
                 "repository": item.repository,
+                "release": str(release.get("tag_name", "")),
+                "release_id": (f"{release.get('tag_name', '')}@{asset.get('id', '')}"),
                 "github_release_id": str(release.get("id", "")),
                 "asset_id": str(asset.get("id", "")),
+                "artifact_url": str(asset.get("browser_download_url", "")),
                 "artifact_sha256": digest,
                 "resolved_tag_commit_sha": commit_sha or "",
                 "audit_context_hash": compute_audit_context_hash(
@@ -5172,15 +5257,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                 ),
                 "completion_status": "completed",
             }
-            if resume_identity_matches(progress_records[key], expected):
-                raw_report = progress_records[key].get("report")
-                if isinstance(raw_report, dict):
-                    resumed_report = _dict_to_report(raw_report)
-                    log.info(
-                        "Resuming completed release %s %s.",
-                        item.repository,
-                        resumed_report.release_id,
-                    )
+            resumed_report = _resumable_progress_report(
+                progress_records[key], expected, key
+            )
+            if resumed_report is not None:
+                log.info(
+                    "Resuming completed release %s %s.",
+                    item.repository,
+                    resumed_report.release_id,
+                )
 
         if resumed_report is not None:
             report = resumed_report
