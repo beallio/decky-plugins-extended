@@ -320,6 +320,153 @@ def test_mixed_release_run_checkpoints_success_and_publishes_error_before_exit_4
     assert list(delta[repository]) == ["v2@20"]
 
 
+def test_mixed_release_run_isolates_archive_oserror_and_preserves_prior_verdict(
+    monkeypatch, tmp_path
+):
+    repository = "https://github.com/owner/repo"
+    failed_release = _release("v2", 2, 20)
+    failed_release["assets"][0]["digest"] = f"sha256:{'a' * 64}"
+    successful_release = _release("v1", 1, 10)
+    worklist = [
+        ap.AuditWorkItem(repository, failed_release, {}),
+        ap.AuditWorkItem(repository, successful_release, {}),
+    ]
+    prior_verdicts = {
+        repository: {
+            "v2@20": {
+                "classification": "PASS",
+                "blocking_rule_ids": [],
+                "artifact_sha256": "a" * 64,
+                "audit_context_hash": "prior-context",
+                "audited_at": "2026-08-01T00:00:00Z",
+            }
+        }
+    }
+    verdict_path = tmp_path / "security-verdicts.json"
+    verdict_path.write_text(
+        json.dumps(prior_verdicts, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    prior_verdict_bytes = verdict_path.read_bytes()
+    seen = []
+
+    def fake_audit(_repository, release, **_kwargs):
+        seen.append(release["id"])
+        if release["id"] == 2:
+            raise OSError("unreadable archive")
+        return ap.AuditReport(
+            repository=repository,
+            release="v1",
+            release_id="v1@10",
+            github_release_id="1",
+            asset_id="10",
+            artifact_sha256="b" * 64,
+            final_classification="PASS",
+            completion_status="completed",
+        )
+
+    monkeypatch.setattr(ap, "VERDICTS_FILE", str(verdict_path))
+    monkeypatch.setattr(ap, "load_policy", lambda *_args: ap._default_policy())
+    monkeypatch.setattr(ap, "load_allowlist", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ap, "read_repo_urls", lambda *_args: [repository])
+    monkeypatch.setattr(
+        ap, "build_audit_worklist", lambda *_args, **_kwargs: (worklist, [])
+    )
+    monkeypatch.setattr(ap, "audit_release", fake_audit)
+
+    output_dir = tmp_path / "reports"
+    code = ap.main(
+        [
+            "--all",
+            "--plugins-file",
+            str(tmp_path / "plugins.txt"),
+            "--output-dir",
+            str(output_dir),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ]
+    )
+
+    assert code == 4
+    assert seen == [2, 1]
+    assert verdict_path.read_bytes() == prior_verdict_bytes
+    payload = json.loads(
+        (output_dir / "security-report.json").read_text(encoding="utf-8")
+    )
+    failed_report, successful_report = payload["reports"]
+    assert failed_report["final_classification"] == "AUDIT_ERROR"
+    assert failed_report["completion_status"] == "incomplete"
+    assert failed_report["error_scope"] == "release"
+    assert failed_report["repository"] == repository
+    assert failed_report["release"] == "v2"
+    assert failed_report["release_id"] == "v2@20"
+    assert failed_report["github_release_id"] == "2"
+    assert failed_report["asset_id"] == "20"
+    assert failed_report["artifact_sha256"] == "a" * 64
+    assert failed_report["identity_status"] == "CURRENT"
+    assert failed_report["errors"] == ["Release audit failed: unreadable archive"]
+    assert successful_report["final_classification"] == "PASS"
+    delta = json.loads(
+        (output_dir / "verdict-delta-shard-0.json").read_text(encoding="utf-8")
+    )
+    assert set(delta[repository]) == {"v1@10"}
+    progress = ap._load_progress_manifest(output_dir / "progress-shard-0.json")
+    assert len(progress) == 2
+
+
+def test_checkpoint_integrity_error_aborts_without_publishable_outputs(
+    monkeypatch, tmp_path
+):
+    repository = "https://github.com/owner/repo"
+    release = _release("v1", 1, 10)
+    worklist = [ap.AuditWorkItem(repository, release, {})]
+
+    monkeypatch.setattr(ap, "load_policy", lambda *_args: ap._default_policy())
+    monkeypatch.setattr(ap, "load_allowlist", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ap, "load_verdicts", lambda *_args: {})
+    monkeypatch.setattr(ap, "read_repo_urls", lambda *_args: [repository])
+    monkeypatch.setattr(
+        ap, "build_audit_worklist", lambda *_args, **_kwargs: (worklist, [])
+    )
+    monkeypatch.setattr(
+        ap,
+        "audit_release",
+        lambda *_args, **_kwargs: ap.AuditReport(
+            repository=repository,
+            release="v1",
+            release_id="v1@10",
+            github_release_id="1",
+            asset_id="10",
+            artifact_sha256="b" * 64,
+            final_classification="PASS",
+            completion_status="completed",
+        ),
+    )
+    monkeypatch.setattr(
+        ap,
+        "_write_progress_manifest",
+        lambda *_args: (_ for _ in ()).throw(OSError("checkpoint denied")),
+    )
+
+    output_dir = tmp_path / "reports"
+    code = ap.main(
+        [
+            "--all",
+            "--plugins-file",
+            str(tmp_path / "plugins.txt"),
+            "--output-dir",
+            str(output_dir),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ]
+    )
+
+    assert code == 1
+    assert not (output_dir / "security-report.json").exists()
+    assert not (output_dir / "security-report.md").exists()
+    assert not (output_dir / "verdict-delta-shard-0.json").exists()
+
+
 def test_main_reruns_completed_progress_when_audit_context_mismatches(
     monkeypatch, tmp_path
 ):

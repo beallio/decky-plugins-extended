@@ -4140,6 +4140,74 @@ def audit_repository(
     )
 
 
+_RELEASE_LOCAL_ARCHIVE_EXCEPTIONS = (
+    OSError,
+    EOFError,
+    zipfile.BadZipFile,
+    zipfile.LargeZipFile,
+)
+
+
+def _redacted_exception_detail(exc: BaseException) -> str:
+    """Return a bounded diagnostic safe for public audit outputs."""
+    return redact_secrets(_truncate(str(exc), EVIDENCE_MAX_LEN))
+
+
+def _record_release_local_error(
+    report: AuditReport,
+    *,
+    label: str,
+    status_name: str,
+    exc: BaseException,
+) -> AuditReport:
+    """Complete one release-local error report without creating a verdict."""
+    detail = _redacted_exception_detail(exc)
+    report.errors.append(f"{label}: {detail}")
+    report.scanner_statuses.append(
+        ScannerStatus(name=status_name, status="failed", detail=detail)
+    )
+    report.final_classification = "AUDIT_ERROR"
+    report.identity_status = "CURRENT" if report.artifact_sha256 else "UNKNOWN"
+    report.completion_status = "incomplete"
+    report.error_scope = "release"
+    return report
+
+
+def _release_local_exception_report(
+    repository: str,
+    release: dict[str, Any],
+    exc: BaseException,
+) -> AuditReport:
+    """Build an identity-complete fallback when one work item raises unexpectedly."""
+    asset = plugin_release_utils.get_zip_asset(release) or {}
+    tag_name = str(release.get("tag_name", ""))
+    asset_id = str(asset.get("id", ""))
+    report = AuditReport(
+        audit_timestamp=datetime.datetime.now(datetime.UTC)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        repository=repository.rstrip("/"),
+        release=tag_name,
+        release_id=f"{tag_name}@{asset_id}" if asset_id else "",
+        github_release_id=str(release.get("id", "")),
+        asset_id=asset_id,
+        release_published_at=str(
+            release.get("published_at") or release.get("created_at") or ""
+        ),
+        artifact_url=str(asset.get("browser_download_url", "")),
+        artifact_sha256=(
+            plugin_release_utils.normalize_github_sha256_digest(asset.get("digest"))
+            or ""
+        ),
+    )
+    return _record_release_local_error(
+        report,
+        label="Release audit failed",
+        status_name="release-audit",
+        exc=exc,
+    )
+
+
 def audit_release(
     repo_url: str,
     release: dict[str, Any],
@@ -4285,9 +4353,12 @@ def audit_release(
         try:
             artifact_sha256 = download_zip(artifact_url, zip_path, policy=policy)
         except Exception as exc:
-            report.errors.append(f"Failed to download release artifact: {exc}")
-            report.final_classification = "AUDIT_ERROR"
-            return report
+            return _record_release_local_error(
+                report,
+                label="Failed to download release artifact",
+                status_name="release-download",
+                exc=exc,
+            )
 
         report.artifact_sha256 = artifact_sha256
         if github_artifact_sha256 and artifact_sha256 != github_artifact_sha256:
@@ -4318,7 +4389,15 @@ def audit_release(
                 return cached
 
         # --- ZIP inspection ---
-        zip_stats, zip_findings = inspect_zip(zip_path, policy)
+        try:
+            zip_stats, zip_findings = inspect_zip(zip_path, policy)
+        except _RELEASE_LOCAL_ARCHIVE_EXCEPTIONS as exc:
+            return _record_release_local_error(
+                report,
+                label="Archive inspection failed",
+                status_name="zip-inspector",
+                exc=exc,
+            )
         report.archive_stats = zip_stats
         report.findings.extend(zip_findings)
 
@@ -4336,7 +4415,9 @@ def audit_release(
             try:
                 safe_extract_zip(zip_path, extract_dir)
             except Exception as exc:
-                report.errors.append(f"Extraction failed: {exc}")
+                report.errors.append(
+                    f"Extraction failed: {_redacted_exception_detail(exc)}"
+                )
                 zip_stats.safe = False
 
         # --- Walk extracted content ---
@@ -5115,18 +5196,30 @@ def main(argv: Optional[list[str]] = None) -> int:
                         resumed_report.release_id,
                     )
 
-        report = resumed_report or audit_release(
-            item.repository,
-            release,
-            policy=policy,
-            exceptions=exceptions,
-            cache_dir=args.cache_dir,
-            skip_cache=args.skip_cache,
-            _repo_metadata=item.repository_metadata,
-            _policy_path=args.policy,
-            _allowlist_path=args.allowlist,
-            _persist_verdict=False,
-        )
+        if resumed_report is not None:
+            report = resumed_report
+        else:
+            try:
+                report = audit_release(
+                    item.repository,
+                    release,
+                    policy=policy,
+                    exceptions=exceptions,
+                    cache_dir=args.cache_dir,
+                    skip_cache=args.skip_cache,
+                    _repo_metadata=item.repository_metadata,
+                    _policy_path=args.policy,
+                    _allowlist_path=args.allowlist,
+                    _persist_verdict=False,
+                )
+            except _RELEASE_LOCAL_ARCHIVE_EXCEPTIONS as exc:
+                report = _release_local_exception_report(item.repository, release, exc)
+                log.error(
+                    "Release-local audit failure for %s %s: %s",
+                    item.repository,
+                    report.release_id,
+                    _redacted_exception_detail(exc),
+                )
         reports.append(report)
         progress_records[key] = _progress_record(report)
         try:

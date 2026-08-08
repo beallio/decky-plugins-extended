@@ -262,6 +262,54 @@ def test_corrupt_archive_preserves_prior_verdict_bytes(
     assert verdict_path.read_bytes() == prior_bytes
 
 
+def test_archive_inspection_oserror_returns_identity_complete_audit_error(
+    monkeypatch, tmp_path
+):
+    release = _release("v1.0.0", 1)
+    release["id"] = 101
+    release["published_at"] = "2026-08-08T00:00:00Z"
+    _configure_successful_audit(monkeypatch, _zip_bytes())
+    monkeypatch.setattr(
+        ap,
+        "inspect_zip",
+        lambda *_args: (_ for _ in ()).throw(
+            OSError('unreadable archive api_key="abcdefghijklmnop"')
+        ),
+    )
+
+    report = ap.audit_release(
+        REPOSITORY,
+        release,
+        _policy(),
+        [],
+        cache_dir=str(tmp_path),
+        skip_cache=True,
+    )
+
+    assert report.final_classification == "AUDIT_ERROR"
+    assert report.completion_status == "incomplete"
+    assert report.error_scope == "release"
+    assert report.repository == REPOSITORY
+    assert report.release == "v1.0.0"
+    assert report.release_id == "v1.0.0@1"
+    assert report.github_release_id == "101"
+    assert report.asset_id == "1"
+    assert report.artifact_url == "https://example.com/v1.0.0.zip"
+    assert report.artifact_sha256 == hashlib.sha256(_zip_bytes()).hexdigest()
+    assert report.resolved_tag_commit_sha == "commit-v1.0.0"
+    assert report.identity_status == "CURRENT"
+    assert report.scanner_statuses == [
+        ap.ScannerStatus(
+            name="zip-inspector",
+            status="failed",
+            detail='unreadable archive api_key="[REDACTED]"',
+        )
+    ]
+    assert report.errors == [
+        'Archive inspection failed: unreadable archive api_key="[REDACTED]"'
+    ]
+
+
 def test_bounded_release_failure_preserves_cache_and_verdict_bytes(
     monkeypatch, tmp_path
 ):
