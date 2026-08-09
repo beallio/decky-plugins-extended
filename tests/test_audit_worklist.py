@@ -52,6 +52,74 @@ def _zip_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def _write_shard_report(path: Path, report: ap.AuditReport) -> None:
+    payload = {
+        "schema_version": ap.AUDIT_SCHEMA_VERSION,
+        "policy_version": ap.POLICY_VERSION,
+        "reports": [ap._report_to_dict(report)],
+    }
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def _write_shard_delta(
+    path: Path,
+    delta: dict[str, dict[str, dict[str, object]]],
+) -> None:
+    path.write_text(
+        json.dumps(delta, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def _completed_report(
+    *,
+    repository: str = "https://github.com/owner/repo",
+    release: str = "v1",
+    github_release_id: str = "1",
+    asset_id: str = "10",
+    artifact_sha256: str = "a" * 64,
+    audit_timestamp: str = "2026-01-01T00:00:00Z",
+) -> ap.AuditReport:
+    return ap.AuditReport(
+        audit_timestamp=audit_timestamp,
+        repository=repository,
+        release=release,
+        release_id=f"{release}@{asset_id}",
+        github_release_id=github_release_id,
+        asset_id=asset_id,
+        artifact_url=f"https://example.invalid/{release}.zip",
+        artifact_sha256=artifact_sha256,
+        identity_status="CURRENT",
+        resolved_tag_commit_sha="commit-v1",
+        audit_context_hash="ctx-v1",
+        final_classification="PASS",
+        completion_status="completed",
+    )
+
+
+def _shard_verdict_delta(
+    report: ap.AuditReport,
+) -> dict[str, dict[str, dict[str, object]]]:
+    return ap._verdict_delta_from_reports([report])
+
+
+def _write_empty_shard_report(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": ap.AUDIT_SCHEMA_VERSION,
+                "policy_version": ap.POLICY_VERSION,
+                "reports": [],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_worklist_audits_every_eligible_release_in_deterministic_order():
     releases = {
         "owner/a": [
@@ -174,6 +242,10 @@ def test_aggregation_rejects_duplicate_and_conflicting_release_keys(tmp_path):
         github_release_id="1",
         asset_id="10",
         artifact_sha256="a" * 64,
+        artifact_url="https://example.invalid/v1.zip",
+        identity_status="CURRENT",
+        resolved_tag_commit_sha="commit",
+        audit_context_hash="ctx",
         final_classification="PASS",
         completion_status="completed",
     )
@@ -201,7 +273,11 @@ def test_verdict_delta_aggregation_rejects_repeated_canonical_keys(
     first_record = {
         "classification": "PASS",
         "blocking_rule_ids": [],
+        "review_rule_ids": [],
+        "warning_rule_ids": [],
         "artifact_sha256": "a" * 64,
+        "audit_context_hash": "ctx",
+        "audited_at": "2026-01-01T00:00:00Z",
     }
     second_record = {
         **first_record,
@@ -222,6 +298,197 @@ def test_verdict_delta_aggregation_rejects_repeated_canonical_keys(
 
     with pytest.raises(ValueError, match="duplicate verdict key"):
         ap.aggregate_verdict_deltas([str(first), str(second)])
+
+
+def test_aggregate_reports_reject_completed_report_missing_identity_fields(tmp_path):
+    report = _completed_report()
+    reports = {
+        "schema_version": ap.AUDIT_SCHEMA_VERSION,
+        "policy_version": ap.POLICY_VERSION,
+        "reports": [ap._report_to_dict(report)],
+    }
+    path = tmp_path / "shard.json"
+
+    for field in ("release_id", "artifact_sha256", "asset_id"):
+        payload = json.loads(json.dumps(reports))
+        payload["reports"][0].pop(field)
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="Incomplete completed report"):
+            ap.aggregate_audit_reports([str(path)])
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ["classification", "artifact_sha256", "audit_context_hash", "audited_at"],
+)
+def test_aggregate_verdict_deltas_reject_incomplete_block_delta(
+    tmp_path, missing_field
+):
+    record = {
+        "classification": "BLOCK",
+        "blocking_rule_ids": ["ARCHIVE_TRAVERSAL"],
+        "review_rule_ids": [],
+        "warning_rule_ids": [],
+        "artifact_sha256": "a" * 64,
+        "audit_context_hash": "ctx",
+        "audited_at": "2026-01-01T00:00:00Z",
+    }
+    payload = {"https://github.com/owner/repo": {"v1@10": record}}
+    path = tmp_path / "delta.json"
+
+    for missing_field in (missing_field,):
+        mutated = json.loads(json.dumps(payload))
+        del mutated["https://github.com/owner/repo"]["v1@10"][missing_field]
+        path.write_text(json.dumps(mutated) + "\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="Invalid"):
+            ap.aggregate_verdict_deltas([str(path)])
+
+
+def test_aggregate_main_rejects_missing_or_extra_delta_entries(tmp_path):
+    report = _completed_report()
+    report_delta = _shard_verdict_delta(report)
+    shard_report = tmp_path / "report-shard.json"
+    shard_delta = tmp_path / "delta-shard.json"
+    _write_shard_report(shard_report, report)
+
+    empty_delta = tmp_path / "empty-delta.json"
+    _write_shard_delta(empty_delta, {})
+
+    # Missing delta entry.
+    _write_shard_delta(shard_delta, {})
+    code = ap.main(
+        [
+            "--aggregate-reports",
+            str(shard_report),
+            "--aggregate-verdict-deltas",
+            str(shard_delta),
+            "--output-dir",
+            str(tmp_path / "missing-entry"),
+        ]
+    )
+    assert code == 1
+
+    # Extra delta entry.
+    extra = json.loads(json.dumps(report_delta))
+    repository = next(iter(extra))
+    extra_record = next(iter(extra[repository].values()))
+    extra[repository]["v2@20"] = {
+        **extra_record,
+        "classification": "PASS",
+    }
+    _write_shard_delta(shard_delta, extra)
+    code = ap.main(
+        [
+            "--aggregate-reports",
+            str(shard_report),
+            "--aggregate-verdict-deltas",
+            str(shard_delta),
+            "--output-dir",
+            str(tmp_path / "extra-entry"),
+        ]
+    )
+    assert code == 1
+
+
+def test_aggregate_main_rejects_mismatched_delta_entry_contents(tmp_path):
+    report = _completed_report()
+    report_delta = _shard_verdict_delta(report)
+    report_shard = tmp_path / "report.json"
+    delta_shard = tmp_path / "delta.json"
+    _write_shard_report(report_shard, report)
+
+    mutated = json.loads(json.dumps(report_delta))
+    repository = next(iter(mutated))
+    release_id = next(iter(mutated[repository]))
+    mutated[repository][release_id]["classification"] = "MANUAL_REVIEW"
+    _write_shard_delta(delta_shard, mutated)
+
+    code = ap.main(
+        [
+            "--aggregate-reports",
+            str(report_shard),
+            "--aggregate-verdict-deltas",
+            str(delta_shard),
+            "--output-dir",
+            str(tmp_path / "mismatched"),
+        ]
+    )
+    assert code == 1
+
+
+def test_aggregate_main_rejects_report_delta_splice_across_shards(tmp_path):
+    alpha = _completed_report(
+        repository="https://github.com/owner/alpha", release="v1", asset_id="10"
+    )
+    beta = _completed_report(
+        repository="https://github.com/owner/beta", release="v2", asset_id="20"
+    )
+    alpha_shard = tmp_path / "alpha-report.json"
+    beta_shard = tmp_path / "beta-report.json"
+    alpha_delta = tmp_path / "alpha-delta.json"
+    beta_delta = tmp_path / "beta-delta.json"
+    _write_shard_report(alpha_shard, alpha)
+    _write_shard_report(beta_shard, beta)
+    _write_shard_delta(alpha_delta, _shard_verdict_delta(alpha))
+
+    # Place a splice from alpha into beta's delta shard.
+    beta_delta_payload = _shard_verdict_delta(alpha)
+    _write_shard_delta(beta_delta, beta_delta_payload)
+
+    code = ap.main(
+        [
+            "--aggregate-reports",
+            str(alpha_shard),
+            str(beta_shard),
+            "--aggregate-verdict-deltas",
+            str(alpha_delta),
+            str(beta_delta),
+            "--output-dir",
+            str(tmp_path / "splice"),
+        ]
+    )
+    assert code == 1
+
+
+def test_aggregate_main_rejects_incomplete_delta_without_missing_and_empty_controls(
+    tmp_path,
+):
+    report = _completed_report()
+    report_shard = tmp_path / "report.json"
+    empty_shard = tmp_path / "empty.json"
+    report_delta = tmp_path / "report-delta.json"
+    empty_delta = tmp_path / "empty-delta.json"
+
+    _write_shard_report(report_shard, report)
+    _write_empty_shard_report(empty_shard)
+    _write_shard_delta(report_delta, _shard_verdict_delta(report))
+    _write_shard_delta(empty_delta, {})
+
+    code = ap.main(
+        [
+            "--aggregate-reports",
+            str(empty_shard),
+            str(report_shard),
+            "--aggregate-verdict-deltas",
+            str(empty_delta),
+            str(report_delta),
+            "--output-dir",
+            str(tmp_path / "aggregate"),
+            "--verdict-delta",
+            str(tmp_path / "aggregate-verdict.json"),
+        ]
+    )
+    assert code == 0
+
+    out_delta = json.loads(
+        (tmp_path / "aggregate-verdict.json").read_text(encoding="utf-8")
+    )
+    assert out_delta == _shard_verdict_delta(report)
+
+    payload = json.loads(
+        (tmp_path / "aggregate" / "security-report.json").read_text(encoding="utf-8")
+    )
+    assert payload["report_count"] == 1
 
 
 def test_shard_aggregation_restores_unsharded_deterministic_order(tmp_path):

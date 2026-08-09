@@ -4067,6 +4067,181 @@ _RESUME_REPORT_REQUIRED_FIELDS = (
     "completion_status",
 )
 
+_AGGREGATE_REPORT_REQUIRED_FIELDS = (
+    "repository",
+    "release",
+    "release_id",
+    "github_release_id",
+    "asset_id",
+    "artifact_url",
+    "artifact_sha256",
+    "identity_status",
+    "resolved_tag_commit_sha",
+    "audit_context_hash",
+    "final_classification",
+    "completion_status",
+)
+
+_AGGREGATE_REPORT_COMPLETION_STATUSES = ("completed", "incomplete")
+_IDENTITY_STATUS_VALUES = ("CURRENT", "STALE_HASH", "UNKNOWN")
+_AGGREGATE_VERDICT_DELTA_REQUIRED_FIELDS = (
+    "classification",
+    "blocking_rule_ids",
+    "review_rule_ids",
+    "warning_rule_ids",
+    "artifact_sha256",
+    "audit_context_hash",
+    "audited_at",
+)
+_AGGREGATE_VERDICT_DELTA_RELEASE_KEY = re.compile(r"^.+@[0-9]+$")
+
+
+def _validate_aggregated_report_record(
+    raw_report: dict[str, Any], report_path: str
+) -> dict[str, Any]:
+    """Validate and normalize one shard report record."""
+    if not isinstance(raw_report, dict):
+        raise ValueError(f"Invalid report record in {report_path}")
+
+    completion_status = raw_report.get("completion_status", "incomplete")
+    if completion_status not in _AGGREGATE_REPORT_COMPLETION_STATUSES:
+        raise ValueError(f"Invalid completion status in {report_path}")
+
+    repository = raw_report.get("repository")
+    if not isinstance(repository, str):
+        raise ValueError(f"Invalid repository in {report_path}")
+    try:
+        canonical = plugin_release_utils.canonicalize_github_repository_url(repository)
+    except ValueError as exc:
+        raise ValueError(f"Invalid repository in {report_path}") from exc
+    raw_report["repository"] = canonical
+
+    final_classification = raw_report.get("final_classification")
+    if completion_status == "completed":
+        missing = [
+            field
+            for field in _AGGREGATE_REPORT_REQUIRED_FIELDS
+            if not isinstance(raw_report.get(field), str) or not raw_report.get(field)
+        ]
+        if missing:
+            raise ValueError(
+                f"Incomplete completed report in {report_path}: missing {', '.join(sorted(missing))}"
+            )
+        if final_classification not in RULE_CLASSIFICATION_VALUES:
+            raise ValueError(
+                f"Invalid completed report classification in {report_path}"
+            )
+        if raw_report["identity_status"] not in _IDENTITY_STATUS_VALUES:
+            raise ValueError(f"Invalid identity status in {report_path}")
+        if not _CANONICAL_SHA256.fullmatch(raw_report["artifact_sha256"]):
+            raise ValueError(f"Invalid completed artifact SHA-256 in {report_path}")
+        expected_release_id = f"{raw_report['release']}@{raw_report['asset_id']}"
+        if raw_report["release_id"] != expected_release_id:
+            raise ValueError(
+                f"Invalid completed release identity in {report_path}: "
+                f"{raw_report['release_id']!r} != {expected_release_id!r}"
+            )
+
+    elif completion_status == "incomplete":
+        final_classification = (
+            final_classification if isinstance(final_classification, str) else ""
+        )
+        if final_classification not in RULE_CLASSIFICATION_VALUES | {"AUDIT_ERROR"}:
+            raise ValueError(f"Invalid report classification in {report_path}")
+
+    return raw_report
+
+
+def _validate_aggregated_verdict_delta_record(
+    repository: str,
+    release_id: str,
+    record: Any,
+    delta_path: str,
+) -> dict[str, Any]:
+    if not isinstance(record, dict):
+        raise ValueError(
+            f"Invalid verdict delta record in {delta_path}: {repository}/{release_id}"
+        )
+    missing = [
+        field
+        for field in _AGGREGATE_VERDICT_DELTA_REQUIRED_FIELDS
+        if field not in record
+    ]
+    if missing:
+        raise ValueError(
+            f"Invalid verdict delta record in {delta_path}: missing {', '.join(sorted(missing))} for {repository}/{release_id}"
+        )
+
+    if not isinstance(
+        release_id, str
+    ) or not _AGGREGATE_VERDICT_DELTA_RELEASE_KEY.fullmatch(release_id):
+        raise ValueError(
+            f"Invalid verdict release key in {delta_path}: {repository}/{release_id}"
+        )
+
+    classification = record["classification"]
+    if (
+        not isinstance(classification, str)
+        or classification not in RULE_CLASSIFICATION_VALUES
+    ):
+        raise ValueError(
+            f"Invalid verdict delta classification in {delta_path}: {repository}/{release_id}"
+        )
+    for required_field in (
+        "blocking_rule_ids",
+        "review_rule_ids",
+        "warning_rule_ids",
+    ):
+        rule_ids = record[required_field]
+        if not isinstance(rule_ids, list) or not all(
+            isinstance(rule_id, str) for rule_id in rule_ids
+        ):
+            raise ValueError(
+                f"Invalid verdict delta {required_field} in {delta_path}: "
+                f"{repository}/{release_id}"
+            )
+
+    for required_field in ("artifact_sha256", "audit_context_hash", "audited_at"):
+        if not isinstance(record.get(required_field), str) or not record.get(
+            required_field
+        ):
+            raise ValueError(
+                f"Invalid verdict delta {required_field} in {delta_path}: "
+                f"{repository}/{release_id}"
+            )
+    if not _CANONICAL_SHA256.fullmatch(record["artifact_sha256"]):
+        raise ValueError(
+            f"Invalid verdict delta artifact SHA-256 in {delta_path}: {repository}/{release_id}"
+        )
+    return record
+
+
+def _normalize_verdict_delta(
+    delta: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    normalized: dict[str, dict[str, dict[str, Any]]] = {}
+    for repository, releases in delta.items():
+        canonical = repository
+        try:
+            canonical = plugin_release_utils.canonicalize_github_repository_url(
+                repository
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid repository key {repository!r} in verdict delta"
+            ) from exc
+
+        normalized_releases: dict[str, dict[str, Any]] = {}
+        for release_id, record in sorted(releases.items(), key=lambda item: item[0]):
+            normalized_releases[release_id] = {
+                key: (sorted(value) if isinstance(value, list) else value)
+                for key, value in sorted(record.items(), key=lambda item: item[0])
+                if key in _AGGREGATE_VERDICT_DELTA_REQUIRED_FIELDS
+            }
+        normalized[canonical] = normalized_releases
+
+    return normalized
+
 
 def _resumable_progress_report(
     candidate: dict[str, Any],
@@ -4135,12 +4310,11 @@ def aggregate_audit_reports(report_paths: list[str]) -> list[AuditReport]:
         ):
             raise ValueError(f"Invalid shard report: {report_path}")
         for raw_report in payload["reports"]:
-            if not isinstance(raw_report, dict):
-                raise ValueError(f"Invalid report record in {report_path}")
-            report = _dict_to_report(raw_report)
-            report.repository = plugin_release_utils.canonicalize_github_repository_url(
-                report.repository
+            normalized_report = _validate_aggregated_report_record(
+                raw_report, report_path
             )
+            report = _dict_to_report(normalized_report)
+            report.repository = normalized_report["repository"]
             key = (report.repository, report.github_release_id, report.asset_id)
             if key in seen:
                 raise ValueError(f"duplicate release identity in shard reports: {key}")
@@ -4181,8 +4355,12 @@ def aggregate_verdict_deltas(
                 key = (canonical, release_id)
                 if key in seen:
                     raise ValueError(f"duplicate verdict key in shard deltas: {key}")
-                if not isinstance(record, dict):
-                    raise ValueError(f"Invalid verdict delta record: {key}")
+                record = _validate_aggregated_verdict_delta_record(
+                    canonical,
+                    release_id,
+                    record,
+                    delta_path,
+                )
                 seen.add(key)
                 merged.setdefault(canonical, {})[release_id] = record
     return merged
@@ -5157,16 +5335,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.aggregate_reports:
         try:
             reports = aggregate_audit_reports(args.aggregate_reports)
-            write_reports(reports, args.output_dir, verdicts=verdict_snapshot)
+            expected_delta = _verdict_delta_from_reports(reports)
             if args.aggregate_verdict_deltas:
                 delta = aggregate_verdict_deltas(args.aggregate_verdict_deltas)
-                destination = args.verdict_delta or os.path.join(
-                    args.output_dir, "security-verdict-delta.json"
-                )
-                _atomic_write_text(
-                    destination,
-                    json.dumps(delta, indent=2, sort_keys=True) + "\n",
-                )
+                if _normalize_verdict_delta(expected_delta) != _normalize_verdict_delta(
+                    delta
+                ):
+                    raise ValueError("Aggregated report/delta mismatch")
+            else:
+                delta = {}
+            write_reports(reports, args.output_dir, verdicts=verdict_snapshot)
+            destination = args.verdict_delta or os.path.join(
+                args.output_dir, "security-verdict-delta.json"
+            )
+            _atomic_write_text(
+                destination,
+                json.dumps(delta, indent=2, sort_keys=True) + "\n",
+            )
         except Exception as exc:
             log.error("Shard aggregation failed: %s", exc)
             return 1
