@@ -1,18 +1,10 @@
 # Plugin Security Audit Workflow
 #
-# Performs static security analysis on Decky Loader plugin repositories and
-# their release ZIP artifacts.  Plugin code is NEVER executed.
-#
-# Enforcement mode is controlled by security-policy.yml:
-#   enforcement.mode: report-only   (default) — findings are surfaced but do
-#                                   not block merging.
-#   enforcement.mode: enforce       — BLOCK exits 2, MANUAL_REVIEW exits 3.
-#
-# Internal audit errors (download failure, corrupt ZIP, infrastructure faults)
-# always fail CI in both modes.
-#
-# To switch to enforcement mode after evaluating false-positive rates, update
-# security-policy.yml and open a separate PR.
+# The checked-in policy is currently `enforce`: completed BLOCK and
+# MANUAL_REVIEW results fail the PR only after all safe shard evidence has been
+# aggregated and published as an artifact. Exit 1 is a run-global integrity
+# failure and therefore publishes no aggregate output; exit 4 is a
+# release-local incomplete result and remains publishable evidence.
 
 name: Plugin Security Audit
 
@@ -21,25 +13,27 @@ on:
     paths:
       - additional_plugins.txt
       - audit_plugins.py
+      - generate_json.py
+      - check_for_updates.py
       - plugin_release_utils.py
       - security-policy.yml
       - security-allowlist.yml
+      - security-verdicts.json
+      - semgrep-rules.yml
       - pyproject.toml
       - uv.lock
+      - scripts/orchestration-hooks/quality-gates
+      - scripts/orchestration/run-quality-gates
       - tests/**
       - .github/workflows/plugin-security-audit.yml
       - .github/workflows/scheduled-security-audit.yml
   workflow_dispatch:
     inputs:
       mode:
-        description: "Audit mode: 'changed' or 'all'"
+        description: "Audit mode: changed or all"
         required: false
         default: changed
 
-# Least-privilege: read-only repository access.
-# No deployment credentials or Cloudflare secrets are accessible here.
-# This workflow uses pull_request (not pull_request_target) so it always
-# runs against the PR branch, never with elevated merge-queue permissions.
 permissions:
   contents: read
 
@@ -48,38 +42,76 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  audit:
-    name: Security Audit
+  quality-gates:
+    name: Local-equivalent quality gates
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
-        # actions/checkout v4.2.2
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          fetch-depth: 0
 
       - name: Install uv
-        # astral-sh/setup-uv v9.0.0
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
         with:
           enable-cache: true
 
       - name: Set up Python
-        # actions/setup-python v7.0.0
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
-          python-version-file: "pyproject.toml"
+          python-version-file: pyproject.toml
 
-      - name: Install optional security scanners
-        # Scanners are installed from verified package managers; no piped-shell downloads.
-        # The audit degrades gracefully when scanners are unavailable.
+      - name: Run Ruff, pytest, and verified actionlint gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/orchestration-hooks/quality-gates
+
+      - name: Assert CI collection includes exact security regression node IDs
         run: |
-          # Trivy (static vulnerability scanner) – from the official apt repo.
-          # See https://aquasecurity.github.io/trivy/latest/getting-started/installation/
+          set -o pipefail
+          collection_file="$RUNNER_TEMP/pytest-collection.txt"
+          uv run pytest --collect-only -q > "$collection_file"
+          cat "$collection_file"
+          for node_id in \
+            tests/test_catalog_gate.py::test_unknown_verdict_fails_open_with_explicit_identity_status \
+            tests/test_enforcement_workflow.py::test_pull_request_audit_still_fails_on_enforcement_exit_codes \
+            tests/test_workflow_selection.py::test_full_corpus_is_fourteen_isolated_shards_with_expected_artifact_names \
+            tests/test_workflow_selection.py::test_workflow_executes_selector_for_required_path_classes[audit-only] \
+            tests/test_audit_cache_invalidation.py::TestAuditCacheInvalidation::test_context_hash_covers_semgrep_rules_and_scanner_freshness
+          do
+            grep -Fqx -- "$node_id" "$collection_file" || {
+              echo "::error::pytest collection missed node ID $node_id"
+              exit 1
+            }
+          done
+
+  audit-shards:
+    name: Security Audit (shard ${{ matrix.shard_index }}/14)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version-file: pyproject.toml
+
+      - name: Install required security scanners
+        run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends wget apt-transport-https gnupg lsb-release
+          sudo apt-get install -y --no-install-recommends wget apt-transport-https gnupg lsb-release clamav
           wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
             | gpg --dearmor \
             | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
@@ -87,98 +119,142 @@ jobs:
             $(lsb_release -sc) main" \
             | sudo tee /etc/apt/sources.list.d/trivy.list
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends trivy || echo "::warning::trivy install failed; audit will skip it"
-
-          # ClamAV (malware signature scanner)
-          sudo apt-get install -y --no-install-recommends clamav || {
-            echo "::error::clamav install failed"
+          sudo apt-get install -y --no-install-recommends trivy
+          uv tool install --python 3.12 --with setuptools==70.3.0 semgrep==1.132.0
+          SEMGREP_BIN_DIR=$(uv tool dir --bin)
+          echo "$SEMGREP_BIN_DIR" >> "$GITHUB_PATH"
+          export PATH="$SEMGREP_BIN_DIR:$PATH"
+          semgrep_version="$(semgrep --version --disable-version-check)"
+          [[ "$semgrep_version" == "1.132.0" ]] || {
+            echo "::error::expected Semgrep 1.132.0, got $semgrep_version"
             exit 1
           }
-          # Stop the auto-updater daemon so freshclam can run without lock conflicts.
           sudo systemctl stop clamav-freshclam || true
-          # Update signature databases; fail loudly on error.
           sudo freshclam
-          # Verify that usable signature databases are present.
-          clamscan --version || { echo "::error::clamscan unavailable after install"; exit 1; }
-          CLAMD_DB_DIR=$(clamscan --debug 2>&1 | grep -oP 'Loading DB:\s*\K[^ ]+' | head -1 || echo "/var/lib/clamav")
-          ls "${CLAMD_DB_DIR:-/var/lib/clamav}"/*.c?d 2>/dev/null || ls /var/lib/clamav/*.c?d || {
-            echo "::error::No ClamAV signature databases found after freshclam"
-            exit 1
-          }
+          clamscan --version
+          ls /var/lib/clamav/*.c?d >/dev/null
+        timeout-minutes: 12
 
-        timeout-minutes: 10
-
-      - name: Determine repositories to audit
-        id: repos
+      - name: Determine audit mode
+        id: selection
         env:
           GITHUB_BASE_REF: ${{ github.base_ref }}
           EVENT_NAME: ${{ github.event_name }}
           DISPATCH_MODE: ${{ github.event.inputs.mode }}
         run: |
+          audit_mode=""
+          base_ref=""
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            echo "audit_mode=changed" >> "$GITHUB_OUTPUT"
-            echo "base_ref=origin/${GITHUB_BASE_REF}" >> "$GITHUB_OUTPUT"
+            [[ -n "$GITHUB_BASE_REF" ]] || {
+              echo "::error::pull-request base ref is unavailable"
+              exit 1
+            }
+            candidate_base_ref="origin/${GITHUB_BASE_REF}"
+            git rev-parse --verify --quiet "${candidate_base_ref}^{commit}" >/dev/null || {
+              echo "::error::pull-request base ${candidate_base_ref} is unavailable"
+              exit 1
+            }
+            changed_paths="$(git diff --name-only "${candidate_base_ref}...HEAD")"
+            audit_mode="$(printf '%s\n' "$changed_paths" | uv run python -m plugin_release_utils --select-audit-mode)"
+            if [[ "$audit_mode" != "all" ]]; then
+              base_ref="$candidate_base_ref"
+            fi
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            audit_mode="${DISPATCH_MODE:-changed}"
+            if [[ "$audit_mode" == "changed" ]]; then
+              base_ref="HEAD~1"
+              git rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null || {
+                echo "::error::dispatch changed-mode base HEAD~1 is unavailable"
+                exit 1
+              }
+            fi
           else
-            mode="${DISPATCH_MODE:-changed}"
-            echo "audit_mode=${mode}" >> "$GITHUB_OUTPUT"
-            echo "base_ref=HEAD~1" >> "$GITHUB_OUTPUT"
+            echo "::error::unsupported audit event: $EVENT_NAME"
+            exit 1
           fi
+          case "$audit_mode" in
+            all) summary_state="full corpus selected (fourteen shards)" ;;
+            changed) summary_state="changed configured repositories" ;;
+            none) summary_state="no configured repository changes" ;;
+            *) echo "::error::invalid audit mode: $audit_mode"; exit 1 ;;
+          esac
+          echo "audit_mode=$audit_mode" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+          echo "summary_state=$summary_state" >> "$GITHUB_OUTPUT"
 
-      - name: Run security audit
+      - name: Record audit selection summary
+        env:
+          SELECTED_AUDIT_MODE: ${{ steps.selection.outputs.audit_mode }}
+          SELECTED_BASE_REF: ${{ steps.selection.outputs.base_ref }}
+          SELECTION_SUMMARY_STATE: ${{ steps.selection.outputs.summary_state }}
+        run: |
+          {
+            echo "## Security audit selection"
+            echo
+            echo "$SELECTION_SUMMARY_STATE"
+            echo "Mode: $SELECTED_AUDIT_MODE"
+            if [[ -n "$SELECTED_BASE_REF" ]]; then
+              echo "Base ref: $SELECTED_BASE_REF"
+            else
+              echo "Base ref: not required"
+            fi
+            echo "Shard ${{ matrix.shard_index }} of 14"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run isolated audit shard
         id: audit
         env:
-          # GITHUB_TOKEN is provided by the runner; never printed.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AUDIT_MODE: ${{ steps.repos.outputs.audit_mode }}
-          BASE_REF: ${{ steps.repos.outputs.base_ref }}
+          AUDIT_MODE: ${{ steps.selection.outputs.audit_mode }}
+          BASE_REF: ${{ steps.selection.outputs.base_ref }}
         run: |
           mkdir -p security-reports
+          case "$AUDIT_MODE" in
+            all) mode_args=(--all) ;;
+            changed | none) mode_args=(--changed --base-ref "$BASE_REF") ;;
+          esac
+          set +e
+          uv run python audit_plugins.py "${mode_args[@]}" \
+            --shard-count 14 \
+            --shard-index "${{ matrix.shard_index }}" \
+            --output-dir security-reports \
+            --verdict-delta security-reports/security-verdict-delta.json
+          audit_exit=$?
+          set -e
+          printf '%s\n' "$audit_exit" > security-reports/audit-exit.txt
+          echo "audit_exit=${audit_exit}" >> "$GITHUB_OUTPUT"
+          case "$audit_exit" in
+            0 | 2 | 3 | 4)
+              echo "publishable=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            1)
+              echo "publishable=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            *)
+              echo "publishable=false" >> "$GITHUB_OUTPUT"
+              echo "::error::unexpected audit exit $audit_exit"
+              exit 1
+              ;;
+          esac
+        timeout-minutes: 22
 
-          if [[ "$AUDIT_MODE" == "all" ]]; then
-            uv run python audit_plugins.py \
-              --all \
-              --output-dir security-reports \
-              --base-ref "$BASE_REF"
-          else
-            uv run python audit_plugins.py \
-              --changed \
-              --output-dir security-reports \
-              --base-ref "$BASE_REF"
-          fi
-        timeout-minutes: 20
-        continue-on-error: false
-
-      - name: Add audit summary to job summary
-        if: always()
-        run: |
-          if [[ -f security-reports/security-report.md ]]; then
-            cat security-reports/security-report.md >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## Security Audit" >> "$GITHUB_STEP_SUMMARY"
-            echo "⚠️ No report generated." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload audit reports as artifacts
-        # Only the redacted audit reports are uploaded; extracted plugin content is not.
-        if: always()
-        # actions/upload-artifact v4.6.2
+      - name: Upload isolated shard evidence
+        if: always() && steps.audit.outputs.publishable == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: security-audit-reports
-          path: |
-            security-reports/security-report.json
-            security-reports/security-report.md
+          name: security-audit-shard-${{ matrix.shard_index }}-of-14
+          path: security-reports
           retention-days: 30
           if-no-files-found: warn
 
-  # -------------------------------------------------------------------------
-  # Run the existing unit tests to ensure audit infrastructure is intact.
-  # -------------------------------------------------------------------------
-  unit-tests:
-    name: Unit Tests
+  aggregate-audit:
+    name: Aggregate security audit shards
+    needs: audit-shards
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -191,38 +267,99 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
-          python-version-file: "pyproject.toml"
+          python-version-file: pyproject.toml
 
-      - name: Run all tests
-        env:
-          GITHUB_TOKEN: test-token
+      - name: Download isolated shard evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: security-audit-shard-*-of-14
+          path: shard-artifacts
+
+      - name: Aggregate safe shard reports and deltas
+        id: aggregate
         run: |
-          uv run python -m unittest discover -s tests -v
-        timeout-minutes: 5
+          shopt -s globstar nullglob
+          exit_files=(shard-artifacts/**/audit-exit.txt)
+          (( ${#exit_files[@]} == 14 )) || {
+            echo "::error::expected fourteen shard exit records"
+            exit 1
+          }
+          for exit_file in "${exit_files[@]}"; do
+            [[ "$(<"$exit_file")" != "1" ]] || {
+              echo "::error::run-global audit integrity failure; aggregate evidence is unsafe"
+              exit 1
+            }
+          done
+          reports=(shard-artifacts/**/security-report.json)
+          deltas=(shard-artifacts/**/security-verdict-delta.json)
+          (( ${#reports[@]} == 14 && ${#deltas[@]} == 14 )) || {
+            echo "::error::every shard must publish report and verdict delta"
+            exit 1
+          }
+          mkdir -p security-reports
+          set +e
+          uv run python audit_plugins.py \
+            --aggregate-reports "${reports[@]}" \
+            --aggregate-verdict-deltas "${deltas[@]}" \
+            --output-dir security-reports \
+            --verdict-delta security-reports/security-verdict-delta.json
+          audit_exit=$?
+          set -e
+          echo "audit_exit=${audit_exit}" >> "$GITHUB_OUTPUT"
+          case "$audit_exit" in
+            0 | 2 | 3 | 4)
+              echo "publishable=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            *)
+              echo "publishable=false" >> "$GITHUB_OUTPUT"
+              exit "$audit_exit"
+              ;;
+          esac
 
-  # -------------------------------------------------------------------------
-  # Smoke audit: end-to-end audit of one real plugin to prove the full
-  # pipeline works whenever audit implementation files change.
-  #
-  # Chosen plugin: https://github.com/beallio/SDH-Ludusavi
-  # Rationale: actively maintained, has a stable release with exactly one ZIP,
-  # has a valid plugin.json, and has been present in additional_plugins.txt
-  # since the repository was created.
-  # -------------------------------------------------------------------------
+      - name: Record aggregation summary
+        if: always() && steps.aggregate.outputs.audit_exit != ''
+        run: |
+          {
+            echo "## Security audit aggregation"
+            echo
+            if [[ "${{ steps.aggregate.outputs.publishable }}" == "true" ]]; then
+              echo "Fourteen isolated shard reports and verdict deltas were merged."
+            else
+              echo "Aggregation failed integrity checks; no aggregate evidence was published."
+            fi
+            echo "Aggregate exit: ${{ steps.aggregate.outputs.audit_exit }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload aggregate audit evidence
+        if: always() && steps.aggregate.outputs.publishable == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: security-audit-aggregate
+          path: security-reports
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Apply PR enforcement result after publication
+        if: always() && steps.aggregate.outputs.audit_exit != ''
+        env:
+          AUDIT_EXIT: ${{ steps.aggregate.outputs.audit_exit }}
+        run: |
+          case "$AUDIT_EXIT" in
+            0) echo "Audit clean." ;;
+            2) echo "::error::Audit produced BLOCK findings."; exit 2 ;;
+            3) echo "::error::Audit produced MANUAL_REVIEW findings."; exit 3 ;;
+            4) echo "::error::Audit has publishable release-local incompleteness."; exit 4 ;;
+            *) echo "::error::unexpected audit exit $AUDIT_EXIT"; exit 1 ;;
+          esac
+
   smoke-audit:
-    name: Smoke Audit (end-to-end)
+    name: Smoke audit (single release)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Only run when the audit implementation itself changes.
-    if: >
-      github.event_name == 'pull_request' ||
-      github.event_name == 'workflow_dispatch'
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
@@ -232,80 +369,58 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
-          python-version-file: "pyproject.toml"
+          python-version-file: pyproject.toml
 
-      - name: Install security scanners for smoke audit
+      - name: Install required security scanners
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends wget apt-transport-https gnupg lsb-release
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
-            | gpg --dearmor \
-            | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb \
-            $(lsb_release -sc) main" \
-            | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get install -y --no-install-recommends wget apt-transport-https gnupg lsb-release clamav
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends trivy || {
-            echo "::error::trivy install failed; smoke audit requires trivy"
-            exit 1
-          }
-          sudo apt-get install -y --no-install-recommends clamav || {
-            echo "::error::clamav install failed; smoke audit requires clamav"
-            exit 1
-          }
+          sudo apt-get install -y --no-install-recommends trivy
+          uv tool install --python 3.12 --with setuptools==70.3.0 semgrep==1.132.0
+          SEMGREP_BIN_DIR=$(uv tool dir --bin)
+          echo "$SEMGREP_BIN_DIR" >> "$GITHUB_PATH"
+          export PATH="$SEMGREP_BIN_DIR:$PATH"
+          semgrep_version="$(semgrep --version --disable-version-check)"
+          [[ "$semgrep_version" == "1.132.0" ]]
           sudo systemctl stop clamav-freshclam || true
           sudo freshclam
-          clamscan --version || { echo "::error::clamscan unavailable"; exit 1; }
-          ls /var/lib/clamav/*.c?d 2>/dev/null || {
-            echo "::error::No ClamAV signature databases found"
-            exit 1
-          }
-        timeout-minutes: 10
+          clamscan --version
+          ls /var/lib/clamav/*.c?d >/dev/null
+        timeout-minutes: 12
 
-      - name: Run smoke audit on beallio/SDH-Ludusavi
+      - name: Run fast single-release smoke audit
+        id: smoke
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p smoke-reports
+          set +e
           uv run python audit_plugins.py \
             --repository https://github.com/beallio/SDH-Ludusavi \
-            --output-dir smoke-reports \
-            --skip-cache
-          # Verify that at least one report was produced.
-          python3 - <<'PYEOF'
-          import json, sys
-          data = json.load(open("smoke-reports/security-report.json"))
-          if data["report_count"] < 1:
-              print("ERROR: Smoke audit produced zero reports.")
-              sys.exit(1)
-          print(f"Smoke audit complete: {data['report_count']} report(s) produced.")
-          r = data["reports"][0]
-          print(f"  Plugin: {r.get('plugin_name')} @ {r.get('release')}")
-          print(f"  Classification: {r.get('final_classification')}")
-          if r.get("final_classification") == "AUDIT_ERROR":
-              print("ERROR: Smoke audit returned AUDIT_ERROR.")
-              sys.exit(1)
-          PYEOF
-        timeout-minutes: 20
+            --latest-only \
+            --skip-cache \
+            --output-dir smoke-reports
+          audit_exit=$?
+          set -e
+          echo "audit_exit=${audit_exit}" >> "$GITHUB_OUTPUT"
+          case "$audit_exit" in
+            0 | 2 | 3 | 4)
+              echo "publishable=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            *)
+              echo "publishable=false" >> "$GITHUB_OUTPUT"
+              exit "$audit_exit"
+              ;;
+          esac
 
-      - name: Add smoke audit summary to job summary
-        if: always()
-        run: |
-          if [[ -f smoke-reports/security-report.md ]]; then
-            echo "## Smoke Audit (beallio/SDH-Ludusavi)" >> "$GITHUB_STEP_SUMMARY"
-            cat smoke-reports/security-report.md >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## Smoke Audit" >> "$GITHUB_STEP_SUMMARY"
-            echo "⚠️ No smoke audit report generated." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload smoke audit reports
-        if: always()
+      - name: Upload smoke audit report
+        if: always() && steps.smoke.outputs.publishable == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: smoke-audit-reports
-          path: |
-            smoke-reports/security-report.json
-            smoke-reports/security-report.md
+          name: security-audit-smoke
+          path: smoke-reports
           retention-days: 14
-          if-no-files-found: error
+          if-no-files-found: warn

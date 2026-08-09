@@ -3,6 +3,8 @@ import json
 import shutil
 import subprocess
 
+import pytest
+
 import audit_plugins as ap
 
 REPOSITORY = "https://github.com/owner/plugin"
@@ -93,7 +95,7 @@ def test_tracked_verdicts_win_over_legacy_cache(monkeypatch, tmp_path):
     assert loaded[REPOSITORY]["v1.0.0@1"]["classification"] == "BLOCK"
 
 
-def test_legacy_cache_is_fallback_when_tracked_store_is_absent(monkeypatch, tmp_path):
+def test_missing_tracked_store_is_empty_and_ignores_legacy_cache(monkeypatch, tmp_path):
     tracked = tmp_path / "security-verdicts.json"
     cache_dir = tmp_path / ".audit-cache"
     cache_dir.mkdir()
@@ -101,7 +103,79 @@ def test_legacy_cache_is_fallback_when_tracked_store_is_absent(monkeypatch, tmp_
     (cache_dir / "verdicts.json").write_text(json.dumps(legacy), encoding="utf-8")
     monkeypatch.setattr(ap, "VERDICTS_FILE", str(tracked))
 
-    assert ap.load_verdicts(str(cache_dir)) == legacy
+    assert ap.load_verdicts(str(cache_dir)) == {}
+
+
+@pytest.mark.parametrize(
+    "payload, message",
+    (
+        ("{not-json", "valid JSON"),
+        ([], "root"),
+        ({REPOSITORY: []}, "repository"),
+        ({REPOSITORY: {"v1@1": []}}, "release record"),
+        ({REPOSITORY: {"invalid": {"classification": "PASS"}}}, "release key"),
+        (
+            {REPOSITORY: {"v1@1": {"classification": "NOT_A_VERDICT"}}},
+            "classification",
+        ),
+        ({REPOSITORY: {"v1@1": {"classification": 1}}}, "classification"),
+        (
+            {
+                REPOSITORY: {
+                    "v1@1": {
+                        "classification": "PASS",
+                        "blocking_rule_ids": "RULE",
+                    }
+                }
+            },
+            "blocking_rule_ids",
+        ),
+        (
+            {
+                REPOSITORY: {
+                    "v1@1": {
+                        "classification": "PASS",
+                        "review_rule_ids": [1],
+                    }
+                }
+            },
+            "review_rule_ids",
+        ),
+        (
+            {
+                REPOSITORY: {
+                    "v1@1": {
+                        "classification": "PASS",
+                        "artifact_sha256": "A" * 64,
+                    }
+                }
+            },
+            "artifact_sha256",
+        ),
+    ),
+)
+def test_invalid_nested_verdict_state_fails_closed(
+    monkeypatch, tmp_path, payload, message
+):
+    tracked = tmp_path / "security-verdicts.json"
+    if isinstance(payload, str):
+        tracked.write_text(payload, encoding="utf-8")
+    else:
+        tracked.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(ap, "VERDICTS_FILE", str(tracked))
+
+    with pytest.raises(ValueError, match=message):
+        ap.load_verdicts(str(tmp_path / ".audit-cache"))
+
+
+def test_legacy_record_without_artifact_sha_is_valid(monkeypatch, tmp_path):
+    tracked = tmp_path / "security-verdicts.json"
+    legacy = _verdict()
+    del legacy[REPOSITORY]["v1.0.0@1"]["artifact_sha256"]
+    tracked.write_text(json.dumps(legacy), encoding="utf-8")
+    monkeypatch.setattr(ap, "VERDICTS_FILE", str(tracked))
+
+    assert ap.load_verdicts(str(tmp_path / ".audit-cache")) == legacy
 
 
 def test_verdict_records_sorted_deduplicated_rationale_rule_ids(monkeypatch, tmp_path):

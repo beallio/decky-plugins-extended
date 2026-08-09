@@ -10,8 +10,8 @@ def test_placeholder_pattern_membership_matches_named_value_group():
         ), name
 
 
-def _single_finding(line: str):
-    findings = ap.scan_for_secrets(line + "\n", "main.py")
+def _single_finding(line: str, path: str = "main.py"):
+    findings = ap.scan_for_secrets(line + "\n", path)
     assert len(findings) == 1
     return findings[0]
 
@@ -71,24 +71,46 @@ def test_literal_shape_secret_patterns_remain_blocking():
         assert finding.classification == "BLOCK"
 
 
-def test_obvious_placeholders_stay_visible_as_warnings():
-    cases = (
-        'api_key = "your-api-key-here"',
-        'token = "xxxxxxxxxxxxxxxxxxxxxxxx"',
-        'api_key = "replace-with-example-value"',
-        'token = "replace-with-placeholder"',
-        'token = "changeme-changeme-1234"',
-        'token = "your-token-value-here"',
-        'token = "xxx-not-a-real-token-xxx"',
-        'token = "<TODO-{{token-value}}>"',
+def test_placeholder_requires_explicit_fixture_path_for_warning():
+    line = 'api_key = "your_provider_token"'
+
+    assert _single_finding(line).classification == "BLOCK"
+    finding = _single_finding(line, "tests/fixtures/config.py")
+
+    assert finding.classification == "PASS_WITH_WARNINGS"
+    assert "your_provider_token" not in finding.evidence
+
+
+def test_example_filename_is_an_explicit_fixture_path():
+    finding = _single_finding(
+        'token = "{{provider_authentication_token}}"', "config.example.py"
     )
 
-    for line in cases:
-        finding = _single_finding(line)
-        assert finding.classification == "PASS_WITH_WARNINGS"
+    assert finding.classification == "PASS_WITH_WARNINGS"
 
 
-def test_prose_secret_literals_stay_visible_as_warnings():
+def test_fixture_path_requires_an_exact_segment():
+    finding = _single_finding('api_key = "your_provider_token"', "contest/config.py")
+
+    assert finding.classification == "BLOCK"
+
+
+def test_provider_shaped_repeated_placeholder_warns_only_in_fixture():
+    value = "ghp_" + "X" * 36
+
+    assert _single_finding(value).classification == "BLOCK"
+    assert _single_finding(value, "mocks/github.py").classification == (
+        "PASS_WITH_WARNINGS"
+    )
+
+
+def test_inline_test_comment_does_not_downgrade_real_token():
+    finding = _single_finding('api_key = "aB3dE5gH7jK9mN1pQ3rS"  # test', "main.py")
+
+    assert finding.classification == "BLOCK"
+
+
+def test_prose_secret_literals_remain_critical():
     values = (
         "Chave API Hubcap",
         "Clé API Hubcap",
@@ -102,13 +124,13 @@ def test_prose_secret_literals_stay_visible_as_warnings():
         # credential-shape helper, exercises every language variant.
         finding = _single_finding(f'api_key = "{value:<16}"')
         assert finding.rule_id == "SECRET_GENERIC_API_KEY"
-        assert finding.classification == "PASS_WITH_WARNINGS"
+        assert finding.classification == "BLOCK"
 
 
-def test_any_whitespace_makes_a_matched_value_noncredential_shaped():
+def test_whitespace_does_not_downgrade_a_matched_value():
     finding = _single_finding('api_key = "Chave\tAPI\tHubcap"')
 
-    assert finding.classification == "PASS_WITH_WARNINGS"
+    assert finding.classification == "BLOCK"
 
 
 def test_secret_evidence_reports_shape_without_leaking_value():

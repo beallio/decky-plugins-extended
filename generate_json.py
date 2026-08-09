@@ -1,11 +1,10 @@
 import base64
-import hashlib
 import html
 import json
 import os
 import shutil
 import sys
-from urllib.parse import urlparse
+import tempfile
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -18,11 +17,17 @@ from audit_plugins import (
     load_verdicts,
 )
 from plugin_release_utils import (
+    bounded_stream_download,
+    canonicalize_github_release_asset_repository_url,
+    canonicalize_github_repository_url,
     get_zip_asset,
-    has_exactly_one_zip,
+    is_release_eligible,
+    normalize_github_sha256_digest,
     normalize_version,
+    parse_github_repository_url,
     version_sort_key,
 )
+from plugin_release_utils import get_releases as get_all_releases
 from plugin_release_utils import (
     parse_semver as parse_semver,  # re-export for external callers of generate_json.parse_semver
 )
@@ -31,6 +36,11 @@ from plugin_release_utils import (
 PLUGINS_URL = "https://plugins.deckbrew.xyz/plugins"
 TESTING_PLUGINS_URL = "https://testing.deckbrew.xyz/plugins"
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+
+
+class ArtifactDownloadError(RuntimeError):
+    """The current artifact bytes could not be proven within policy."""
+
 
 if not GITHUB_TOKEN:
     raise ValueError("GITHUB_TOKEN environment variable is required")
@@ -205,31 +215,31 @@ def resolve_image_url(plugin_json, owner, repo):
 
 
 def get_releases(owner, repo):
-    releases = []
-    url = f"https://api.github.com/repos/{owner}/{repo}/releases?per_page=100"
-    while url:
-        resp = session.get(url, timeout=10)
-        resp.raise_for_status()
-        releases.extend(resp.json())
-        url = resp.links.get("next", {}).get("url")
-    return releases
+    return get_all_releases(owner, repo, session=session, timeout=10)
 
 
-def calculate_hash(download_url):
+def calculate_hash(download_url, policy=None):
     print(f"    Downloading to calculate hash: {download_url}")
-    resp = anon_session.get(download_url, stream=True, timeout=30)
-    resp.raise_for_status()
-    h = hashlib.sha256()
-    for chunk in resp.iter_content(chunk_size=8192):
-        if chunk:
-            h.update(chunk)
-    return h.hexdigest()
+    try:
+        with tempfile.TemporaryDirectory(prefix="decky-catalog-hash-") as temp_dir:
+            result = bounded_stream_download(
+                download_url,
+                os.path.join(temp_dir, "release.zip"),
+                session=anon_session,
+                kind="release",
+                policy=policy,
+            )
+            return result.sha256
+    except Exception as exc:
+        raise ArtifactDownloadError(
+            f"Could not verify current artifact bytes for {download_url}: {exc}"
+        ) from exc
 
 
-def build_version_object(release, existing_plugin=None):
+def build_version_object(release, existing_plugin=None, policy=None):
     tag_name = normalize_version(release.get("tag_name", "1.0.0"))
 
-    if not has_exactly_one_zip(release):
+    if not is_release_eligible(release, allow_prerelease=True):
         zips = [
             a
             for a in release.get("assets", [])
@@ -245,27 +255,15 @@ def build_version_object(release, existing_plugin=None):
         return None
     download_url = zip_asset.get("browser_download_url")
 
-    # Performance Optimization: Avoid re-hashing if we already know this version
-    known_hash = None
-    if existing_plugin:
-        for v in existing_plugin.get("versions", []):
-            if (
-                v.get("name") == tag_name
-                and v.get("artifact") == download_url
-                and v.get("hash")
-            ):
-                known_hash = v.get("hash")
-                break
+    del existing_plugin  # Mutable catalog identity is never trusted for current bytes.
 
     final_hash = None
 
     # Check if GitHub natively provided the SHA-256 (recent GitHub feature)
-    github_digest = zip_asset.get("digest")
-    if github_digest and github_digest.startswith("sha256:"):
-        final_hash = github_digest.split(":")[1]
+    final_hash = normalize_github_sha256_digest(zip_asset.get("digest"))
 
     if not final_hash:
-        final_hash = known_hash if known_hash else calculate_hash(download_url)
+        final_hash = calculate_hash(download_url, policy=policy)
 
     return {
         "name": tag_name,
@@ -331,19 +329,19 @@ def _release_verdict_entry(repository, release, verdicts):
     if zip_asset is None:
         return {}
     release_id = f"{release.get('tag_name', '')}@{zip_asset.get('id', '')}"
-    return verdicts.get(repository.rstrip("/"), {}).get(release_id, {})
+    canonical_repository = canonicalize_github_repository_url(repository)
+    return verdicts.get(canonical_repository, {}).get(release_id, {})
 
 
 def _repository_slug(value):
-    parsed = urlparse(value)
-    parts = [part for part in parsed.path.split("/") if part]
-    if parsed.netloc.lower() == "github.com" and len(parts) >= 2:
-        return f"{parts[0]}/{parts[1].removesuffix('.git')}".lower()
-    if not parsed.netloc:
-        parts = [part for part in value.rstrip("/").split("/") if part]
-        if len(parts) >= 2:
-            return f"{parts[-2]}/{parts[-1].removesuffix('.git')}".lower()
-    return ""
+    try:
+        repository = canonicalize_github_release_asset_repository_url(value)
+    except ValueError:
+        try:
+            repository = canonicalize_github_repository_url(value)
+        except ValueError:
+            return ""
+    return "/".join(parse_github_repository_url(repository))
 
 
 def _log_policy_demotion(plugin, release, blocking_rule_ids):
@@ -361,44 +359,44 @@ def _log_policy_demotion(plugin, release, blocking_rule_ids):
     )
 
 
-def catalog_version_is_blocked(version, verdicts, blockable_rules=None):
-    """Match an upstream catalog version to a durable BLOCK verdict."""
-    repository_slug = _repository_slug(version.get("artifact", ""))
-    if not repository_slug:
+def catalog_version_is_blocked(
+    version,
+    verdicts,
+    blockable_rules=None,
+    *,
+    release=None,
+    current_artifact_sha256=None,
+):
+    """Return whether an exact current upstream release has a durable BLOCK."""
+    if release is None or current_artifact_sha256 is None:
         return False
-
-    identity = (version.get("name"), version.get("hash"))
-    policy_demotions = []
-    for repository, release_verdicts in verdicts.items():
-        if _repository_slug(repository) != repository_slug:
-            continue
-        for release_id, entry in release_verdicts.items():
-            tag_name = release_id.rsplit("@", 1)[0]
-            audited_identity = (
-                normalize_version(tag_name),
-                entry.get("artifact_sha256"),
-            )
-            if identity != audited_identity:
-                continue
-            effective_classification = effective_stored_classification(
-                entry, blockable_rules
-            )
-            if effective_classification == "BLOCK":
-                return True
-            if (
-                entry.get("classification") == "BLOCK"
-                and effective_classification != "BLOCK"
-            ):
-                policy_demotions.append(
-                    (
-                        _repository_slug(repository) or repository,
-                        tag_name,
-                        list(entry.get("blocking_rule_ids") or []),
-                    )
-                )
-    for plugin, release, blocking_rule_ids in policy_demotions:
-        _log_policy_demotion(plugin, release, blocking_rule_ids)
-    return False
+    try:
+        repository = canonicalize_github_release_asset_repository_url(
+            version.get("artifact", "")
+        )
+    except ValueError:
+        return False
+    verdict = classification_for(
+        repository,
+        release,
+        verdicts,
+        blockable_rules,
+        current_artifact_sha256=current_artifact_sha256,
+    )
+    if (
+        verdict.identity_status == "CURRENT"
+        and verdict.audit_classification == "BLOCK"
+        and verdict.effective_classification != "BLOCK"
+    ):
+        _log_policy_demotion(
+            _repository_slug(repository) or repository,
+            release.get("tag_name", ""),
+            verdict.blocking_rule_ids,
+        )
+    return (
+        verdict.identity_status == "CURRENT"
+        and verdict.effective_classification == "BLOCK"
+    )
 
 
 def read_repo_urls(path="additional_plugins.txt"):
@@ -424,7 +422,9 @@ def copy_static_files(source="static", destination="public"):
     return copied
 
 
-def _public_audit_records(verdicts, blockable_rules=None):
+def _public_audit_records(
+    verdicts, blockable_rules=None, current_identity_records=None
+):
     """Return only the verdict fields that are safe and useful to publish."""
     records = []
     for repository, release_verdicts in verdicts.items():
@@ -448,16 +448,57 @@ def _public_audit_records(verdicts, blockable_rules=None):
             effective_classification = effective_stored_classification(
                 verdict, blockable_rules
             )
+            tag, asset_id = str(release).rsplit("@", 1)
             records.append(
                 {
                     "repository": str(repository),
                     "release": str(release),
+                    "tag": tag,
+                    "asset_id": asset_id,
                     "classification": str(effective_classification),
                     "stored_classification": stored_classification,
+                    "identity_status": "UNKNOWN",
+                    "current_artifact_sha256": None,
+                    "stored_artifact_sha256": verdict.get("artifact_sha256"),
+                    "fail_open": True,
+                    "outcome": "FAIL_OPEN",
                     "rule_ids": sorted(rule_ids),
                     "audited_at": str(verdict.get("audited_at") or ""),
                 }
             )
+
+    by_identity = {
+        (record["repository"], record["release"]): record for record in records
+    }
+    for identity in current_identity_records or []:
+        key = (identity["repository"], identity["release"])
+        record = by_identity.get(key)
+        if record is None:
+            record = {
+                "repository": identity["repository"],
+                "release": identity["release"],
+                "tag": identity["tag"],
+                "asset_id": str(identity["asset_id"]),
+                "classification": identity["classification"],
+                "stored_classification": identity["stored_classification"],
+                "rule_ids": [],
+                "audited_at": "",
+            }
+            records.append(record)
+            by_identity[key] = record
+        record.update(
+            {
+                "tag": identity["tag"],
+                "asset_id": str(identity["asset_id"]),
+                "classification": identity["classification"],
+                "stored_classification": identity["stored_classification"],
+                "identity_status": identity["identity_status"],
+                "current_artifact_sha256": identity["current_artifact_sha256"],
+                "stored_artifact_sha256": identity["stored_artifact_sha256"],
+                "fail_open": identity["fail_open"],
+                "outcome": "FAIL_OPEN" if identity["fail_open"] else "APPLIED",
+            }
+        )
 
     # BLOCK is the only tier that can remove a release, so it must always be
     # visually first. Other tiers are labels, not a severity score.
@@ -509,6 +550,8 @@ def _render_audit_html(records, enforcement_mode):
             else '<span class="none-recorded">None recorded</span>'
         )
         audited_at = html.escape(record["audited_at"] or "Not recorded")
+        current_hash = html.escape(record["current_artifact_sha256"] or "Not verified")
+        stored_hash = html.escape(record["stored_artifact_sha256"] or "Not recorded")
         cards.append(
             f"""        <article class="verdict {classification_class}">
             <div class="classification">Effective classification: {classification}</div>{policy_disagreement}
@@ -517,6 +560,14 @@ def _render_audit_html(records, enforcement_mode):
                 <dd>{html.escape(record["repository"])}</dd>
                 <dt>Release</dt>
                 <dd>{html.escape(record["release"])}</dd>
+                <dt>Tag / asset</dt>
+                <dd>{html.escape(record["tag"])} / {html.escape(str(record["asset_id"]))}</dd>
+                <dt>Identity</dt>
+                <dd>{html.escape(record["identity_status"])} — {html.escape(record["outcome"])}</dd>
+                <dt>Current hash</dt>
+                <dd>{current_hash}</dd>
+                <dt>Stored hash</dt>
+                <dd>{stored_hash}</dd>
                 <dt>Rule IDs</dt>
                 <dd class="rules">{rendered_rules}</dd>
                 <dt>Audited</dt>
@@ -631,11 +682,16 @@ def _render_audit_html(records, enforcement_mode):
 
 
 def write_audit_outputs(
-    verdicts, enforcement_mode, destination="public", *, blockable_rules=None
+    verdicts,
+    enforcement_mode,
+    destination="public",
+    *,
+    blockable_rules=None,
+    current_identity_records=None,
 ):
     """Publish human- and machine-readable audit records without evidence."""
     os.makedirs(destination, exist_ok=True)
-    records = _public_audit_records(verdicts, blockable_rules)
+    records = _public_audit_records(verdicts, blockable_rules, current_identity_records)
     payload = {
         "enforcement_mode": str(enforcement_mode),
         "releases": records,
@@ -686,24 +742,18 @@ def main():
     repo_urls = read_repo_urls()
     verdicts = load_verdicts()
 
-    # The catalog gate honours security-policy.yml's enforcement mode. Under
-    # "report-only" a BLOCK verdict is reported and the release still ships;
-    # only "enforce" excludes it. Previously the gate excluded regardless, which
-    # contradicted a policy file that has said report-only since it landed, and
-    # removed eight legitimate plugins from the live catalog on the first real
-    # audit run - every one of them a false positive.
+    # The catalog gate honours security-policy.yml's current enforcement mode.
+    # Under report-only a CURRENT BLOCK is reported and still ships; under the
+    # checked-in enforce mode only a CURRENT effective BLOCK is excluded.
     try:
         policy = load_policy()
         enforcement_mode = (policy.get("enforcement") or {}).get(
             "mode"
         ) or "report-only"
         blockable_rules = set(policy.get("blockable_rules") or [])
-    except Exception as exc:  # a broken policy must not silently start blocking
-        print(
-            f"Warning: could not read enforcement mode ({exc}); assuming report-only."
-        )
-        enforcement_mode = "report-only"
-        blockable_rules = set()
+    except Exception as exc:
+        print(f"Fatal: could not load catalog security policy: {exc}")
+        raise SystemExit(1) from exc
     gating_enforced = enforcement_mode == "enforce"
     print(
         f"Catalog gate: enforcement mode is {enforcement_mode!r}"
@@ -712,12 +762,13 @@ def main():
 
     errors = []
     custom_plugin_names = set()
+    current_identity_records = []
 
     for url in repo_urls:
         try:
             print(f"Processing {url}...")
-            parts = url.rstrip("/").split("/")
-            owner, repo = parts[-2], parts[-1]
+            url = canonicalize_github_repository_url(url)
+            owner, repo = parse_github_repository_url(url)
 
             repo_info = get_repo_info(owner, repo)
             default_branch = repo_info.get("default_branch", "main")
@@ -758,14 +809,45 @@ def main():
             blocked_release_count = 0
 
             for rel in releases:
-                v_obj = build_version_object(rel, existing_testing or existing_stable)
+                v_obj = build_version_object(
+                    rel, existing_testing or existing_stable, policy=policy
+                )
                 if not v_obj:
                     continue
                 valid_release_count += 1
 
-                verdict = classification_for(url, rel, verdicts, blockable_rules)
+                verdict = classification_for(
+                    url,
+                    rel,
+                    verdicts,
+                    blockable_rules,
+                    current_artifact_sha256=v_obj["hash"],
+                )
+                zip_asset = get_zip_asset(rel) or {}
+                current_identity_records.append(
+                    {
+                        "repository": url,
+                        "release": f"{rel.get('tag_name', '')}@{zip_asset.get('id', '')}",
+                        "tag": rel.get("tag_name", ""),
+                        "asset_id": zip_asset.get("id", ""),
+                        "classification": verdict.effective_classification,
+                        "stored_classification": verdict.audit_classification,
+                        "identity_status": verdict.identity_status,
+                        "current_artifact_sha256": verdict.current_artifact_sha256,
+                        "stored_artifact_sha256": verdict.stored_artifact_sha256,
+                        "fail_open": verdict.fail_open,
+                    }
+                )
+                if verdict.identity_status != "CURRENT":
+                    print(
+                        f"  [fail-open:{verdict.identity_status}] {plugin_name} "
+                        f"release {rel.get('tag_name', '')}: current hash "
+                        f"{verdict.current_artifact_sha256 or 'unavailable'}, stored hash "
+                        f"{verdict.stored_artifact_sha256 or 'none'}."
+                    )
                 if (
-                    verdict.audit_classification == "BLOCK"
+                    verdict.identity_status == "CURRENT"
+                    and verdict.audit_classification == "BLOCK"
                     and verdict.effective_classification != "BLOCK"
                 ):
                     _log_policy_demotion(
@@ -885,6 +967,9 @@ def main():
                     f"  No stable releases found for {plugin_name}. Skipping stable plugins."
                 )
 
+        except ArtifactDownloadError as exc:
+            print(f"Fatal artifact identity failure: {exc}")
+            raise SystemExit(1) from exc
         except Exception as e:
             errors.append(f"Failed to process {url}: {e}")
 
@@ -931,7 +1016,12 @@ def main():
         )
 
     copy_static_files()
-    write_audit_outputs(verdicts, enforcement_mode, blockable_rules=blockable_rules)
+    write_audit_outputs(
+        verdicts,
+        enforcement_mode,
+        blockable_rules=blockable_rules,
+        current_identity_records=current_identity_records,
+    )
 
     print("Successfully generated JSON files in the 'public' directory.")
 

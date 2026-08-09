@@ -4,6 +4,8 @@ import os
 
 os.environ.setdefault("GITHUB_TOKEN", "test-token")
 
+import pytest
+
 import check_for_updates
 import generate_json
 
@@ -41,6 +43,18 @@ def _version(tag, digest):
         "created": "2026-01-01T00:00:00Z",
         "downloads": 0,
         "updates": 0,
+    }
+
+
+def _download_policy():
+    return {
+        "downloads": {
+            "release_max_bytes": 7,
+            "source_max_bytes": 11,
+            "connect_timeout_seconds": 2,
+            "read_timeout_seconds": 3,
+            "chunk_size_bytes": 2,
+        }
     }
 
 
@@ -141,6 +155,83 @@ def _run_generator(
         (tmp_path / "public/testing_plugins.json").read_text(encoding="utf-8")
     )
     return stable, testing
+
+
+@pytest.mark.parametrize("classification", ("PASS", "BLOCK"))
+def test_matching_verdict_hash_is_current(classification):
+    release = _release("v1.0.0", 7, BLOCKED_HASH)
+    verdicts = {
+        REPOSITORY: {
+            "v1.0.0@7": {
+                "classification": classification,
+                "blocking_rule_ids": (
+                    ["ARCHIVE_TRAVERSAL"] if classification == "BLOCK" else []
+                ),
+                "artifact_sha256": BLOCKED_HASH,
+            }
+        }
+    }
+
+    result = generate_json.classification_for(
+        REPOSITORY,
+        release,
+        verdicts,
+        {"ARCHIVE_TRAVERSAL"},
+        current_artifact_sha256=BLOCKED_HASH,
+    )
+
+    assert result.identity_status == "CURRENT"
+    assert result.effective_classification == classification
+    assert result.current_artifact_sha256 == BLOCKED_HASH
+    assert result.stored_artifact_sha256 == BLOCKED_HASH
+    assert result.fail_open is False
+
+
+@pytest.mark.parametrize("classification", ("PASS", "BLOCK"))
+def test_stale_verdict_hash_fails_open(classification):
+    release = _release("v1.0.0", 7, FALLBACK_HASH)
+    verdicts = {
+        REPOSITORY: {
+            "v1.0.0@7": {
+                "classification": classification,
+                "blocking_rule_ids": ["ARCHIVE_TRAVERSAL"],
+                "artifact_sha256": BLOCKED_HASH,
+            }
+        }
+    }
+
+    result = generate_json.classification_for(
+        REPOSITORY,
+        release,
+        verdicts,
+        {"ARCHIVE_TRAVERSAL"},
+        current_artifact_sha256=FALLBACK_HASH,
+    )
+
+    assert result.identity_status == "STALE_HASH"
+    assert result.effective_classification == "AUDIT_ERROR"
+    assert result.audit_classification == classification
+    assert result.current_artifact_sha256 == FALLBACK_HASH
+    assert result.stored_artifact_sha256 == BLOCKED_HASH
+    assert result.fail_open is True
+
+
+def test_unknown_verdict_fails_open_with_explicit_identity_status():
+    release = _release("v1.0.0", 7, FALLBACK_HASH)
+
+    result = generate_json.classification_for(
+        REPOSITORY,
+        release,
+        {},
+        {"ARCHIVE_TRAVERSAL"},
+        current_artifact_sha256=FALLBACK_HASH,
+    )
+
+    assert result.identity_status == "UNKNOWN"
+    assert result.effective_classification == "AUDIT_ERROR"
+    assert result.current_artifact_sha256 == FALLBACK_HASH
+    assert result.stored_artifact_sha256 is None
+    assert result.fail_open is True
 
 
 def test_gate_removes_blocked_existing_version_and_uses_fallback(
@@ -355,10 +446,41 @@ def test_custom_update_check_ignores_blocked_newest_release(monkeypatch):
 
     assert (
         check_for_updates.check_custom_repos(
-            {"Plugin": {"1.0.0"}}, _verdicts(), BLOCKABLE_RULES
+            {"Plugin": {("1.0.0", FALLBACK_HASH)}},
+            _verdicts(),
+            BLOCKABLE_RULES,
         )
         == []
     )
+
+
+def test_custom_update_check_keeps_blocked_newest_release_in_report_only_mode(
+    monkeypatch,
+):
+    releases = [
+        _release("v2.0.0", 2, BLOCKED_HASH),
+        _release("v1.0.0", 1, FALLBACK_HASH),
+    ]
+    monkeypatch.setattr(generate_json, "read_repo_urls", lambda: [REPOSITORY])
+    monkeypatch.setattr(
+        generate_json,
+        "get_repo_info",
+        lambda *_args: {"default_branch": "main"},
+    )
+    monkeypatch.setattr(
+        generate_json, "get_plugin_json", lambda *_args: {"name": "Plugin"}
+    )
+    monkeypatch.setattr(
+        generate_json, "get_package_json", lambda *_args: {"name": "plugin"}
+    )
+    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: releases)
+
+    assert check_for_updates.check_custom_repos(
+        {"Plugin": {("1.0.0", FALLBACK_HASH)}},
+        _verdicts(),
+        BLOCKABLE_RULES,
+        enforcement_mode="report-only",
+    ) == [("Plugin", "2.0.0")]
 
 
 def test_upstream_update_check_ignores_blocked_newest_release(monkeypatch):
@@ -366,22 +488,288 @@ def test_upstream_update_check_ignores_blocked_newest_release(monkeypatch):
         _plugin([_version("v2.0.0", BLOCKED_HASH), _version("v1.0.0", FALLBACK_HASH)])
     ]
     monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json,
+        "get_releases",
+        lambda *_args: [
+            _release("v2.0.0", 2, BLOCKED_HASH),
+            _release("v1.0.0", 1, FALLBACK_HASH),
+        ],
+    )
 
     assert (
         check_for_updates.check_upstream(
-            {"Plugin": {"1.0.0"}}, _verdicts(), BLOCKABLE_RULES
+            {"Plugin": {("1.0.0", FALLBACK_HASH)}},
+            _verdicts(),
+            BLOCKABLE_RULES,
+            enforcement_mode="enforce",
         )
         == []
     )
 
 
+def test_upstream_update_check_includes_blocked_newest_release_in_report_only_mode(
+    monkeypatch,
+):
+    upstream = [
+        _plugin([_version("v2.0.0", BLOCKED_HASH), _version("1.0.0", FALLBACK_HASH)])
+    ]
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json,
+        "get_releases",
+        lambda *_args: [
+            _release("v2.0.0", 2, BLOCKED_HASH),
+            _release("v1.0.0", 1, FALLBACK_HASH),
+        ],
+    )
+
+    assert check_for_updates.check_upstream(
+        {"Plugin": {("1.0.0", FALLBACK_HASH)}},
+        _verdicts(),
+        BLOCKABLE_RULES,
+        enforcement_mode="report-only",
+    ) == [("Plugin", "2.0.0")]
+
+
+def test_upstream_update_check_passes_non_default_download_policy(monkeypatch):
+    policy = _download_policy()
+    release = _release("v1.0.0", 1, "invalid")
+    artifact = release["assets"][0]["browser_download_url"]
+    monkeypatch.setattr(
+        generate_json,
+        "fetch_json",
+        lambda _url: [_plugin([_version("v1.0.0", "a" * 64)])],
+    )
+    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: [release])
+    observed = []
+
+    def calculate_hash(url, policy=None):
+        observed.append((url, policy))
+        return "b" * 64
+
+    monkeypatch.setattr(generate_json, "calculate_hash", calculate_hash)
+
+    assert check_for_updates.check_upstream(
+        {}, {}, BLOCKABLE_RULES, download_policy=policy
+    ) == [("Plugin", "1.0.0")]
+    assert observed == [(artifact, policy)]
+
+
+def test_custom_update_check_passes_non_default_download_policy(monkeypatch):
+    policy = _download_policy()
+    release = _release("v1.0.0", 1, "invalid")
+    artifact = release["assets"][0]["browser_download_url"]
+    monkeypatch.setattr(generate_json, "read_repo_urls", lambda: [REPOSITORY])
+    monkeypatch.setattr(
+        generate_json,
+        "get_repo_info",
+        lambda *_args: {"default_branch": "main"},
+    )
+    monkeypatch.setattr(
+        generate_json, "get_plugin_json", lambda *_args: {"name": "Plugin"}
+    )
+    monkeypatch.setattr(
+        generate_json, "get_package_json", lambda *_args: {"name": "plugin"}
+    )
+    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: [release])
+    observed = []
+
+    def calculate_hash(url, policy=None):
+        observed.append((url, policy))
+        return "b" * 64
+
+    monkeypatch.setattr(generate_json, "calculate_hash", calculate_hash)
+
+    assert check_for_updates.check_custom_repos(
+        {}, {}, BLOCKABLE_RULES, download_policy=policy
+    ) == [("Plugin", "1.0.0")]
+    assert observed == [(artifact, policy)]
+
+
 def test_upstream_update_gate_requires_the_audited_hash(monkeypatch):
     upstream = [_plugin([_version("v2.0.0", "c" * 64)])]
     monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json,
+        "get_releases",
+        lambda *_args: [_release("v2.0.0", 2, "c" * 64)],
+    )
 
     assert check_for_updates.check_upstream(
-        {"Plugin": {"1.0.0"}}, _verdicts(), BLOCKABLE_RULES
+        {"Plugin": {("1.0.0", FALLBACK_HASH)}},
+        _verdicts(),
+        BLOCKABLE_RULES,
     ) == [("Plugin", "2.0.0")]
+
+
+def test_upstream_update_check_rejects_zero_current_release_matches(monkeypatch):
+    upstream = [_plugin([_version("v2.0.0", "a" * 64)])]
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json,
+        "get_releases",
+        lambda *_args: [_release("v1.0.0", 1, "a" * 64)],
+    )
+
+    with pytest.raises(
+        check_for_updates.UpstreamArtifactIdentityError,
+        match=(
+            r"repository=https://github\.com/owner/plugin.*version=2\.0\.0.*"
+            r"no eligible release matches"
+        ),
+    ):
+        check_for_updates.check_upstream(
+            {"Plugin": {("2.0.0", "a" * 64)}}, {}, BLOCKABLE_RULES
+        )
+
+
+def test_upstream_update_check_rejects_multiple_current_release_matches(monkeypatch):
+    upstream = [_plugin([_version("v2.0.0", "a" * 64)])]
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json,
+        "get_releases",
+        lambda *_args: [
+            _release("v2.0.0", 2, "b" * 64),
+            _release("v2.0.0", 3, "c" * 64),
+        ],
+    )
+
+    with pytest.raises(
+        check_for_updates.UpstreamArtifactIdentityError,
+        match=r"repository=https://github\.com/owner/plugin.*version=2\.0\.0.*ambiguous.*2 eligible releases",
+    ):
+        check_for_updates.check_upstream({}, {}, BLOCKABLE_RULES)
+
+
+def test_upstream_update_check_rejects_changed_asset_for_same_normalized_version(
+    monkeypatch,
+):
+    upstream_version = _version("Release-2.0.0", "a" * 64)
+    current_release = _release("v2.0.0", 2, "b" * 64)
+    monkeypatch.setattr(
+        generate_json, "fetch_json", lambda _url: [_plugin([upstream_version])]
+    )
+    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: [current_release])
+
+    with pytest.raises(
+        check_for_updates.UpstreamArtifactIdentityError,
+        match=(
+            r"repository=https://github\.com/owner/plugin.*version=2\.0\.0.*"
+            r"no ZIP asset matches the upstream artifact URL"
+        ),
+    ):
+        check_for_updates.check_upstream({}, {}, BLOCKABLE_RULES)
+
+
+def test_upstream_update_check_rejects_stale_upstream_url_and_hash(monkeypatch):
+    upstream_version = _version("v2.0.0", "a" * 64)
+    upstream_version["artifact"] = (
+        "https://github.com/owner/plugin/releases/download/v2.0.0/old-plugin.zip"
+    )
+    current_release = _release("v2.0.0", 2, "b" * 64)
+    monkeypatch.setattr(
+        generate_json, "fetch_json", lambda _url: [_plugin([upstream_version])]
+    )
+    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: [current_release])
+
+    with pytest.raises(
+        check_for_updates.UpstreamArtifactIdentityError,
+        match=(
+            r"repository=https://github\.com/owner/plugin.*version=2\.0\.0.*"
+            r"no ZIP asset matches the upstream artifact URL"
+        ),
+    ):
+        check_for_updates.check_upstream(
+            {"Plugin": {("2.0.0", "a" * 64)}}, {}, BLOCKABLE_RULES
+        )
+
+
+def test_upstream_update_check_uses_unique_current_hash_not_catalog_hash(monkeypatch):
+    upstream = [_plugin([_version("v2.0.0", "a" * 64)])]
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json,
+        "get_releases",
+        lambda *_args: [_release("v2.0.0", 2, "b" * 64)],
+    )
+
+    assert check_for_updates.check_upstream(
+        {"Plugin": {("2.0.0", "a" * 64)}}, {}, BLOCKABLE_RULES
+    ) == [("Plugin", "2.0.0")]
+
+
+def test_update_check_main_reports_unresolved_upstream_identity(monkeypatch, capsys):
+    upstream = [_plugin([_version("v2.0.0", "a" * 64)])]
+
+    def fetch_json(url):
+        return [] if url == check_for_updates.LIVE_URL else upstream
+
+    monkeypatch.setattr(generate_json, "fetch_json", fetch_json)
+    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: [])
+    monkeypatch.setattr(generate_json, "load_verdicts", lambda: {})
+    monkeypatch.setattr(
+        generate_json,
+        "load_policy",
+        lambda: {"blockable_rules": sorted(BLOCKABLE_RULES)},
+    )
+
+    assert check_for_updates.main() == 1
+    output = capsys.readouterr().out
+    assert "Fatal artifact identity failure" in output
+    assert "repository=https://github.com/owner/plugin" in output
+    assert "version=2.0.0" in output
+    assert "no eligible release matches" in output
+    assert "changed=false" not in output
+
+
+@pytest.mark.parametrize("enforcement_mode", ["enforce", "report-only"])
+def test_update_check_main_forwards_enforcement_mode_to_upstream_and_configured_checks(
+    monkeypatch, enforcement_mode
+):
+    observed = []
+
+    def fake_upstream(
+        live,
+        verdicts,
+        blockable_rules=None,
+        *,
+        download_policy=None,
+        enforcement_mode=None,
+    ):
+        observed.append(("upstream", enforcement_mode))
+        return []
+
+    def fake_custom(
+        live,
+        verdicts,
+        blockable_rules=None,
+        *,
+        download_policy=None,
+        enforcement_mode=None,
+    ):
+        observed.append(("custom", enforcement_mode))
+        return []
+
+    monkeypatch.setattr(check_for_updates, "check_upstream", fake_upstream)
+    monkeypatch.setattr(check_for_updates, "check_custom_repos", fake_custom)
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: [])
+    monkeypatch.setattr(generate_json, "load_verdicts", lambda: {})
+    monkeypatch.setattr(
+        generate_json,
+        "load_policy",
+        lambda: {
+            "enforcement": {"mode": enforcement_mode},
+            "blockable_rules": sorted(BLOCKABLE_RULES),
+        },
+    )
+
+    assert check_for_updates.main() == 0
+    assert observed == [
+        ("upstream", enforcement_mode),
+        ("custom", enforcement_mode),
+    ]
 
 
 def test_two_consecutive_update_checks_stay_false_for_blocked_releases(
@@ -469,8 +857,9 @@ def test_report_only_mode_ships_blocked_releases(monkeypatch, tmp_path, capsys):
     assert "[report-only]" in capsys.readouterr().out
 
 
-def test_unreadable_policy_falls_back_to_report_only(monkeypatch, tmp_path, capsys):
-    """A broken policy file must not silently start excluding plugins."""
+def test_unreadable_policy_fails_closed_before_public_output(
+    monkeypatch, tmp_path, capsys
+):
     releases = [
         _release("v2.0.0", 2, BLOCKED_HASH),
         _release("v1.0.0", 1, FALLBACK_HASH),
@@ -480,13 +869,68 @@ def test_unreadable_policy_falls_back_to_report_only(monkeypatch, tmp_path, caps
         raise OSError("policy unreadable")
 
     monkeypatch.setattr(generate_json, "load_policy", _boom, raising=False)
-    stable, _testing = _run_generator(
-        monkeypatch,
-        tmp_path,
-        releases,
-        _verdicts(),
-        [_version("v2.0.0", BLOCKED_HASH), _version("v1.0.0", FALLBACK_HASH)],
-        enforcement_mode=None,
+    with pytest.raises(SystemExit) as exc_info:
+        _run_generator(
+            monkeypatch,
+            tmp_path,
+            releases,
+            _verdicts(),
+            [_version("v2.0.0", BLOCKED_HASH), _version("v1.0.0", FALLBACK_HASH)],
+            enforcement_mode=None,
+        )
+
+    assert exc_info.value.code == 1
+    assert "Fatal: could not load catalog security policy" in capsys.readouterr().out
+    assert not (tmp_path / "public/plugins.json").exists()
+
+
+def test_artifact_download_failure_is_run_global_before_public_output(
+    monkeypatch, tmp_path, capsys
+):
+    release = _release("v2.0.0", 2, "invalid")
+
+    def _download_failed(*_args, **_kwargs):
+        raise generate_json.ArtifactDownloadError("release exceeds limit")
+
+    monkeypatch.setattr(generate_json, "calculate_hash", _download_failed)
+    with pytest.raises(SystemExit) as exc_info:
+        _run_generator(
+            monkeypatch,
+            tmp_path,
+            [release],
+            {},
+            [],
+        )
+
+    assert exc_info.value.code == 1
+    assert "Fatal artifact identity failure" in capsys.readouterr().out
+    assert not (tmp_path / "public/plugins.json").exists()
+
+
+def test_update_check_does_not_skip_artifact_download_failure(monkeypatch):
+    release = _release("v1.0.0", 1, "invalid")
+    monkeypatch.setattr(generate_json, "read_repo_urls", lambda: [REPOSITORY])
+    monkeypatch.setattr(
+        generate_json,
+        "get_repo_info",
+        lambda *_args: {"default_branch": "main"},
     )
-    plugin = next(item for item in stable if item["name"] == "Plugin")
-    assert "2.0.0" in {version["name"] for version in plugin["versions"]}
+    monkeypatch.setattr(
+        generate_json, "get_plugin_json", lambda *_args: {"name": "Plugin"}
+    )
+    monkeypatch.setattr(
+        generate_json, "get_package_json", lambda *_args: {"name": "plugin"}
+    )
+    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: [release])
+
+    def _download_failed(*_args, **_kwargs):
+        raise generate_json.ArtifactDownloadError("release exceeds limit")
+
+    monkeypatch.setattr(
+        generate_json,
+        "calculate_hash",
+        _download_failed,
+    )
+
+    with pytest.raises(generate_json.ArtifactDownloadError):
+        check_for_updates.check_custom_repos({}, {}, BLOCKABLE_RULES)
