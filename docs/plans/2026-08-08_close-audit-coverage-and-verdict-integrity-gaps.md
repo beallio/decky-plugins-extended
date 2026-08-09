@@ -538,9 +538,12 @@ never infer a producer's result from the pipeline's final command.
 ### Explicitly deferred or not verified
 
 - No remote push, pull request, Cloudflare deployment, or hosted GitHub Actions run is created.
-  Hosted-runner variance and package-mirror latency remain unmeasured; workflow syntax, shared
-  shell/Python behavior, pytest collection, scanner parity, and cold/warm corpus budgets are
-  verified locally.
+  Hosted-runner variance and package-mirror latency remain unmeasured. Workflow syntax, shared
+  shell/Python behavior, pytest collection, scanner parity, and the fourteen-shard capacity
+  projection from the preserved cold sample are verified locally. The warm run and warm zero-work
+  assertions were not executed after the cold budget failure, and the complete source-archive size
+  inventory remains an open acceptance requirement. Both are deferred and unverified in the
+  preserved capacity blocker evidence.
 - Hosted ClamAV/Trivy database publication timing is not measured. Fingerprint extraction, cache
   invalidation, and fail-safe scheduled cache bypass are verified with controlled local identities.
 - No runtime or on-device plugin execution is added; static-analysis blind spots remain documented.

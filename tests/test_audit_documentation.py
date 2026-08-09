@@ -76,3 +76,36 @@ def test_capacity_contract_uses_fourteen_shard_projection_and_preserves_blocker(
     assert (
         boundary["hosted_runner_concurrency_and_api_behavior"] == "DEFERRED_VALIDATION"
     )
+
+
+def test_capacity_evidence_keeps_unexecuted_warm_and_source_inventory_work_open():
+    plan = (
+        ROOT
+        / "docs/plans/2026-08-08_close-audit-coverage-and-verdict-integrity-gaps.md"
+    ).read_text(encoding="utf-8")
+    evidence = json.loads(
+        (
+            ROOT
+            / "docs/agent_conversations/2026-08-08_audit-fourteen-shard-capacity-projection.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    normalized_plan = " ".join(plan.split())
+    assert "cold/warm corpus budgets are verified locally" not in normalized_plan
+    assert "warm run and warm zero-work assertions were not executed" in normalized_plan
+    assert (
+        "complete source-archive size inventory remains an open acceptance requirement"
+        in normalized_plan
+    )
+
+    blocker_path = evidence["source_blocker"]["path"]
+    uncertainties = evidence["open_uncertainties"]
+    warm = uncertainties["warm_run_and_zero_work_assertions"]
+    assert warm["status"] == "DEFERRED_NOT_EXECUTED"
+    assert warm["verified"] is False
+    assert warm["blocker_path"] == blocker_path
+    source_inventory = uncertainties["complete_source_archive_size_inventory"]
+    assert source_inventory["status"] == "INCOMPLETE_ACCEPTANCE_REQUIREMENT_OPEN"
+    assert source_inventory["verified"] is False
+    assert source_inventory["blocker_path"] == blocker_path
+    assert source_inventory["acceptance_requirement_open"] is True

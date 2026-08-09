@@ -84,6 +84,27 @@
     "complete_quality_gate_log": "/tmp/decky-plugins-extended/round14-quality-gates.log",
     "complete_quality_gate_log_sha256": "99bf498ab581cf4fc66e71c2e0918b1f4806b36d99e5f859f061234d5a53430a"
   },
+  "open_uncertainties": {
+    "warm_run_and_zero_work_assertions": {
+      "status": "DEFERRED_NOT_EXECUTED",
+      "verified": false,
+      "blocker_path": "docs/agent_conversations/2026-08-08_audit-live-corpus-capacity-blocker.json",
+      "blocker_fields": [
+        "blocked_verification.four_shard_warm_execution_under_10_minutes",
+        "blocked_verification.warm_zero_artifact_source_extraction_and_scanner_assertions"
+      ],
+      "reason": "The warm run and its zero-work assertions were not executed after the cold runtime budget failed; the fourteen-shard projection does not verify warm behavior."
+    },
+    "complete_source_archive_size_inventory": {
+      "status": "INCOMPLETE_ACCEPTANCE_REQUIREMENT_OPEN",
+      "verified": false,
+      "blocker_path": "docs/agent_conversations/2026-08-08_audit-live-corpus-capacity-blocker.json",
+      "blocker_field": "blocked_verification.full_source_archive_size_inventory",
+      "acceptance_requirement_open": true,
+      "acceptance_requirement": "Assert every existing eligible source archive fits the 268,435,456-byte limit before finalization.",
+      "reason": "The interrupted cold run did not complete the source-archive inventory, so the fourteen-shard projection cannot close this acceptance requirement."
+    }
+  },
   "verification_boundary": {
     "full_corpus_rerun_performed": false,
     "download_limits_changed": false,
