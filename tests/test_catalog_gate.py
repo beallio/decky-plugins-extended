@@ -46,6 +46,12 @@ def _version(tag, digest):
     }
 
 
+def _artifactless_version(tag, digest):
+    version = _version(tag, digest)
+    del version["artifact"]
+    return version
+
+
 def _download_policy():
     return {
         "downloads": {
@@ -603,6 +609,279 @@ def test_upstream_update_gate_requires_the_audited_hash(monkeypatch):
     ) == [("Plugin", "2.0.0")]
 
 
+def test_artifactless_upstream_version_verifies_content_addressed_cdn(
+    monkeypatch,
+):
+    policy = _download_policy()
+    digest = "a" * 64
+    upstream = [_plugin([_artifactless_version("v2.0.0", digest)])]
+    observed = []
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json,
+        "get_releases",
+        lambda *_args: pytest.fail("artifactless Deckbrew rows have no GitHub origin"),
+    )
+
+    def calculate_hash(url, policy=None):
+        observed.append((url, policy))
+        return digest
+
+    monkeypatch.setattr(generate_json, "calculate_hash", calculate_hash)
+
+    assert (
+        check_for_updates.check_upstream(
+            {"Plugin": {("2.0.0", digest)}},
+            {},
+            BLOCKABLE_RULES,
+            download_policy=policy,
+        )
+        == []
+    )
+    assert observed == [
+        (
+            "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/versions/"
+            f"{digest}.zip",
+            policy,
+        )
+    ]
+
+
+def test_artifactless_upstream_version_detects_same_version_hash_change(monkeypatch):
+    digest = "a" * 64
+    upstream = [_plugin([_artifactless_version("v2.0.0", digest)])]
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json, "calculate_hash", lambda *_args, **_kwargs: digest
+    )
+
+    assert check_for_updates.check_upstream(
+        {"Plugin": {("2.0.0", "b" * 64)}}, {}, BLOCKABLE_RULES
+    ) == [("Plugin", "2.0.0")]
+
+
+def test_artifactless_upstream_version_preserves_verbatim_deckbrew_name(monkeypatch):
+    digest = "a" * 64
+    version = _artifactless_version("2.0.0", digest)
+    version["name"] = "v2.0.0"
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: [_plugin([version])])
+    monkeypatch.setattr(
+        generate_json, "calculate_hash", lambda *_args, **_kwargs: digest
+    )
+
+    assert (
+        check_for_updates.check_upstream(
+            {"Plugin": {("v2.0.0", digest)}}, {}, BLOCKABLE_RULES
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("digest", ("A" * 64, "a" * 63, "g" * 64, None))
+def test_artifactless_upstream_version_rejects_invalid_hash_without_download(
+    monkeypatch, digest
+):
+    upstream = [_plugin([_artifactless_version("v2.0.0", digest)])]
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json,
+        "calculate_hash",
+        lambda *_args, **_kwargs: pytest.fail("invalid hashes must not be downloaded"),
+    )
+
+    with pytest.raises(
+        check_for_updates.UpstreamArtifactIdentityError,
+        match=r"repository=https://plugins\.deckbrew\.xyz/plugins.*version=2\.0\.0.*invalid.*SHA-256",
+    ):
+        check_for_updates.check_upstream({}, {}, BLOCKABLE_RULES)
+
+
+@pytest.mark.parametrize("name", ("", None, 2))
+def test_artifactless_upstream_version_rejects_invalid_version_name(monkeypatch, name):
+    version = _artifactless_version("1.0.0", "a" * 64)
+    version["name"] = name
+    upstream = [_plugin([version])]
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json,
+        "calculate_hash",
+        lambda *_args, **_kwargs: pytest.fail("missing names must not be downloaded"),
+    )
+
+    with pytest.raises(
+        check_for_updates.UpstreamArtifactIdentityError,
+        match=r"repository=https://plugins\.deckbrew\.xyz/plugins.*version=<unresolved>.*invalid or empty upstream version name",
+    ):
+        check_for_updates.check_upstream({}, {}, BLOCKABLE_RULES)
+
+
+def test_artifactless_upstream_version_rejects_cdn_hash_mismatch(monkeypatch):
+    expected = "a" * 64
+    computed = "b" * 64
+    upstream = [_plugin([_artifactless_version("v2.0.0", expected)])]
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json, "calculate_hash", lambda *_args, **_kwargs: computed
+    )
+
+    with pytest.raises(
+        check_for_updates.UpstreamArtifactIdentityError,
+        match=(
+            r"repository=https://cdn\.tzatzikiweeb\.moe/.+version=2\.0\.0.*"
+            r"SHA-256 mismatch"
+        ),
+    ):
+        check_for_updates.check_upstream({}, {}, BLOCKABLE_RULES)
+
+
+def test_artifactless_upstream_version_wraps_cdn_download_failure(monkeypatch):
+    digest = "a" * 64
+    upstream = [_plugin([_artifactless_version("v2.0.0", digest)])]
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+
+    def fail_download(*_args, **_kwargs):
+        raise generate_json.ArtifactDownloadError("fixture timeout")
+
+    monkeypatch.setattr(generate_json, "calculate_hash", fail_download)
+
+    with pytest.raises(
+        check_for_updates.UpstreamArtifactIdentityError,
+        match=(
+            r"repository=https://cdn\.tzatzikiweeb\.moe/.+version=2\.0\.0.*"
+            r"could not verify Deckbrew CDN artifact: fixture timeout"
+        ),
+    ):
+        check_for_updates.check_upstream({}, {}, BLOCKABLE_RULES)
+
+
+def test_present_empty_upstream_artifact_remains_invalid(monkeypatch):
+    version = _artifactless_version("v2.0.0", "a" * 64)
+    version["artifact"] = ""
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: [_plugin([version])])
+    monkeypatch.setattr(
+        generate_json,
+        "calculate_hash",
+        lambda *_args, **_kwargs: pytest.fail("present artifact uses strict URL path"),
+    )
+
+    with pytest.raises(
+        check_for_updates.UpstreamArtifactIdentityError,
+        match=r"invalid upstream GitHub release asset URL ''",
+    ):
+        check_for_updates.check_upstream({}, {}, BLOCKABLE_RULES)
+
+
+def test_configured_plugin_is_authoritative_over_artifactless_upstream(monkeypatch):
+    releases = [
+        _release("v2.0.0", 2, BLOCKED_HASH),
+        _release("v1.0.0", 1, FALLBACK_HASH),
+    ]
+    upstream = [
+        _plugin(
+            [
+                _artifactless_version("v2.0.0", BLOCKED_HASH),
+                _artifactless_version("v1.0.0", FALLBACK_HASH),
+            ]
+        )
+    ]
+    release_requests = 0
+
+    def get_releases(*_args):
+        nonlocal release_requests
+        release_requests += 1
+        return releases
+
+    monkeypatch.setattr(generate_json, "read_repo_urls", lambda: [REPOSITORY])
+    monkeypatch.setattr(
+        generate_json, "get_repo_info", lambda *_args: {"default_branch": "main"}
+    )
+    monkeypatch.setattr(
+        generate_json, "get_plugin_json", lambda *_args: {"name": "Plugin"}
+    )
+    monkeypatch.setattr(
+        generate_json, "get_package_json", lambda *_args: {"name": "plugin"}
+    )
+    monkeypatch.setattr(generate_json, "get_releases", get_releases)
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json,
+        "calculate_hash",
+        lambda *_args, **_kwargs: pytest.fail(
+            "managed upstream plugins must skip the duplicate CDN download"
+        ),
+    )
+    live = {"Plugin": {("1.0.0", FALLBACK_HASH)}}
+    managed_plugin_names = set()
+
+    assert (
+        check_for_updates.check_custom_repos(
+            live,
+            _verdicts(),
+            BLOCKABLE_RULES,
+            enforcement_mode="enforce",
+            managed_plugin_names=managed_plugin_names,
+        )
+        == []
+    )
+    assert managed_plugin_names == {"Plugin"}
+    assert (
+        check_for_updates.check_upstream(
+            live,
+            _verdicts(),
+            BLOCKABLE_RULES,
+            enforcement_mode="enforce",
+            ignored_plugin_names=managed_plugin_names,
+        )
+        == []
+    )
+    assert release_requests == 1
+
+
+def test_configured_plugin_without_valid_release_does_not_hide_upstream_change(
+    monkeypatch,
+):
+    upstream_hash = "a" * 64
+    live_hash = "b" * 64
+    upstream = [_plugin([_artifactless_version("v2.0.0", upstream_hash)])]
+    prerelease_only = [_release("v3.0.0-beta.1", 3, "c" * 64, prerelease=True)]
+    monkeypatch.setattr(generate_json, "read_repo_urls", lambda: [REPOSITORY])
+    monkeypatch.setattr(
+        generate_json, "get_repo_info", lambda *_args: {"default_branch": "main"}
+    )
+    monkeypatch.setattr(
+        generate_json, "get_plugin_json", lambda *_args: {"name": "Plugin"}
+    )
+    monkeypatch.setattr(
+        generate_json, "get_package_json", lambda *_args: {"name": "plugin"}
+    )
+    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: prerelease_only)
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json,
+        "calculate_hash",
+        lambda *_args, **_kwargs: upstream_hash,
+    )
+    live = {"Plugin": {("2.0.0", live_hash)}}
+    managed_plugin_names = set()
+
+    assert (
+        check_for_updates.check_custom_repos(
+            live,
+            {},
+            BLOCKABLE_RULES,
+            managed_plugin_names=managed_plugin_names,
+        )
+        == []
+    )
+    assert managed_plugin_names == set()
+    assert check_for_updates.check_upstream(
+        live,
+        {},
+        BLOCKABLE_RULES,
+        ignored_plugin_names=managed_plugin_names,
+    ) == [("Plugin", "2.0.0")]
+
+
 def test_upstream_update_check_rejects_zero_current_release_matches(monkeypatch):
     upstream = [_plugin([_version("v2.0.0", "a" * 64)])]
     monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
@@ -708,6 +987,7 @@ def test_update_check_main_reports_unresolved_upstream_identity(monkeypatch, cap
 
     monkeypatch.setattr(generate_json, "fetch_json", fetch_json)
     monkeypatch.setattr(generate_json, "get_releases", lambda *_args: [])
+    monkeypatch.setattr(generate_json, "read_repo_urls", lambda: [])
     monkeypatch.setattr(generate_json, "load_verdicts", lambda: {})
     monkeypatch.setattr(
         generate_json,
@@ -724,6 +1004,32 @@ def test_update_check_main_reports_unresolved_upstream_identity(monkeypatch, cap
     assert "changed=false" not in output
 
 
+def test_update_check_main_accepts_production_shaped_artifactless_upstream(
+    monkeypatch, capsys
+):
+    digest = "a" * 64
+    plugin = _plugin([_artifactless_version("v2.0.0", digest)])
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: [plugin])
+    monkeypatch.setattr(
+        generate_json, "calculate_hash", lambda *_args, **_kwargs: digest
+    )
+    monkeypatch.setattr(generate_json, "load_verdicts", lambda: {})
+    monkeypatch.setattr(
+        generate_json,
+        "load_policy",
+        lambda: {
+            "blockable_rules": sorted(BLOCKABLE_RULES),
+            "enforcement": {"mode": "enforce"},
+        },
+    )
+    monkeypatch.setattr(generate_json, "read_repo_urls", lambda: [])
+
+    assert check_for_updates.main() == 0
+    output = capsys.readouterr().out
+    assert "Live catalog already has every upstream and configured release." in output
+    assert "changed=false" in output
+
+
 @pytest.mark.parametrize("enforcement_mode", ["enforce", "report-only"])
 def test_update_check_main_forwards_enforcement_mode_to_upstream_and_configured_checks(
     monkeypatch, enforcement_mode
@@ -737,8 +1043,9 @@ def test_update_check_main_forwards_enforcement_mode_to_upstream_and_configured_
         *,
         download_policy=None,
         enforcement_mode=None,
+        ignored_plugin_names=None,
     ):
-        observed.append(("upstream", enforcement_mode))
+        observed.append(("upstream", enforcement_mode, ignored_plugin_names))
         return []
 
     def fake_custom(
@@ -748,7 +1055,9 @@ def test_update_check_main_forwards_enforcement_mode_to_upstream_and_configured_
         *,
         download_policy=None,
         enforcement_mode=None,
+        managed_plugin_names=None,
     ):
+        managed_plugin_names.add("Plugin")
         observed.append(("custom", enforcement_mode))
         return []
 
@@ -767,8 +1076,8 @@ def test_update_check_main_forwards_enforcement_mode_to_upstream_and_configured_
 
     assert check_for_updates.main() == 0
     assert observed == [
-        ("upstream", enforcement_mode),
         ("custom", enforcement_mode),
+        ("upstream", enforcement_mode, {"Plugin"}),
     ]
 
 
@@ -786,9 +1095,11 @@ def test_two_consecutive_update_checks_stay_false_for_blocked_releases(
         _verdicts(),
         [_version("v2.0.0", BLOCKED_HASH), _version("v1.0.0", FALLBACK_HASH)],
     )
-    upstream = [
-        _plugin([_version("v2.0.0", BLOCKED_HASH), _version("v1.0.0", FALLBACK_HASH)])
-    ]
+    upstream_plugin = _plugin(
+        [_version("v2.0.0", BLOCKED_HASH), _version("v1.0.0", FALLBACK_HASH)]
+    )
+    upstream_plugin["name"] = "PLUGIN"
+    upstream = [upstream_plugin]
 
     def fetch_json(url):
         return live if url == check_for_updates.LIVE_URL else upstream
@@ -804,7 +1115,7 @@ def test_two_consecutive_update_checks_stay_false_for_blocked_releases(
         lambda *_args: {"default_branch": "main"},
     )
     monkeypatch.setattr(
-        generate_json, "get_plugin_json", lambda *_args: {"name": "Plugin"}
+        generate_json, "get_plugin_json", lambda *_args: {"name": "plugin"}
     )
     monkeypatch.setattr(
         generate_json, "get_package_json", lambda *_args: {"name": "plugin"}
