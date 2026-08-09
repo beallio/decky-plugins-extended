@@ -1,0 +1,205 @@
+{
+  "date": "2026-08-08",
+  "recorded_at": "2026-08-08 17:00:53 PDT",
+  "task_objective": "Close review round 12 by proving every named production integrity branch has a focused regression that fails under mutation and passes after restoration.",
+  "branch": "feat/close-audit-coverage-and-verdict-integrity-gaps",
+  "plan": "docs/plans/2026-08-08_close-audit-coverage-and-verdict-integrity-gaps.md",
+  "review_note": "docs/review/close-audit-coverage-and-verdict-integrity-gaps-review-12.md",
+  "reviewed_implementation_commit": "d17b6856c7e3c17e595fcd8c65b9fa3d8f230215",
+  "committed_review_note_head": "8e5e849fd60257d5707e9c1c01192153619cdbd5",
+  "temporary_worktree": {
+    "path_pattern": "/tmp/decky-plugins-extended-mutation-round12.*",
+    "observed_path": "/tmp/decky-plugins-extended-mutation-round12.L5mH8w",
+    "mode": "detached HEAD",
+    "starting_commit": "d17b6856c7e3c17e595fcd8c65b9fa3d8f230215",
+    "test_environment": "/home/beallio/Dropbox/Scripts/decky-plugins-extended/.venv/bin/pytest",
+    "initial_environment_note": "A worktree-local uv environment failed before collection because /tmp was full. That infrastructure failure was excluded from evidence; every recorded mutation used the existing pinned project environment and executed the worktree source and tests."
+  },
+  "baseline_sha256": {
+    "audit_plugins.py": "d3211df7b792f2d9ec952e3d1f7313a58a641fb64f00383ad12f34edd6ee83d5",
+    "plugin_release_utils.py": "7dd115dc241daf79c1e9ffecdd17416997e93fa41aa0649247185f395df7658b",
+    "generate_json.py": "a6784ce95d0b77ef51c9e77b0aa4db0fd446b00fd8d1dc86bd6843831538e6c7",
+    ".github/workflows/plugin-security-audit.yml": "0cdc713b7902537095360184c7548224c2698c2256b0ec2d8f1ddb108074cf25"
+  },
+  "mutations": [
+    {
+      "id": "newest-release-only",
+      "production_file": "audit_plugins.py",
+      "production_function": "build_audit_worklist",
+      "mutation": "Slice every repository's eligible releases to the first release, even when latest-only is false.",
+      "diff_sha256": "a6cc95f84e641284fec64d937ddde5c1351f5c3fc03b018891dae4e8a31025ce",
+      "node_ids": [
+        "tests/test_audit_worklist.py::test_worklist_audits_every_eligible_release_in_deterministic_order"
+      ],
+      "pytest_exit_status": 1,
+      "expected_failure_excerpt": "Right contains one more item: ('https://github.com/owner/b', 2, 20)",
+      "restoration_sha256": "d3211df7b792f2d9ec952e3d1f7313a58a641fb64f00383ad12f34edd6ee83d5"
+    },
+    {
+      "id": "draft-filter-removed",
+      "production_file": "plugin_release_utils.py",
+      "production_function": "is_release_eligible",
+      "mutation": "Accept draft releases when they have exactly one ZIP asset.",
+      "diff_sha256": "f130d231650947ef1bf6509cff9172280c235e65017c270e9d169f6bc5332eb6",
+      "node_ids": [
+        "tests/test_plugin_release_utils.py::test_release_eligibility_is_shared_for_stable_testing_and_audit_consumers"
+      ],
+      "pytest_exit_status": 1,
+      "expected_failure_excerpt": "assert not pru.is_release_eligible(draft, allow_prerelease=True)",
+      "restoration_sha256": "7dd115dc241daf79c1e9ffecdd17416997e93fa41aa0649247185f395df7658b"
+    },
+    {
+      "id": "overlapping-shards",
+      "production_file": "audit_plugins.py",
+      "production_function": "select_audit_shard",
+      "mutation": "Force shard zero to select the complete worklist in addition to the normal hash partition.",
+      "diff_sha256": "694c422fffad26842c1b8828fb5418bfc864dc553698c73f7e4385a82105c481",
+      "node_ids": [
+        "tests/test_audit_worklist.py::test_four_shards_are_disjoint_and_union_identical"
+      ],
+      "pytest_exit_status": 1,
+      "expected_failure_excerpt": "AssertionError: assert 58 == 32",
+      "restoration_sha256": "d3211df7b792f2d9ec952e3d1f7313a58a641fb64f00383ad12f34edd6ee83d5"
+    },
+    {
+      "id": "loose-embedded-resume-identity",
+      "production_file": "audit_plugins.py",
+      "production_function": "_resumable_progress_report",
+      "mutation": "Stop comparing the embedded report repository with the expected canonical repository.",
+      "diff_sha256": "b240dd8ee84ab267f47760e6ef18607fdb856fd7b96b78a76631f4591c3033f1",
+      "node_ids": [
+        "tests/test_audit_worklist.py::test_main_rejects_mismatched_embedded_report_before_resume[repository-https://github.com/attacker/spliced]"
+      ],
+      "pytest_exit_status": 1,
+      "expected_failure_excerpt": "AssertionError: assert [] == [('https://github.com/owner/repo', 1)]",
+      "restoration_sha256": "d3211df7b792f2d9ec952e3d1f7313a58a641fb64f00383ad12f34edd6ee83d5"
+    },
+    {
+      "id": "release-error-suppresses-sibling-delta",
+      "production_file": "audit_plugins.py",
+      "production_function": "_verdict_delta_from_reports",
+      "mutation": "Return an empty verdict delta when any release-local AUDIT_ERROR is present.",
+      "diff_sha256": "04ff5439b9902c42dd01e183df1a445ed9f15ed9ee8bec5d09ba27b8c9c25208",
+      "node_ids": [
+        "tests/test_audit_worklist.py::test_mixed_release_run_checkpoints_success_and_publishes_error_before_exit_4"
+      ],
+      "pytest_exit_status": 1,
+      "expected_failure_excerpt": "KeyError: 'https://github.com/owner/repo'",
+      "restoration_sha256": "d3211df7b792f2d9ec952e3d1f7313a58a641fb64f00383ad12f34edd6ee83d5"
+    },
+    {
+      "id": "url-only-catalog-hash-reuse",
+      "production_file": "generate_json.py",
+      "production_function": "build_version_object",
+      "mutation": "Reuse an existing catalog hash for the same normalized version and artifact URL when GitHub supplies no digest.",
+      "diff_sha256": "c8ae9a56b8854f9efaae0af4bfaa2869abd24efabef59c4cd3aee44546b9e7bc",
+      "node_ids": [
+        "tests/test_generate_json.py::GenerateJsonTests::test_build_version_object_rehashes_same_version_and_url"
+      ],
+      "pytest_exit_status": 1,
+      "expected_failure_excerpt": "Expected 'calculate_hash' to be called once. Called 0 times.",
+      "restoration_sha256": "a6784ce95d0b77ef51c9e77b0aa4db0fd446b00fd8d1dc86bd6843831538e6c7"
+    },
+    {
+      "id": "current-hash-comparison-removed",
+      "production_file": "audit_plugins.py",
+      "production_function": "classification_for",
+      "mutation": "Treat a stored verdict as current without comparing its artifact hash to the current artifact hash.",
+      "diff_sha256": "05e3f6bd497712ef1a4e46faf2620cbe49e8e8cbd24232b229280c0d86d9f5b4",
+      "node_ids": [
+        "tests/test_catalog_gate.py::test_stale_verdict_hash_fails_open[BLOCK]"
+      ],
+      "pytest_exit_status": 1,
+      "expected_failure_excerpt": "AssertionError: assert 'CURRENT' == 'STALE_HASH'",
+      "restoration_sha256": "d3211df7b792f2d9ec952e3d1f7313a58a641fb64f00383ad12f34edd6ee83d5"
+    },
+    {
+      "id": "scanner-error-before-structural-block",
+      "production_file": "audit_plugins.py",
+      "production_function": "classify_findings",
+      "mutation": "Return AUDIT_ERROR for a required scanner failure before evaluating deterministic BLOCK findings.",
+      "diff_sha256": "e58c53c42a26dd4027a62dfaa62b0be5466f0c176c7c12dba2af2055c8166223",
+      "node_ids": [
+        "tests/test_structural_blocking.py::test_traversal_remains_block_with_required_scanners_unavailable"
+      ],
+      "pytest_exit_status": 1,
+      "expected_failure_excerpt": "AssertionError: assert 'AUDIT_ERROR' == 'BLOCK'",
+      "restoration_sha256": "d3211df7b792f2d9ec952e3d1f7313a58a641fb64f00383ad12f34edd6ee83d5"
+    },
+    {
+      "id": "implicit-legacy-verdict-fallback",
+      "production_file": "audit_plugins.py",
+      "production_function": "load_verdicts",
+      "mutation": "Load .audit-cache/verdicts.json when the tracked verdict store is absent.",
+      "diff_sha256": "9f5ae90b29b9195dcdd9da2528f0bfc71fc6afa392d68379be324750991480ed",
+      "node_ids": [
+        "tests/test_verdict_publication.py::test_missing_tracked_store_is_empty_and_ignores_legacy_cache"
+      ],
+      "pytest_exit_status": 1,
+      "expected_failure_excerpt": "Left contains 1 more item: https://github.com/owner/plugin",
+      "restoration_sha256": "d3211df7b792f2d9ec952e3d1f7313a58a641fb64f00383ad12f34edd6ee83d5"
+    },
+    {
+      "id": "streamed-byte-limit-bypassed",
+      "production_file": "plugin_release_utils.py",
+      "production_function": "bounded_stream_download",
+      "mutation": "Disable the streamed byte-count overflow condition while leaving Content-Length handling intact.",
+      "diff_sha256": "a6d7934bcd8f5e7f64d11b763d643ac2fd2258c66ae3e98df03c50a165f3cf1b",
+      "node_ids": [
+        "tests/test_plugin_release_utils.py::test_bounded_stream_download_enforces_streamed_limit_and_cleans_partial[None]"
+      ],
+      "pytest_exit_status": 1,
+      "expected_failure_excerpt": "Failed: DID NOT RAISE DownloadLimitError",
+      "restoration_sha256": "7dd115dc241daf79c1e9ffecdd17416997e93fa41aa0649247185f395df7658b"
+    },
+    {
+      "id": "workflow-full-audit-branch-removed",
+      "production_file": ".github/workflows/plugin-security-audit.yml",
+      "production_function": "Run isolated audit shard shell case",
+      "mutation": "Route audit mode all through --changed instead of --all.",
+      "diff_sha256": "6177cd3a79110cacce0b9053b667813ec4db54662d2f7650576ef01452ffc554",
+      "node_ids": [
+        "tests/test_workflow_selection.py::test_workflow_executes_selection_shard_and_summary_with_real_base_ref[dispatch-all]"
+      ],
+      "pytest_exit_status": 1,
+      "expected_failure_excerpt": "AssertionError: assert '--all' in shard_args",
+      "restoration_sha256": "0cdc713b7902537095360184c7548224c2698c2256b0ec2d8f1ddb108074cf25"
+    }
+  ],
+  "clean_controls": {
+    "node_ids": [
+      "tests/test_audit_worklist.py::test_worklist_audits_every_eligible_release_in_deterministic_order",
+      "tests/test_plugin_release_utils.py::test_release_eligibility_is_shared_for_stable_testing_and_audit_consumers",
+      "tests/test_audit_worklist.py::test_four_shards_are_disjoint_and_union_identical",
+      "tests/test_audit_worklist.py::test_main_rejects_mismatched_embedded_report_before_resume[repository-https://github.com/attacker/spliced]",
+      "tests/test_audit_worklist.py::test_mixed_release_run_checkpoints_success_and_publishes_error_before_exit_4",
+      "tests/test_generate_json.py::GenerateJsonTests::test_build_version_object_rehashes_same_version_and_url",
+      "tests/test_catalog_gate.py::test_stale_verdict_hash_fails_open[BLOCK]",
+      "tests/test_structural_blocking.py::test_traversal_remains_block_with_required_scanners_unavailable",
+      "tests/test_verdict_publication.py::test_missing_tracked_store_is_empty_and_ignores_legacy_cache",
+      "tests/test_plugin_release_utils.py::test_bounded_stream_download_enforces_streamed_limit_and_cleans_partial[None]",
+      "tests/test_workflow_selection.py::test_workflow_executes_selection_shard_and_summary_with_real_base_ref[dispatch-all]"
+    ],
+    "result": "11 passed in 0.06s",
+    "pytest_exit_status": 0
+  },
+  "restoration": {
+    "all_file_checksums_match_baseline": true,
+    "final_head": "d17b6856c7e3c17e595fcd8c65b9fa3d8f230215",
+    "final_git_status_short": "",
+    "final_worktree_clean": true
+  },
+  "quality_gate": {
+    "command": "XDG_CACHE_HOME=/home/beallio/Dropbox/Scripts/decky-plugins-extended/.round12-cache scripts/orchestration/run-quality-gates",
+    "initial_attempt": "Infrastructure-only failure before Ruff execution because the sandbox could not write /home/beallio/.cache/uv; rerun with a task-scoped writable cache.",
+    "actionlint": "v1.7.12 passed all workflows; invalid YAML, expression, and job dependency mutations were rejected",
+    "ruff_check": "All checks passed",
+    "ruff_format": "65 files already formatted",
+    "pytest": "616 passed, 61 subtests passed in 14.30s",
+    "review_note_integrity": "no deleted review notes",
+    "exit_status": 0
+  },
+  "deferred": [
+    "Live cold/warm corpus capacity verification was not run because review round 12 explicitly excludes it."
+  ]
+}
