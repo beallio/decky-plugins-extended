@@ -5237,6 +5237,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         log.error("Failed to build audit worklist: %s", exc)
         return 1
 
+    if args.shard_count > 1 and repository_errors:
+        for report in repository_errors:
+            detail = "; ".join(report.errors) or "unknown repository error"
+            log.error(
+                "Run-global sharded enumeration failure for %s: %s",
+                report.repository,
+                detail,
+            )
+        return 1
+
     log.info(
         "Auditing shard %d/%d with %d eligible release(s).",
         args.shard_index,

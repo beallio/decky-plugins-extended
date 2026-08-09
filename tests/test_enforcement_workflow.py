@@ -398,21 +398,23 @@ def test_publication_steps_require_executed_publishable_output(
     assert actual == condition
 
 
-def test_aggregate_guard_rejects_a_run_global_error_before_publication(tmp_path):
-    artifacts = tmp_path / "shard-artifacts"
-    for index in range(PRODUCTION_SHARD_COUNT):
-        shard = artifacts / f"shard-{index}"
-        shard.mkdir(parents=True)
-        (shard / "audit-exit.txt").write_text("1\n", encoding="utf-8")
+@pytest.mark.parametrize("workflow", [PULL_REQUEST, SCHEDULED])
+def test_aggregate_guard_rejects_nonzero_shard_run_global_error_before_publication(
+    tmp_path, workflow
+):
+    _write_shard_artifacts(tmp_path)
+    (tmp_path / "shard-artifacts/shard-7/audit-exit.txt").write_text(
+        "1\n", encoding="utf-8"
+    )
 
     result = _bash(
-        _run_block(SCHEDULED, "Aggregate safe shard reports and deltas"),
+        _run_block(workflow, "Aggregate safe shard reports and deltas"),
         tmp_path,
         {},
     )
 
     assert result.returncode == 1
-    assert "no verdicts will be published" in result.stdout
+    assert not (tmp_path / "security-reports").exists()
 
 
 @pytest.mark.parametrize("workflow", [PULL_REQUEST, SCHEDULED])

@@ -365,6 +365,51 @@ def test_empty_repository_selection_delta_write_failure_is_run_global(
     assert not verdict_delta_path.exists()
 
 
+def test_nonzero_shard_pagination_error_is_run_global_without_outputs(
+    monkeypatch, tmp_path
+):
+    repository = "https://github.com/owner/repo"
+    output_dir = tmp_path / "reports"
+    progress_path = tmp_path / "state" / "progress-shard-7.json"
+    verdict_delta_path = tmp_path / "deltas" / "shard-7.json"
+
+    def fail_later_page(*_args):
+        raise ap.plugin_release_utils.ReleasePaginationError(
+            "Failed to fetch releases page 2"
+        )
+
+    monkeypatch.setattr(ap, "load_policy", lambda *_args: ap._default_policy())
+    monkeypatch.setattr(ap, "load_allowlist", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ap, "load_verdicts", lambda *_args: {})
+    monkeypatch.setattr(ap, "read_repo_urls", lambda *_args: [repository])
+    monkeypatch.setattr(ap, "get_repo_metadata", lambda *_args: {})
+    monkeypatch.setattr(ap, "get_releases", fail_later_page)
+
+    code = ap.main(
+        [
+            "--all",
+            "--plugins-file",
+            str(tmp_path / "plugins.txt"),
+            "--shard-count",
+            "14",
+            "--shard-index",
+            "7",
+            "--output-dir",
+            str(output_dir),
+            "--progress-manifest",
+            str(progress_path),
+            "--verdict-delta",
+            str(verdict_delta_path),
+        ]
+    )
+
+    assert code == 1
+    assert not (output_dir / "security-report.json").exists()
+    assert not (output_dir / "security-report.md").exists()
+    assert not verdict_delta_path.exists()
+    assert not progress_path.exists()
+
+
 def test_mixed_release_run_checkpoints_success_and_publishes_error_before_exit_4(
     monkeypatch, tmp_path
 ):
