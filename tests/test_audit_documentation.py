@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -15,6 +16,7 @@ PLAN_PATH = (
 )
 OVERVIEW_PATH = ROOT / "docs/audit-gating-overview.md"
 README_PATH = ROOT / "README.md"
+SECURITY_POLICY_PATH = ROOT / "security-policy.yml"
 
 
 def _read_json(path: Path) -> dict:
@@ -53,57 +55,237 @@ def test_readme_documents_current_identity_and_outcome_contract():
 def test_source_inventory_proof_is_complete_and_self_consistent():
     proof = _read_json(SOURCE_INVENTORY_PROOF_PATH)
     projection = _read_json(CAPACITY_PROJECTION_PATH)
+    release_records = proof["release_records"]
+    tag_commit_records = proof["tag_commit_records"]
+    source_commit_inventory = proof["source_commit_inventory"]
 
     assert proof["reviewed_commit"] == "0dd6649277fd8384934251bb3840e3db92419772"
-    assert proof["policy_checksum"] == proof["policy_identity"]["policy_checksum"]
-    assert proof["policy_identity"]["downloads"]["source_max_bytes"] == 268435456
-    assert proof["policy_identity"]["downloads"]["release_max_bytes"] == 67108864
-    assert proof["policy_identity"]["downloads"]["connect_timeout_seconds"] == 10
-    assert proof["policy_identity"]["downloads"]["read_timeout_seconds"] == 60
-    assert proof["policy_identity"]["downloads"]["chunk_size_bytes"] == 1048576
+    assert (
+        proof["inventory_summary"]["mapped_release_count"]
+        == proof["corpus"]["eligible_release_count"]
+        == len(release_records)
+        == 579
+    )
+    assert proof["corpus"]["unique_commit_count"] == len(source_commit_inventory) == 555
+    assert len(tag_commit_records) == proof["corpus"]["eligible_release_count"] == 579
 
-    assert proof["corpus"]["eligible_release_count"] == 579
-    assert proof["corpus"]["unique_commit_count"] == 555
-    assert proof["timing"]["checkpoint_elapsed_seconds"] > 0
-    assert proof["timing"]["run_elapsed_seconds"] > 0
-    assert proof["timing"]["run_completed_at"] >= proof["timing"]["run_started_at"]
+    policy_checksum = hashlib.sha256(SECURITY_POLICY_PATH.read_bytes()).hexdigest()
+    assert proof["policy_checksum"] == policy_checksum
+    assert proof["policy_identity"]["policy_checksum"] == policy_checksum
+    assert proof["policy_identity"]["policy_path"] == "security-policy.yml"
 
-    assert proof["download_metrics"]["physical_download_call_count"] == 555
-    assert proof["download_metrics"]["physical_download_success_count"] == 555
+    import yaml as _yaml
+
+    policy = _yaml.safe_load(SECURITY_POLICY_PATH.read_text(encoding="utf-8"))
+    assert proof["policy_identity"]["downloads"] == policy["downloads"]
+
+    download_records = [
+        record
+        for record in release_records
+        if record["source_download_status"] == "downloaded"
+    ]
+    cached_records = [
+        record
+        for record in release_records
+        if record["source_download_status"] == "cached"
+    ]
+    assert len(download_records) + len(cached_records) == len(release_records)
+    assert (
+        len(download_records)
+        == proof["download_metrics"]["physical_download_call_count"]
+    )
+    assert (
+        len(download_records)
+        == proof["request_metrics"]["run"]["bounded_download_calls"]
+        == proof["request_metrics"]["cumulative"]["bounded_download_call_count"]
+    )
+    assert (
+        len(cached_records)
+        == proof["inventory_summary"]["alias_count"]
+        == proof["inventory_summary"]["cached_release_count"]
+        == 24
+    )
+
+    source_error_records = [
+        record for record in release_records if record["source_error"]
+    ]
+    assert source_error_records == []
     assert proof["download_metrics"]["physical_download_error_count"] == 0
+    assert proof["download_metrics"]["physical_download_success_count"] == len(
+        download_records
+    )
     assert proof["download_metrics"]["physical_download_limit_violation_count"] == 0
+    assert proof["inventory_summary"]["release_errors"] == []
+    assert proof["inventory_summary"]["repo_errors"] == []
+    assert proof["inventory_summary"]["limit_violation_count"] == 0
+    assert proof["inventory_summary"]["over_limit_records"] == []
+    assert proof["inventory_summary"].get("over_limit_count", 0) == 0
 
-    assert proof["inventory_summary"]["mapped_release_count"] == 579
+    run_metrics = proof["request_metrics"]["run"]
+    cumulative_metrics = proof["request_metrics"]["cumulative"]
+    assert run_metrics["bounded_download_successes"] == len(download_records)
+    assert cumulative_metrics["bounded_download_success_count"] == len(download_records)
+    assert (
+        run_metrics["bounded_download_errors"]
+        == cumulative_metrics["bounded_download_error_count"]
+        == 0
+    )
+    assert (
+        run_metrics["bounded_download_limit_violations"]
+        == cumulative_metrics["bounded_download_limit_violation_count"]
+        == 0
+    )
+
+    source_inventory_request_count = len(source_commit_inventory)
+    source_inventory_source_bytes = sum(
+        record["source_bytes"] for record in source_commit_inventory
+    )
+    assert (
+        source_inventory_request_count
+        == 555
+        == proof["inventory_summary"]["physical_stream_count"]
+    )
+    assert (
+        run_metrics["source_download_request_count"] == source_inventory_request_count
+    )
+    assert (
+        cumulative_metrics["source_download_request_count"]
+        == source_inventory_request_count
+    )
+    assert run_metrics["source_download_error_count"] == 0
+    assert cumulative_metrics["source_download_error_count"] == 0
+    assert (
+        source_inventory_source_bytes
+        == proof["inventory_summary"]["physical_source_bytes"]
+    )
+
+    physical_download_bytes = sum(record["source_bytes"] for record in download_records)
+    mapped_release_bytes = sum(record["source_bytes"] for record in release_records)
     assert (
         proof["inventory_summary"]["physical_source_bytes"]
+        == physical_download_bytes
         == proof["download_metrics"]["physical_download_bytes"]
     )
     assert (
         proof["inventory_summary"]["mapped_release_bytes"]
+        == mapped_release_bytes
         == proof["download_metrics"]["mapped_release_bytes"]
     )
-    assert proof["inventory_summary"]["physical_stream_count"] == 555
-    assert proof["inventory_summary"]["alias_count"] == 24
-    assert proof["inventory_summary"]["limit_violation_count"] == 0
-    assert proof["inventory_summary"].get("over_limit_count", 0) == 0
 
-    assert len(proof["release_records"]) == 579
-    assert len(proof["tag_commit_records"]) == 579
-    assert len(proof["source_commit_inventory"]) == 555
+    source_limit_bytes = proof["policy_identity"]["downloads"]["source_max_bytes"]
+    assert source_limit_bytes == 268435456
+    assert proof["policy_identity"]["downloads"]["release_max_bytes"] == 67108864
+    assert proof["policy_identity"]["downloads"]["connect_timeout_seconds"] == 10
+    assert proof["policy_identity"]["downloads"]["read_timeout_seconds"] == 60
+    assert proof["policy_identity"]["downloads"]["chunk_size_bytes"] == 1048576
+    assert all(
+        record["source_bytes"] <= source_limit_bytes for record in release_records
+    )
+
+    source_bytes_by_release_id = {
+        record["release_id"]: record["source_bytes"] for record in release_records
+    }
+    assert len(source_bytes_by_release_id) == len(release_records)
+    assert (
+        max(source_bytes_by_release_id.values())
+        == proof["inventory_summary"]["maximum_bytes"]
+    )
+    max_size_record = max(release_records, key=lambda record: record["source_bytes"])
+    assert (
+        proof["inventory_summary"]["maximum_bytes_identity"]
+        == f"{max_size_record['repository']}:{max_size_record['release_id']}"
+    )
+
+    repo_commit_from_releases = {
+        (record["repository"], record["source_commit_sha"])
+        for record in release_records
+    }
+    repo_commit_from_inventory = {
+        (record["repository"], record["source_commit_sha"])
+        for record in source_commit_inventory
+    }
+    assert repo_commit_from_releases == repo_commit_from_inventory
+
+    release_by_id = {record["release_id"]: record for record in release_records}
+    tag_commit_by_id = {record["release_id"]: record for record in tag_commit_records}
+    assert set(release_by_id.keys()) == set(tag_commit_by_id.keys())
+    for release_id, release_record in release_by_id.items():
+        tag_commit_record = tag_commit_by_id[release_id]
+        tag, asset_id = release_id.split("@", 1)
+        assert tag
+        assert asset_id
+        assert asset_id.isdigit()
+        assert release_record["asset_id"] == asset_id
+        assert release_record["asset_id"].isdigit()
+        assert release_record["github_release_id"].isdigit()
+        assert (
+            release_record["github_release_id"]
+            == tag_commit_record["github_release_id"]
+        )
+        assert release_record["repository"] == tag_commit_record["repository"]
+        assert (
+            release_record["source_commit_sha"]
+            == tag_commit_record["source_commit_sha"]
+        )
+        assert tag_commit_record["tag_name"]
+        assert tag_commit_record["source_url"]
+
+    assert all(char in "0123456789abcdef" for char in proof["corpus"]["corpus_digest"])
+    assert all(
+        char in "0123456789abcdef" for char in proof["corpus"]["inventory_digest"]
+    )
+    assert len(proof["corpus"]["corpus_digest"]) == 64
+    assert len(proof["corpus"]["inventory_digest"]) == 64
+
+    assert proof["timing"]["checkpoint_elapsed_seconds"] > 0
+    assert proof["timing"]["run_elapsed_seconds"] > 0
+    assert proof["timing"]["run_completed_at"] >= proof["timing"]["run_started_at"]
+    assert (
+        cumulative_metrics["run_elapsed_seconds"]
+        >= proof["timing"]["run_elapsed_seconds"]
+    )
+
+    assert cumulative_metrics["api_request_count"] > 0
+    assert cumulative_metrics["source_download_request_count"] > 0
+    assert (
+        cumulative_metrics["api_request_count"]
+        >= cumulative_metrics["source_download_request_count"]
+    )
+    assert (
+        proof["request_metrics"]["run"]["api_request_count"]
+        == cumulative_metrics["api_request_count"]
+        == 1323
+    )
+    assert (
+        proof["request_metrics"]["run"]["api_error_count"]
+        == cumulative_metrics["api_error_count"]
+        == 0
+    )
+    assert run_metrics["bounded_download_bytes_streamed"] == physical_download_bytes
+    assert (
+        cumulative_metrics["bounded_download_bytes_streamed"] == physical_download_bytes
+    )
+
+    assert proof["result"] == "PASS_COMPLETE_SOURCE_ARCHIVE_SIZE_INVENTORY"
 
     assert proof["request_metrics"]["run"]["bounded_download_calls"] == 555
-    cumulative = proof["request_metrics"]["cumulative"]
-    assert cumulative["api_request_count"] > 0
-    assert cumulative["source_download_request_count"] > 0
+    assert cumulative_metrics["api_request_count"] > 0
+    assert cumulative_metrics["source_download_request_count"] > 0
     assert (
-        cumulative["api_request_count"] >= cumulative["source_download_request_count"]
+        cumulative_metrics["api_request_count"]
+        >= cumulative_metrics["source_download_request_count"]
     )
-    assert cumulative["run_elapsed_seconds"] >= proof["timing"]["run_elapsed_seconds"]
+    assert (
+        cumulative_metrics["run_elapsed_seconds"]
+        >= proof["timing"]["run_elapsed_seconds"]
+    )
 
     source_inventory = projection["open_uncertainties"][
         "complete_source_archive_size_inventory"
     ]
-    assert source_inventory["status"] == "PASS_COMPLETE_SOURCE_ARCHIVE_SIZE_INVENTORY"
+    assert source_inventory["status"] == proof["result"]
+    assert source_inventory["verified"] is True
+    assert source_inventory["acceptance_requirement_open"] is False
     assert str(SOURCE_INVENTORY_PROOF_PATH).endswith(source_inventory["blocker_path"])
 
 
