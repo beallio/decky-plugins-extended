@@ -22,7 +22,6 @@ import generate_json as g
 LIVE_URL = os.environ.get(
     "LIVE_CATALOG_URL", "https://decky-extended-plugins.beallio.com/plugins.json"
 )
-DECKBREW_VERSION_CDN = "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/versions"
 
 
 class UpstreamArtifactIdentityError(RuntimeError):
@@ -92,25 +91,7 @@ def _resolve_upstream_release(version, release_cache, download_policy=None):
                 f"invalid Deckbrew content-addressed SHA-256 {expected_hash!r}",
             )
 
-        artifact = f"{DECKBREW_VERSION_CDN}/{expected_hash}.zip"
-        try:
-            computed_hash = g.calculate_hash(artifact, policy=download_policy)
-        except g.ArtifactDownloadError as exc:
-            raise UpstreamArtifactIdentityError(
-                artifact,
-                error_version,
-                f"could not verify Deckbrew CDN artifact: {exc}",
-            ) from exc
-        if computed_hash != expected_hash:
-            raise UpstreamArtifactIdentityError(
-                artifact,
-                error_version,
-                (
-                    "Deckbrew CDN artifact SHA-256 mismatch: "
-                    f"expected {expected_hash}, computed {computed_hash}"
-                ),
-            )
-        return None, {"name": upstream_version_name, "hash": computed_hash}
+        return None, {"name": upstream_version_name, "hash": expected_hash}
 
     artifact = version.get("artifact")
     try:
@@ -202,13 +183,15 @@ def check_upstream(
                 version, release_cache, download_policy=download_policy
             )
             current_hash = current.get("hash")
-            is_blocked = g.catalog_version_is_blocked(
-                version,
-                verdicts,
-                blockable_rules,
-                release=release,
-                current_artifact_sha256=current_hash,
-            )
+            is_blocked = False
+            if release is not None:
+                is_blocked = g.catalog_version_is_blocked(
+                    version,
+                    verdicts,
+                    blockable_rules,
+                    release=release,
+                    current_artifact_sha256=current_hash,
+                )
             if not is_blocked or enforcement_mode != "enforce":
                 newest = current
                 break

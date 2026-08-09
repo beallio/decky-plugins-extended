@@ -609,13 +609,12 @@ def test_upstream_update_gate_requires_the_audited_hash(monkeypatch):
     ) == [("Plugin", "2.0.0")]
 
 
-def test_artifactless_upstream_version_verifies_content_addressed_cdn(
+def test_artifactless_upstream_version_uses_exact_official_identity_without_download(
     monkeypatch,
 ):
     policy = _download_policy()
     digest = "a" * 64
     upstream = [_plugin([_artifactless_version("v2.0.0", digest)])]
-    observed = []
     monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
     monkeypatch.setattr(
         generate_json,
@@ -623,11 +622,20 @@ def test_artifactless_upstream_version_verifies_content_addressed_cdn(
         lambda *_args: pytest.fail("artifactless Deckbrew rows have no GitHub origin"),
     )
 
-    def calculate_hash(url, policy=None):
-        observed.append((url, policy))
-        return digest
-
-    monkeypatch.setattr(generate_json, "calculate_hash", calculate_hash)
+    monkeypatch.setattr(
+        generate_json,
+        "calculate_hash",
+        lambda *_args, **_kwargs: pytest.fail(
+            "artifactless official identities must not be downloaded"
+        ),
+    )
+    monkeypatch.setattr(
+        generate_json,
+        "catalog_version_is_blocked",
+        lambda *_args, **_kwargs: pytest.fail(
+            "artifactless official identities have no repository verdict identity"
+        ),
+    )
 
     assert (
         check_for_updates.check_upstream(
@@ -638,13 +646,29 @@ def test_artifactless_upstream_version_verifies_content_addressed_cdn(
         )
         == []
     )
-    assert observed == [
-        (
-            "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/versions/"
-            f"{digest}.zip",
-            policy,
+
+
+def test_decky_framegen_size_shaped_artifactless_version_never_downloads(monkeypatch):
+    digest = "14015d5a652c78b2041fd9668685573840530c306e414aabc0d3cebf95be0642"
+    version = _artifactless_version("0.11.15", digest)
+    version["size"] = 75_140_408
+    plugin = _plugin([version])
+    plugin["name"] = "Decky-Framegen"
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: [plugin])
+
+    def oversized_download(*_args, **_kwargs):
+        raise generate_json.ArtifactDownloadError(
+            "declared Content-Length 75140408 exceeds release limit"
         )
-    ]
+
+    monkeypatch.setattr(generate_json, "calculate_hash", oversized_download)
+
+    assert (
+        check_for_updates.check_upstream(
+            {"Decky-Framegen": {("0.11.15", digest)}}, {}, BLOCKABLE_RULES
+        )
+        == []
+    )
 
 
 def test_artifactless_upstream_version_detects_same_version_hash_change(monkeypatch):
@@ -652,7 +676,11 @@ def test_artifactless_upstream_version_detects_same_version_hash_change(monkeypa
     upstream = [_plugin([_artifactless_version("v2.0.0", digest)])]
     monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
     monkeypatch.setattr(
-        generate_json, "calculate_hash", lambda *_args, **_kwargs: digest
+        generate_json,
+        "calculate_hash",
+        lambda *_args, **_kwargs: pytest.fail(
+            "fresh artifactless hashes must not be downloaded"
+        ),
     )
 
     assert check_for_updates.check_upstream(
@@ -666,7 +694,11 @@ def test_artifactless_upstream_version_preserves_verbatim_deckbrew_name(monkeypa
     version["name"] = "v2.0.0"
     monkeypatch.setattr(generate_json, "fetch_json", lambda _url: [_plugin([version])])
     monkeypatch.setattr(
-        generate_json, "calculate_hash", lambda *_args, **_kwargs: digest
+        generate_json,
+        "calculate_hash",
+        lambda *_args, **_kwargs: pytest.fail(
+            "verbatim artifactless identities must not be downloaded"
+        ),
     )
 
     assert (
@@ -711,45 +743,6 @@ def test_artifactless_upstream_version_rejects_invalid_version_name(monkeypatch,
     with pytest.raises(
         check_for_updates.UpstreamArtifactIdentityError,
         match=r"repository=https://plugins\.deckbrew\.xyz/plugins.*version=<unresolved>.*invalid or empty upstream version name",
-    ):
-        check_for_updates.check_upstream({}, {}, BLOCKABLE_RULES)
-
-
-def test_artifactless_upstream_version_rejects_cdn_hash_mismatch(monkeypatch):
-    expected = "a" * 64
-    computed = "b" * 64
-    upstream = [_plugin([_artifactless_version("v2.0.0", expected)])]
-    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
-    monkeypatch.setattr(
-        generate_json, "calculate_hash", lambda *_args, **_kwargs: computed
-    )
-
-    with pytest.raises(
-        check_for_updates.UpstreamArtifactIdentityError,
-        match=(
-            r"repository=https://cdn\.tzatzikiweeb\.moe/.+version=2\.0\.0.*"
-            r"SHA-256 mismatch"
-        ),
-    ):
-        check_for_updates.check_upstream({}, {}, BLOCKABLE_RULES)
-
-
-def test_artifactless_upstream_version_wraps_cdn_download_failure(monkeypatch):
-    digest = "a" * 64
-    upstream = [_plugin([_artifactless_version("v2.0.0", digest)])]
-    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
-
-    def fail_download(*_args, **_kwargs):
-        raise generate_json.ArtifactDownloadError("fixture timeout")
-
-    monkeypatch.setattr(generate_json, "calculate_hash", fail_download)
-
-    with pytest.raises(
-        check_for_updates.UpstreamArtifactIdentityError,
-        match=(
-            r"repository=https://cdn\.tzatzikiweeb\.moe/.+version=2\.0\.0.*"
-            r"could not verify Deckbrew CDN artifact: fixture timeout"
-        ),
     ):
         check_for_updates.check_upstream({}, {}, BLOCKABLE_RULES)
 
@@ -859,7 +852,9 @@ def test_configured_plugin_without_valid_release_does_not_hide_upstream_change(
     monkeypatch.setattr(
         generate_json,
         "calculate_hash",
-        lambda *_args, **_kwargs: upstream_hash,
+        lambda *_args, **_kwargs: pytest.fail(
+            "no-valid-release fallback uses the official identity directly"
+        ),
     )
     live = {"Plugin": {("2.0.0", live_hash)}}
     managed_plugin_names = set()
@@ -1011,7 +1006,11 @@ def test_update_check_main_accepts_production_shaped_artifactless_upstream(
     plugin = _plugin([_artifactless_version("v2.0.0", digest)])
     monkeypatch.setattr(generate_json, "fetch_json", lambda _url: [plugin])
     monkeypatch.setattr(
-        generate_json, "calculate_hash", lambda *_args, **_kwargs: digest
+        generate_json,
+        "calculate_hash",
+        lambda *_args, **_kwargs: pytest.fail(
+            "production-shaped official identities must not be downloaded"
+        ),
     )
     monkeypatch.setattr(generate_json, "load_verdicts", lambda: {})
     monkeypatch.setattr(
@@ -1028,6 +1027,34 @@ def test_update_check_main_accepts_production_shaped_artifactless_upstream(
     output = capsys.readouterr().out
     assert "Live catalog already has every upstream and configured release." in output
     assert "changed=false" in output
+
+
+def test_update_check_main_rejects_malformed_artifactless_identity_without_output(
+    monkeypatch, capsys
+):
+    plugin = _plugin([_artifactless_version("v2.0.0", "A" * 64)])
+
+    def fetch_json(url):
+        return [] if url == check_for_updates.LIVE_URL else [plugin]
+
+    monkeypatch.setattr(generate_json, "fetch_json", fetch_json)
+    monkeypatch.setattr(generate_json, "read_repo_urls", lambda: [])
+    monkeypatch.setattr(generate_json, "load_verdicts", lambda: {})
+    monkeypatch.setattr(
+        generate_json,
+        "load_policy",
+        lambda: {
+            "blockable_rules": sorted(BLOCKABLE_RULES),
+            "enforcement": {"mode": "enforce"},
+        },
+    )
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    assert check_for_updates.main() == 1
+    output = capsys.readouterr().out
+    assert "Fatal artifact identity failure" in output
+    assert "invalid Deckbrew content-addressed SHA-256" in output
+    assert "changed=" not in output
 
 
 @pytest.mark.parametrize("enforcement_mode", ["enforce", "report-only"])
