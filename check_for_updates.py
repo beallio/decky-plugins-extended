@@ -22,10 +22,11 @@ import generate_json as g
 LIVE_URL = os.environ.get(
     "LIVE_CATALOG_URL", "https://decky-extended-plugins.beallio.com/plugins.json"
 )
+DECKBREW_VERSION_CDN = "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/versions"
 
 
 class UpstreamArtifactIdentityError(RuntimeError):
-    """The current GitHub artifact behind an upstream version is unresolved."""
+    """The current artifact behind an upstream version is unresolved."""
 
     def __init__(self, repository, normalized_version, reason):
         self.repository = repository
@@ -37,10 +38,23 @@ class UpstreamArtifactIdentityError(RuntimeError):
 
 
 def version_index(plugins):
-    return {
-        p["name"]: {(v.get("name"), v.get("hash")) for v in p.get("versions") or []}
-        for p in plugins
-    }
+    indexed = {}
+    for plugin in plugins:
+        name = plugin["name"]
+        indexed.setdefault(name.casefold(), set()).update(
+            (version.get("name"), version.get("hash"))
+            for version in plugin.get("versions") or []
+        )
+    return indexed
+
+
+def _casefold_live_index(live):
+    indexed = {}
+    for name, versions in live.items():
+        if not isinstance(name, str):
+            continue
+        indexed.setdefault(name.casefold(), set()).update(versions)
+    return indexed
 
 
 def report(missing, label):
@@ -54,16 +68,58 @@ def report(missing, label):
 
 
 def _resolve_upstream_release(version, release_cache, download_policy=None):
-    """Resolve and hash the exact current release behind an upstream version."""
-    artifact = version.get("artifact", "")
-    normalized_version = g.normalize_version(str(version.get("name") or ""))
+    """Resolve and hash the exact current artifact behind an upstream version."""
+    upstream_version_name = version.get("name")
+    if not isinstance(upstream_version_name, str) or not upstream_version_name.strip():
+        raise UpstreamArtifactIdentityError(
+            g.PLUGINS_URL,
+            "<unresolved>",
+            "invalid or empty upstream version name",
+        )
+    normalized_version = g.normalize_version(upstream_version_name)
+    error_version = normalized_version or "<unresolved>"
+
+    if "artifact" not in version:
+        expected_hash = version.get("hash")
+        if (
+            not isinstance(expected_hash, str)
+            or g.normalize_github_sha256_digest(f"sha256:{expected_hash}")
+            != expected_hash
+        ):
+            raise UpstreamArtifactIdentityError(
+                g.PLUGINS_URL,
+                error_version,
+                f"invalid Deckbrew content-addressed SHA-256 {expected_hash!r}",
+            )
+
+        artifact = f"{DECKBREW_VERSION_CDN}/{expected_hash}.zip"
+        try:
+            computed_hash = g.calculate_hash(artifact, policy=download_policy)
+        except g.ArtifactDownloadError as exc:
+            raise UpstreamArtifactIdentityError(
+                artifact,
+                error_version,
+                f"could not verify Deckbrew CDN artifact: {exc}",
+            ) from exc
+        if computed_hash != expected_hash:
+            raise UpstreamArtifactIdentityError(
+                artifact,
+                error_version,
+                (
+                    "Deckbrew CDN artifact SHA-256 mismatch: "
+                    f"expected {expected_hash}, computed {computed_hash}"
+                ),
+            )
+        return None, {"name": upstream_version_name, "hash": computed_hash}
+
+    artifact = version.get("artifact")
     try:
         repository = g.canonicalize_github_release_asset_repository_url(artifact)
         owner, repo = g.parse_github_repository_url(repository)
     except ValueError as exc:
         raise UpstreamArtifactIdentityError(
             "<unresolved>",
-            normalized_version,
+            error_version,
             f"invalid upstream GitHub release asset URL {artifact!r}",
         ) from exc
     if repository not in release_cache:
@@ -123,10 +179,23 @@ def check_upstream(
     *,
     download_policy=None,
     enforcement_mode="enforce",
+    ignored_plugin_names=None,
 ):
     missing = []
     release_cache = {}
+    live = _casefold_live_index(live)
+    ignored_plugin_names = {
+        name.casefold()
+        for name in (ignored_plugin_names or set())
+        if isinstance(name, str) and name
+    }
     for plugin in g.fetch_json(g.PLUGINS_URL):
+        plugin_name = plugin.get("name")
+        if (
+            isinstance(plugin_name, str)
+            and plugin_name.casefold() in ignored_plugin_names
+        ):
+            continue
         newest = None
         for version in plugin.get("versions") or []:
             release, current = _resolve_upstream_release(
@@ -146,8 +215,9 @@ def check_upstream(
         if newest is None:
             continue
         identity = (newest.get("name"), newest.get("hash"))
-        if identity not in live.get(plugin["name"], set()):
-            missing.append((plugin["name"], newest.get("name")))
+        plugin_name_key = plugin_name.casefold() if isinstance(plugin_name, str) else ""
+        if identity not in live.get(plugin_name_key, set()):
+            missing.append((plugin_name, newest.get("name")))
     return missing
 
 
@@ -158,8 +228,10 @@ def check_custom_repos(
     *,
     download_policy=None,
     enforcement_mode="enforce",
+    managed_plugin_names=None,
 ):
     missing = []
+    live = _casefold_live_index(live)
     for url in g.read_repo_urls():
         try:
             url = g.canonicalize_github_repository_url(url)
@@ -169,13 +241,17 @@ def check_custom_repos(
                 g.get_plugin_json(owner, repo, branch),
                 g.get_package_json(owner, repo, branch),
             )
+            if not name:
+                raise ValueError(f"No plugin name resolved for {url}")
             versions = []
+            valid_version_count = 0
             for release in g.get_releases(owner, repo):
                 if not g.is_release_eligible(release, allow_prerelease=False):
                     continue
                 version = g.build_version_object(release, policy=download_policy)
                 if version is None:
                     continue
+                valid_version_count += 1
                 verdict = g.classification_for(
                     url,
                     release,
@@ -189,6 +265,8 @@ def check_custom_repos(
                 ):
                     versions.append(version)
             g.sort_versions(versions)
+            if managed_plugin_names is not None and valid_version_count:
+                managed_plugin_names.add(name)
         except g.ArtifactDownloadError:
             raise
         except Exception as e:
@@ -198,7 +276,7 @@ def check_custom_repos(
             continue
 
         if versions and (versions[0]["name"], versions[0]["hash"]) not in live.get(
-            name, set()
+            name.casefold(), set()
         ):
             missing.append((name, versions[0]["name"]))
     return missing
@@ -216,19 +294,7 @@ def main():
     except Exception as exc:
         raise RuntimeError(f"Could not load catalog security policy: {exc}") from exc
 
-    try:
-        upstream = check_upstream(
-            live,
-            verdicts,
-            blockable_rules,
-            download_policy=policy,
-            enforcement_mode=enforcement_mode,
-        )
-    except (g.ArtifactDownloadError, UpstreamArtifactIdentityError) as exc:
-        print(f"Fatal artifact identity failure: {exc}")
-        return 1
-    report(upstream, "Upstream versions missing")
-
+    managed_plugin_names = set()
     try:
         custom = check_custom_repos(
             live,
@@ -236,11 +302,26 @@ def main():
             blockable_rules,
             download_policy=policy,
             enforcement_mode=enforcement_mode,
+            managed_plugin_names=managed_plugin_names,
         )
     except g.ArtifactDownloadError as exc:
         print(f"Fatal artifact identity failure: {exc}")
         return 1
     report(custom, "Custom repository releases missing")
+
+    try:
+        upstream = check_upstream(
+            live,
+            verdicts,
+            blockable_rules,
+            download_policy=policy,
+            enforcement_mode=enforcement_mode,
+            ignored_plugin_names=managed_plugin_names,
+        )
+    except (g.ArtifactDownloadError, UpstreamArtifactIdentityError) as exc:
+        print(f"Fatal artifact identity failure: {exc}")
+        return 1
+    report(upstream, "Upstream versions missing")
 
     changed = bool(upstream or custom)
     if not changed:
