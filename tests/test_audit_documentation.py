@@ -2,6 +2,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import plugin_release_utils as pru
+
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_INVENTORY_PROOF_PATH = (
     ROOT
@@ -21,6 +23,14 @@ SECURITY_POLICY_PATH = ROOT / "security-policy.yml"
 
 def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _canonical_digest(value) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def test_readme_documents_authoritative_local_and_ci_gates():
@@ -171,6 +181,33 @@ def test_source_inventory_proof_is_complete_and_self_consistent():
         == mapped_release_bytes
         == proof["download_metrics"]["mapped_release_bytes"]
     )
+    assert (
+        proof["request_metrics"]["cumulative"]["mapped_release_bytes"]
+        == proof["inventory_summary"]["mapped_release_bytes"]
+        == mapped_release_bytes
+    )
+
+    canonical_corpus_rows = [
+        {
+            "asset_id": record["asset_id"],
+            "github_release_id": record["github_release_id"],
+            "release_id": record["release_id"],
+            "repository": record["repository"],
+        }
+        for record in sorted(
+            release_records, key=lambda item: (item["repository"], item["release_id"])
+        )
+    ]
+    canonical_inventory_rows = [
+        dict(record)
+        for record in sorted(
+            release_records, key=lambda item: (item["repository"], item["release_id"])
+        )
+    ]
+    assert proof["corpus"]["corpus_digest"] == _canonical_digest(canonical_corpus_rows)
+    assert proof["corpus"]["inventory_digest"] == _canonical_digest(
+        canonical_inventory_rows
+    )
 
     source_limit_bytes = proof["policy_identity"]["downloads"]["source_max_bytes"]
     assert source_limit_bytes == 268435456
@@ -205,6 +242,11 @@ def test_source_inventory_proof_is_complete_and_self_consistent():
         for record in source_commit_inventory
     }
     assert repo_commit_from_releases == repo_commit_from_inventory
+    source_inventory_by_key = {
+        (record["repository"], record["source_commit_sha"]): record
+        for record in source_commit_inventory
+    }
+    assert len(source_inventory_by_key) == len(source_commit_inventory)
 
     release_by_id = {record["release_id"]: record for record in release_records}
     tag_commit_by_id = {record["release_id"]: record for record in tag_commit_records}
@@ -223,12 +265,27 @@ def test_source_inventory_proof_is_complete_and_self_consistent():
             == tag_commit_record["github_release_id"]
         )
         assert release_record["repository"] == tag_commit_record["repository"]
+        assert tag == tag_commit_record["tag_name"]
+        repository_key = pru.canonical_repository_key(tag_commit_record["repository"])
+        expected_source_url = (
+            f"https://api.github.com/repos/{repository_key}/tarball/"
+            f"{tag_commit_record['source_commit_sha']}"
+        )
+        assert tag_commit_record["source_url"] == expected_source_url
         assert (
             release_record["source_commit_sha"]
             == tag_commit_record["source_commit_sha"]
         )
-        assert tag_commit_record["tag_name"]
-        assert tag_commit_record["source_url"]
+        source_inventory_record = source_inventory_by_key[
+            (release_record["repository"], release_record["source_commit_sha"])
+        ]
+        assert source_inventory_record["source_bytes"] == release_record["source_bytes"]
+        assert (
+            source_inventory_record["source_sha256"] == release_record["source_sha256"]
+        )
+        assert source_inventory_record["source_error"] == release_record["source_error"]
+        assert source_inventory_record["source_download_status"] == "completed"
+        assert release_record["source_download_status"] in {"cached", "downloaded"}
 
     assert all(char in "0123456789abcdef" for char in proof["corpus"]["corpus_digest"])
     assert all(
