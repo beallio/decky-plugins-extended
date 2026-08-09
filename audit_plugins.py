@@ -3215,20 +3215,13 @@ def save_cached_report(
         log.debug("Cache save failed: %s", exc)
 
 
-def load_verdicts(cache_dir: str = CACHE_DIR) -> dict[str, dict[str, dict[str, Any]]]:
-    """Load and fully validate the tracked verdict snapshot.
-
-    A missing tracked file is a valid empty snapshot. A present file is an
-    integrity boundary: malformed or unreadable state raises and legacy cache
-    state is never consulted.
-    """
-    del cache_dir  # Legacy cache verdicts are intentionally not trusted.
-    path = VERDICTS_FILE
+def _read_verdict_store(path: str) -> Any:
+    """Read a tracked verdict store without weakening its integrity boundary."""
     if not os.path.exists(path):
         return {}
     try:
         with open(path, encoding="utf-8") as f:
-            verdicts = json.load(f)
+            return json.load(f)
     except json.JSONDecodeError as exc:
         raise ValueError(
             f"Verdict store {path} must contain valid JSON: {exc}"
@@ -3236,11 +3229,67 @@ def load_verdicts(cache_dir: str = CACHE_DIR) -> dict[str, dict[str, dict[str, A
     except OSError as exc:
         raise ValueError(f"Verdict store {path} could not be read: {exc}") from exc
 
+
+def _validate_verdict_repository_records(
+    raw_repository: str, release_records: Any
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(release_records, dict):
+        raise ValueError(f"verdict repository {raw_repository!r} must map to an object")
+
+    canonical_records: dict[str, dict[str, Any]] = {}
+    release_key_pattern = re.compile(r"^.+@[0-9]+$")
+    for release_key, record in release_records.items():
+        if not isinstance(release_key, str) or not release_key_pattern.fullmatch(
+            release_key
+        ):
+            raise ValueError(
+                f"invalid verdict release key {release_key!r} in {raw_repository!r}"
+            )
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"verdict release record {raw_repository!r}/{release_key!r} must be an object"
+            )
+        classification = record.get("classification")
+        if (
+            not isinstance(classification, str)
+            or classification not in CLASSIFICATION_ORDER
+        ):
+            raise ValueError(
+                f"invalid verdict classification for {raw_repository!r}/{release_key!r}"
+            )
+        for field_name in (
+            "blocking_rule_ids",
+            "review_rule_ids",
+            "warning_rule_ids",
+        ):
+            rule_ids = record.get(field_name, [])
+            if not isinstance(rule_ids, list) or not all(
+                isinstance(rule_id, str) for rule_id in rule_ids
+            ):
+                raise ValueError(
+                    f"verdict {field_name} for {raw_repository!r}/{release_key!r} "
+                    "must be a list of strings"
+                )
+        artifact_sha256 = record.get("artifact_sha256")
+        if artifact_sha256 is not None and (
+            not isinstance(artifact_sha256, str)
+            or not _CANONICAL_SHA256.fullmatch(artifact_sha256)
+        ):
+            raise ValueError(
+                f"invalid verdict artifact_sha256 for {raw_repository!r}/{release_key!r}"
+            )
+        canonical_records[release_key] = record
+    return canonical_records
+
+
+def _validate_verdict_store(
+    verdicts: Any,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Validate one canonical tracked snapshot, rejecting repository aliases."""
     if not isinstance(verdicts, dict):
         raise ValueError("verdict store root must be a JSON object")
 
     validated: dict[str, dict[str, dict[str, Any]]] = {}
-    release_key_pattern = re.compile(r"^.+@[0-9]+$")
     for raw_repository, release_records in verdicts.items():
         if not isinstance(raw_repository, str):
             raise ValueError("verdict repository keys must be strings")
@@ -3256,55 +3305,21 @@ def load_verdicts(cache_dir: str = CACHE_DIR) -> dict[str, dict[str, dict[str, A
             raise ValueError(
                 f"verdict repository mappings collide after normalization: {repository}"
             )
-        if not isinstance(release_records, dict):
-            raise ValueError(
-                f"verdict repository {raw_repository!r} must map to an object"
-            )
-
-        canonical_records: dict[str, dict[str, Any]] = {}
-        for release_key, record in release_records.items():
-            if not isinstance(release_key, str) or not release_key_pattern.fullmatch(
-                release_key
-            ):
-                raise ValueError(
-                    f"invalid verdict release key {release_key!r} in {raw_repository!r}"
-                )
-            if not isinstance(record, dict):
-                raise ValueError(
-                    f"verdict release record {raw_repository!r}/{release_key!r} must be an object"
-                )
-            classification = record.get("classification")
-            if (
-                not isinstance(classification, str)
-                or classification not in CLASSIFICATION_ORDER
-            ):
-                raise ValueError(
-                    f"invalid verdict classification for {raw_repository!r}/{release_key!r}"
-                )
-            for field_name in (
-                "blocking_rule_ids",
-                "review_rule_ids",
-                "warning_rule_ids",
-            ):
-                rule_ids = record.get(field_name, [])
-                if not isinstance(rule_ids, list) or not all(
-                    isinstance(rule_id, str) for rule_id in rule_ids
-                ):
-                    raise ValueError(
-                        f"verdict {field_name} for {raw_repository!r}/{release_key!r} "
-                        "must be a list of strings"
-                    )
-            artifact_sha256 = record.get("artifact_sha256")
-            if artifact_sha256 is not None and (
-                not isinstance(artifact_sha256, str)
-                or not _CANONICAL_SHA256.fullmatch(artifact_sha256)
-            ):
-                raise ValueError(
-                    f"invalid verdict artifact_sha256 for {raw_repository!r}/{release_key!r}"
-                )
-            canonical_records[release_key] = record
-        validated[repository] = canonical_records
+        validated[repository] = _validate_verdict_repository_records(
+            raw_repository, release_records
+        )
     return validated
+
+
+def load_verdicts(cache_dir: str = CACHE_DIR) -> dict[str, dict[str, dict[str, Any]]]:
+    """Load and fully validate the tracked verdict snapshot.
+
+    A missing tracked file is a valid empty snapshot. A present file is an
+    integrity boundary: malformed or unreadable state raises and legacy cache
+    state is never consulted.
+    """
+    del cache_dir  # Legacy cache verdicts are intentionally not trusted.
+    return _validate_verdict_store(_read_verdict_store(VERDICTS_FILE))
 
 
 def _write_verdicts_atomic(
@@ -3328,6 +3343,88 @@ def _write_verdicts_atomic(
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _merge_tracked_verdict_aliases(
+    verdicts: Any,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Canonicalize tracked aliases with deterministic, fail-closed precedence."""
+    if not isinstance(verdicts, dict):
+        raise ValueError("verdict store root must be a JSON object")
+
+    grouped: dict[str, list[tuple[str, dict[str, dict[str, Any]]]]] = {}
+    for raw_repository, release_records in verdicts.items():
+        if not isinstance(raw_repository, str):
+            raise ValueError("verdict repository keys must be strings")
+        try:
+            repository = plugin_release_utils.canonicalize_github_repository_url(
+                raw_repository
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"verdict repository key is not canonical GitHub state: {raw_repository!r}"
+            ) from exc
+        grouped.setdefault(repository, []).append(
+            (
+                raw_repository,
+                _validate_verdict_repository_records(raw_repository, release_records),
+            )
+        )
+
+    merged: dict[str, dict[str, dict[str, Any]]] = {}
+    for repository, aliases in sorted(grouped.items()):
+        release_ids = sorted(
+            {
+                release_id
+                for _, release_records in aliases
+                for release_id in release_records
+            }
+        )
+        merged_records: dict[str, dict[str, Any]] = {}
+        for release_id in release_ids:
+            candidates = [
+                (raw_repository, release_records[release_id])
+                for raw_repository, release_records in aliases
+                if release_id in release_records
+            ]
+            canonical_record = next(
+                (
+                    record
+                    for raw_repository, record in candidates
+                    if raw_repository == repository
+                ),
+                None,
+            )
+            if canonical_record is not None:
+                merged_records[release_id] = canonical_record
+                continue
+
+            candidate_records = [record for _, record in candidates]
+            first_record = candidate_records[0]
+            if any(record != first_record for record in candidate_records[1:]):
+                raise ValueError(
+                    "ambiguous tracked verdict aliases for "
+                    f"{repository}/{release_id}: no exact canonical key wins"
+                )
+            merged_records[release_id] = first_record
+        merged[repository] = merged_records
+    return merged
+
+
+def apply_verdict_delta(verdict_store: str, verdict_delta: str) -> None:
+    """Validate, canonically merge, and atomically apply one verdict delta."""
+    tracked = _merge_tracked_verdict_aliases(_read_verdict_store(verdict_store))
+    delta = aggregate_verdict_deltas([verdict_delta])
+
+    merged = {
+        repository: dict(release_records)
+        for repository, release_records in tracked.items()
+    }
+    for repository, release_records in delta.items():
+        merged.setdefault(repository, {}).update(release_records)
+
+    validated = _validate_verdict_store(merged)
+    _write_verdicts_atomic(validated, destination=verdict_store)
 
 
 def _blocking_rule_ids(report: AuditReport) -> list[str]:
@@ -5243,6 +5340,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         metavar="REPORT",
         help="Aggregate isolated shard report JSON files",
     )
+    mode_group.add_argument(
+        "--merge-verdict-delta",
+        metavar="DELTA",
+        help="Validate and atomically merge one verdict delta into the tracked store",
+    )
     parser.add_argument(
         "--aggregate-verdict-deltas",
         nargs="*",
@@ -5264,6 +5366,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--verdict-delta",
         help="Isolated verdict delta path (defaults under --output-dir)",
+    )
+    parser.add_argument(
+        "--verdict-store",
+        default=VERDICTS_FILE,
+        help=f"Tracked verdict store path (default: {VERDICTS_FILE})",
     )
     parser.add_argument(
         "--plugins-file",
@@ -5317,6 +5424,14 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
+
+    if args.merge_verdict_delta:
+        try:
+            apply_verdict_delta(args.verdict_store, args.merge_verdict_delta)
+        except (OSError, ValueError) as exc:
+            log.error("Verdict delta merge failed: %s", exc)
+            return 1
+        return 0
 
     # Load configuration
     try:

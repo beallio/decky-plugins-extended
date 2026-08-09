@@ -2,6 +2,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +27,23 @@ def _verdict(
                 "audited_at": audited_at,
             }
         }
+    }
+
+
+def _delta_record(
+    *,
+    classification="PASS",
+    artifact_sha256="a" * 64,
+    audited_at="2026-08-03T00:00:00Z",
+):
+    return {
+        "classification": classification,
+        "blocking_rule_ids": [],
+        "review_rule_ids": [],
+        "warning_rule_ids": [],
+        "artifact_sha256": artifact_sha256,
+        "audit_context_hash": "context",
+        "audited_at": audited_at,
     }
 
 
@@ -176,6 +194,157 @@ def test_legacy_record_without_artifact_sha_is_valid(monkeypatch, tmp_path):
     monkeypatch.setattr(ap, "VERDICTS_FILE", str(tracked))
 
     assert ap.load_verdicts(str(tmp_path / ".audit-cache")) == legacy
+
+
+def test_normal_verdict_load_still_rejects_repository_aliases(monkeypatch, tmp_path):
+    tracked = tmp_path / "security-verdicts.json"
+    tracked.write_text(
+        json.dumps(
+            {
+                REPOSITORY: {"v1.0.0@1": _delta_record()},
+                "https://github.com/OWNER/PLUGIN": {"v2.0.0@2": _delta_record()},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ap, "VERDICTS_FILE", str(tracked))
+
+    with pytest.raises(ValueError, match="collide after normalization"):
+        ap.load_verdicts()
+
+
+def test_tracked_verdict_file_has_only_canonical_repository_keys():
+    tracked = Path(ap.__file__).with_name("security-verdicts.json")
+    payload = json.loads(tracked.read_text(encoding="utf-8"))
+
+    assert list(payload) == sorted(payload)
+    assert all(
+        repository
+        == ap.plugin_release_utils.canonicalize_github_repository_url(repository)
+        for repository in payload
+    )
+
+
+def test_apply_verdict_delta_unions_aliases_and_applies_delta_last(tmp_path):
+    tracked = tmp_path / "security-verdicts.json"
+    delta = tmp_path / "security-verdict-delta.json"
+    canonical_record = _delta_record(classification="PASS", artifact_sha256="a" * 64)
+    losing_alias_record = _delta_record(
+        classification="BLOCK", artifact_sha256="b" * 64
+    )
+    alias_only_record = _delta_record(
+        classification="PASS_WITH_WARNINGS", artifact_sha256="c" * 64
+    )
+    delta_record = _delta_record(
+        classification="MANUAL_REVIEW", artifact_sha256="d" * 64
+    )
+    tracked.write_text(
+        json.dumps(
+            {
+                REPOSITORY: {
+                    "v1.0.0@1": canonical_record,
+                    "v3.0.0@3": canonical_record,
+                },
+                "https://github.com/OWNER/PLUGIN": {
+                    "v1.0.0@1": losing_alias_record,
+                    "v2.0.0@2": alias_only_record,
+                    "v3.0.0@3": losing_alias_record,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    delta.write_text(
+        json.dumps({"https://github.com/Owner/Plugin/": {"v1.0.0@1": delta_record}}),
+        encoding="utf-8",
+    )
+
+    ap.apply_verdict_delta(str(tracked), str(delta))
+
+    persisted = json.loads(tracked.read_text(encoding="utf-8"))
+    assert persisted == {
+        REPOSITORY: {
+            "v1.0.0@1": delta_record,
+            "v2.0.0@2": alias_only_record,
+            "v3.0.0@3": canonical_record,
+        }
+    }
+    assert tracked.read_bytes().endswith(b"\n")
+
+
+def test_apply_verdict_delta_rejects_ambiguous_aliases_without_replacing_store(
+    tmp_path,
+):
+    tracked = tmp_path / "security-verdicts.json"
+    delta = tmp_path / "security-verdict-delta.json"
+    tracked.write_text(
+        json.dumps(
+            {
+                "https://github.com/OWNER/PLUGIN": {
+                    "v1.0.0@1": _delta_record(artifact_sha256="a" * 64)
+                },
+                "https://github.com/Owner/Plugin/": {
+                    "v1.0.0@1": _delta_record(artifact_sha256="b" * 64)
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    delta.write_text("{}\n", encoding="utf-8")
+    original = tracked.read_bytes()
+
+    with pytest.raises(ValueError, match="ambiguous tracked verdict aliases"):
+        ap.apply_verdict_delta(str(tracked), str(delta))
+
+    assert tracked.read_bytes() == original
+
+
+def test_merge_verdict_delta_cli_rejects_invalid_delta_without_replacing_store(
+    tmp_path,
+):
+    tracked = tmp_path / "security-verdicts.json"
+    delta = tmp_path / "security-verdict-delta.json"
+    tracked.write_text(json.dumps(_verdict()) + "\n", encoding="utf-8")
+    delta.write_text(json.dumps({REPOSITORY: {"v2.0.0@2": []}}), encoding="utf-8")
+    original = tracked.read_bytes()
+
+    result = ap.main(
+        [
+            "--merge-verdict-delta",
+            str(delta),
+            "--verdict-store",
+            str(tracked),
+        ]
+    )
+
+    assert result == 1
+    assert tracked.read_bytes() == original
+
+
+def test_merge_verdict_delta_cli_skips_unrelated_audit_configuration(tmp_path):
+    tracked = tmp_path / "security-verdicts.json"
+    delta = tmp_path / "security-verdict-delta.json"
+    tracked.write_text("{}\n", encoding="utf-8")
+    delta.write_text(
+        json.dumps({REPOSITORY: {"v1.0.0@1": _delta_record()}}) + "\n",
+        encoding="utf-8",
+    )
+
+    result = ap.main(
+        [
+            "--merge-verdict-delta",
+            str(delta),
+            "--verdict-store",
+            str(tracked),
+            "--policy",
+            str(tmp_path / "missing-policy.yml"),
+        ]
+    )
+
+    assert result == 0
+    assert json.loads(tracked.read_text(encoding="utf-8")) == {
+        REPOSITORY: {"v1.0.0@1": _delta_record()}
+    }
 
 
 def test_verdict_records_sorted_deduplicated_rationale_rule_ids(monkeypatch, tmp_path):
