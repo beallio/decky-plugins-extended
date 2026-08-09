@@ -4133,6 +4133,8 @@ def _validate_aggregated_report_record(
             )
         if raw_report["identity_status"] not in _IDENTITY_STATUS_VALUES:
             raise ValueError(f"Invalid identity status in {report_path}")
+        if raw_report["identity_status"] != "CURRENT":
+            raise ValueError(f"Non-current completed report in {report_path}")
         if not _CANONICAL_SHA256.fullmatch(raw_report["artifact_sha256"]):
             raise ValueError(f"Invalid completed artifact SHA-256 in {report_path}")
         expected_release_id = f"{raw_report['release']}@{raw_report['asset_id']}"
@@ -4161,6 +4163,12 @@ def _validate_aggregated_verdict_delta_record(
     if not isinstance(record, dict):
         raise ValueError(
             f"Invalid verdict delta record in {delta_path}: {repository}/{release_id}"
+        )
+    extra_fields = set(record.keys()) - set(_AGGREGATE_VERDICT_DELTA_REQUIRED_FIELDS)
+    if extra_fields:
+        raise ValueError(
+            f"Unexpected verdict delta field(s) in {delta_path}: "
+            f"{', '.join(sorted(extra_fields))}"
         )
     missing = [
         field
@@ -4236,11 +4244,25 @@ def _normalize_verdict_delta(
             normalized_releases[release_id] = {
                 key: (sorted(value) if isinstance(value, list) else value)
                 for key, value in sorted(record.items(), key=lambda item: item[0])
-                if key in _AGGREGATE_VERDICT_DELTA_REQUIRED_FIELDS
             }
         normalized[canonical] = normalized_releases
 
     return normalized
+
+
+def _load_aggregate_shard_reports(report_path: str) -> list[AuditReport]:
+    with open(report_path, encoding="utf-8") as report_file:
+        payload = json.load(report_file)
+    if not isinstance(payload, dict) or not isinstance(payload.get("reports"), list):
+        raise ValueError(f"Invalid shard report: {report_path}")
+
+    shard_reports: list[AuditReport] = []
+    for raw_report in payload["reports"]:
+        normalized_report = _validate_aggregated_report_record(raw_report, report_path)
+        report = _dict_to_report(normalized_report)
+        report.repository = normalized_report["repository"]
+        shard_reports.append(report)
+    return shard_reports
 
 
 def _resumable_progress_report(
@@ -4303,18 +4325,7 @@ def aggregate_audit_reports(report_paths: list[str]) -> list[AuditReport]:
     reports: list[AuditReport] = []
     seen: set[tuple[str, str, str]] = set()
     for report_path in report_paths:
-        with open(report_path, encoding="utf-8") as report_file:
-            payload = json.load(report_file)
-        if not isinstance(payload, dict) or not isinstance(
-            payload.get("reports"), list
-        ):
-            raise ValueError(f"Invalid shard report: {report_path}")
-        for raw_report in payload["reports"]:
-            normalized_report = _validate_aggregated_report_record(
-                raw_report, report_path
-            )
-            report = _dict_to_report(normalized_report)
-            report.repository = normalized_report["repository"]
+        for report in _load_aggregate_shard_reports(report_path):
             key = (report.repository, report.github_release_id, report.asset_id)
             if key in seen:
                 raise ValueError(f"duplicate release identity in shard reports: {key}")
@@ -5334,16 +5345,26 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.aggregate_reports:
         try:
-            reports = aggregate_audit_reports(args.aggregate_reports)
-            expected_delta = _verdict_delta_from_reports(reports)
-            if args.aggregate_verdict_deltas:
-                delta = aggregate_verdict_deltas(args.aggregate_verdict_deltas)
-                if _normalize_verdict_delta(expected_delta) != _normalize_verdict_delta(
-                    delta
-                ):
+            aggregate_delta_paths = args.aggregate_verdict_deltas or []
+            if len(args.aggregate_reports) != len(aggregate_delta_paths):
+                raise ValueError(
+                    "Each aggregated shard report requires a corresponding verdict delta shard artifact"
+                )
+            for report_path, delta_path in zip(
+                args.aggregate_reports, aggregate_delta_paths
+            ):
+                shard_reports = _load_aggregate_shard_reports(report_path)
+                expected_delta = _normalize_verdict_delta(
+                    _verdict_delta_from_reports(shard_reports)
+                )
+                supplied_delta = _normalize_verdict_delta(
+                    aggregate_verdict_deltas([delta_path])
+                )
+                if expected_delta != supplied_delta:
                     raise ValueError("Aggregated report/delta mismatch")
-            else:
-                delta = {}
+
+            reports = aggregate_audit_reports(args.aggregate_reports)
+            delta = aggregate_verdict_deltas(aggregate_delta_paths)
             write_reports(reports, args.output_dir, verdicts=verdict_snapshot)
             destination = args.verdict_delta or os.path.join(
                 args.output_dir, "security-verdict-delta.json"
