@@ -512,6 +512,25 @@
         "PRIVILEGE_SYSTEMCTL",
         "TRIVY_CVE_2026_31808"
       ]
+    },
+    "v3.3.1-beallio.12@506900504": {
+      "artifact_sha256": "3f8272712a9c7298565077e527865770c3e0056a5b0ba40b6590603b7d787474",
+      "audit_context_hash": "8b67fcb6c19c44e35b260fd9e039962f",
+      "audited_at": "2026-08-09T01:18:57.869313Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "EXEC_EXEC",
+        "PRIVILEGE_SYSTEMCTL_SHELL"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_RUN",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL",
+        "TRIVY_CVE_2026_31808"
+      ]
     }
   },
   "https://github.com/chillibeaver/DeckSMB": {
@@ -834,6 +853,47 @@
         "EXEC_OS_SYSTEM",
         "EXEC_SHELL_TRUE",
         "MODIFIED_SOURCE_FILE",
+        "NATIVE_BINARY",
+        "NETWORK_DISABLED_TLS",
+        "OBFUSCATION_LARGE_BASE64",
+        "OBFUSCATION_MARSHAL",
+        "OBFUSCATION_PICKLE",
+        "PERSIST_LD_PRELOAD",
+        "PERSIST_PROFILE_MOD",
+        "PRIVILEGE_PKEXEC",
+        "PRIVILEGE_STEAMOS_READONLY",
+        "SECRET_GENERIC_API_KEY",
+        "SECRET_PRIVATE_KEY_HEADER",
+        "SEMGREP_DECKY_GENERIC_PRIVATE-KEY",
+        "SEMGREP_DECKY_PYTHON_DYNAMIC-EXECUTION",
+        "SEMGREP_DECKY_PYTHON_SHELL-COMMAND",
+        "SENSITIVE_ENV_HARVEST",
+        "SENSITIVE_SSH_KEY",
+        "SENSITIVE_STEAM_AUTH",
+        "ZIP_ONLY_EXECUTABLE",
+        "ZIP_ONLY_SCRIPT"
+      ],
+      "warning_rule_ids": [
+        "EXEC_SUBPROCESS_POPEN",
+        "EXEC_SUBPROCESS_RUN",
+        "PRIVILEGE_MOUNT",
+        "PRIVILEGE_SUDO",
+        "PRIVILEGE_SUDO_SHELL",
+        "PRIVILEGE_SYSTEMCTL"
+      ]
+    },
+    "Release-0.7.3@506652610": {
+      "artifact_sha256": "dd9943ce6b0c2be3a68644727046f1693ad537b6085c5adaf16b29cf436a0bf7",
+      "audit_context_hash": "8b67fcb6c19c44e35b260fd9e039962f",
+      "audited_at": "2026-08-09T01:16:42.611708Z",
+      "blocking_rule_ids": [],
+      "classification": "MANUAL_REVIEW",
+      "review_rule_ids": [
+        "EXEC_EVAL",
+        "EXEC_EXEC",
+        "EXEC_OS_POPEN",
+        "EXEC_OS_SYSTEM",
+        "EXEC_SHELL_TRUE",
         "NATIVE_BINARY",
         "NETWORK_DISABLED_TLS",
         "OBFUSCATION_LARGE_BASE64",
