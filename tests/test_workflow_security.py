@@ -51,15 +51,37 @@ class WorkflowSecurityTests(unittest.TestCase):
 
         self.assertEqual([], unsafe)
 
-    def test_scheduled_audit_cache_key_covers_the_allowlist(self):
+    def test_scheduled_audit_cache_key_covers_scanner_inputs_not_verdict_output(self):
         workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
 
         cache_key_command = next(
             line for line in workflow.splitlines() if "POLICY_HASH=$(sha256sum" in line
         )
 
-        self.assertIn("security-allowlist.yml", cache_key_command)
-        self.assertIn("semgrep-rules.yml", cache_key_command)
+        for scanner_input in (
+            "security-policy.yml",
+            "security-allowlist.yml",
+            "semgrep-rules.yml",
+            "audit_plugins.py",
+            "plugin_release_utils.py",
+            "pyproject.toml",
+            "uv.lock",
+        ):
+            self.assertIn(scanner_input, cache_key_command)
+        self.assertNotIn("security-verdicts.json", cache_key_command)
+
+    def test_scheduled_audit_uses_central_verdict_delta_merge_cli(self):
+        workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
+
+        self.assertIn(
+            "uv run python audit_plugins.py \\\n"
+            "            --merge-verdict-delta security-reports/security-verdict-delta.json \\\n"
+            "            --verdict-store security-verdicts.json",
+            workflow,
+        )
+        self.assertNotIn(
+            "verdicts.setdefault(repository, {}).update(releases)", workflow
+        )
 
     def test_scheduled_audit_installs_and_verifies_semgrep(self):
         workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
