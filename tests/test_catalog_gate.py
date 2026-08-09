@@ -454,6 +454,35 @@ def test_custom_update_check_ignores_blocked_newest_release(monkeypatch):
     )
 
 
+def test_custom_update_check_keeps_blocked_newest_release_in_report_only_mode(
+    monkeypatch,
+):
+    releases = [
+        _release("v2.0.0", 2, BLOCKED_HASH),
+        _release("v1.0.0", 1, FALLBACK_HASH),
+    ]
+    monkeypatch.setattr(generate_json, "read_repo_urls", lambda: [REPOSITORY])
+    monkeypatch.setattr(
+        generate_json,
+        "get_repo_info",
+        lambda *_args: {"default_branch": "main"},
+    )
+    monkeypatch.setattr(
+        generate_json, "get_plugin_json", lambda *_args: {"name": "Plugin"}
+    )
+    monkeypatch.setattr(
+        generate_json, "get_package_json", lambda *_args: {"name": "plugin"}
+    )
+    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: releases)
+
+    assert check_for_updates.check_custom_repos(
+        {"Plugin": {("1.0.0", FALLBACK_HASH)}},
+        _verdicts(),
+        BLOCKABLE_RULES,
+        enforcement_mode="report-only",
+    ) == [("Plugin", "2.0.0")]
+
+
 def test_upstream_update_check_ignores_blocked_newest_release(monkeypatch):
     upstream = [
         _plugin([_version("v2.0.0", BLOCKED_HASH), _version("v1.0.0", FALLBACK_HASH)])
@@ -473,9 +502,34 @@ def test_upstream_update_check_ignores_blocked_newest_release(monkeypatch):
             {"Plugin": {("1.0.0", FALLBACK_HASH)}},
             _verdicts(),
             BLOCKABLE_RULES,
+            enforcement_mode="enforce",
         )
         == []
     )
+
+
+def test_upstream_update_check_includes_blocked_newest_release_in_report_only_mode(
+    monkeypatch,
+):
+    upstream = [
+        _plugin([_version("v2.0.0", BLOCKED_HASH), _version("1.0.0", FALLBACK_HASH)])
+    ]
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: upstream)
+    monkeypatch.setattr(
+        generate_json,
+        "get_releases",
+        lambda *_args: [
+            _release("v2.0.0", 2, BLOCKED_HASH),
+            _release("v1.0.0", 1, FALLBACK_HASH),
+        ],
+    )
+
+    assert check_for_updates.check_upstream(
+        {"Plugin": {("1.0.0", FALLBACK_HASH)}},
+        _verdicts(),
+        BLOCKABLE_RULES,
+        enforcement_mode="report-only",
+    ) == [("Plugin", "2.0.0")]
 
 
 def test_upstream_update_check_passes_non_default_download_policy(monkeypatch):
@@ -668,6 +722,54 @@ def test_update_check_main_reports_unresolved_upstream_identity(monkeypatch, cap
     assert "version=2.0.0" in output
     assert "no eligible release matches" in output
     assert "changed=false" not in output
+
+
+@pytest.mark.parametrize("enforcement_mode", ["enforce", "report-only"])
+def test_update_check_main_forwards_enforcement_mode_to_upstream_and_configured_checks(
+    monkeypatch, enforcement_mode
+):
+    observed = []
+
+    def fake_upstream(
+        live,
+        verdicts,
+        blockable_rules=None,
+        *,
+        download_policy=None,
+        enforcement_mode=None,
+    ):
+        observed.append(("upstream", enforcement_mode))
+        return []
+
+    def fake_custom(
+        live,
+        verdicts,
+        blockable_rules=None,
+        *,
+        download_policy=None,
+        enforcement_mode=None,
+    ):
+        observed.append(("custom", enforcement_mode))
+        return []
+
+    monkeypatch.setattr(check_for_updates, "check_upstream", fake_upstream)
+    monkeypatch.setattr(check_for_updates, "check_custom_repos", fake_custom)
+    monkeypatch.setattr(generate_json, "fetch_json", lambda _url: [])
+    monkeypatch.setattr(generate_json, "load_verdicts", lambda: {})
+    monkeypatch.setattr(
+        generate_json,
+        "load_policy",
+        lambda: {
+            "enforcement": {"mode": enforcement_mode},
+            "blockable_rules": sorted(BLOCKABLE_RULES),
+        },
+    )
+
+    assert check_for_updates.main() == 0
+    assert observed == [
+        ("upstream", enforcement_mode),
+        ("custom", enforcement_mode),
+    ]
 
 
 def test_two_consecutive_update_checks_stay_false_for_blocked_releases(

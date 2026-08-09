@@ -116,7 +116,14 @@ def _resolve_upstream_release(version, release_cache, download_policy=None):
     return release, current
 
 
-def check_upstream(live, verdicts, blockable_rules=None, *, download_policy=None):
+def check_upstream(
+    live,
+    verdicts,
+    blockable_rules=None,
+    *,
+    download_policy=None,
+    enforcement_mode="enforce",
+):
     missing = []
     release_cache = {}
     for plugin in g.fetch_json(g.PLUGINS_URL):
@@ -126,13 +133,14 @@ def check_upstream(live, verdicts, blockable_rules=None, *, download_policy=None
                 version, release_cache, download_policy=download_policy
             )
             current_hash = current.get("hash")
-            if not g.catalog_version_is_blocked(
+            is_blocked = g.catalog_version_is_blocked(
                 version,
                 verdicts,
                 blockable_rules,
                 release=release,
                 current_artifact_sha256=current_hash,
-            ):
+            )
+            if not is_blocked or enforcement_mode != "enforce":
                 newest = current
                 break
         if newest is None:
@@ -143,7 +151,14 @@ def check_upstream(live, verdicts, blockable_rules=None, *, download_policy=None
     return missing
 
 
-def check_custom_repos(live, verdicts, blockable_rules=None, *, download_policy=None):
+def check_custom_repos(
+    live,
+    verdicts,
+    blockable_rules=None,
+    *,
+    download_policy=None,
+    enforcement_mode="enforce",
+):
     missing = []
     for url in g.read_repo_urls():
         try:
@@ -168,7 +183,10 @@ def check_custom_repos(live, verdicts, blockable_rules=None, *, download_policy=
                     blockable_rules,
                     current_artifact_sha256=version["hash"],
                 )
-                if verdict.effective_classification != "BLOCK":
+                if (
+                    verdict.effective_classification != "BLOCK"
+                    or enforcement_mode != "enforce"
+                ):
                     versions.append(version)
             g.sort_versions(versions)
         except g.ArtifactDownloadError:
@@ -191,13 +209,20 @@ def main():
     verdicts = g.load_verdicts()
     try:
         policy = g.load_policy()
+        enforcement_mode = (policy.get("enforcement") or {}).get(
+            "mode"
+        ) or "report-only"
         blockable_rules = set(policy.get("blockable_rules") or [])
     except Exception as exc:
         raise RuntimeError(f"Could not load catalog security policy: {exc}") from exc
 
     try:
         upstream = check_upstream(
-            live, verdicts, blockable_rules, download_policy=policy
+            live,
+            verdicts,
+            blockable_rules,
+            download_policy=policy,
+            enforcement_mode=enforcement_mode,
         )
     except (g.ArtifactDownloadError, UpstreamArtifactIdentityError) as exc:
         print(f"Fatal artifact identity failure: {exc}")
@@ -206,7 +231,11 @@ def main():
 
     try:
         custom = check_custom_repos(
-            live, verdicts, blockable_rules, download_policy=policy
+            live,
+            verdicts,
+            blockable_rules,
+            download_policy=policy,
+            enforcement_mode=enforcement_mode,
         )
     except g.ArtifactDownloadError as exc:
         print(f"Fatal artifact identity failure: {exc}")
