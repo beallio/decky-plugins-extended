@@ -81,7 +81,7 @@ def test_worklist_audits_every_eligible_release_in_deterministic_order():
     ]
 
 
-def test_four_shards_are_disjoint_and_union_identical():
+def test_fourteen_shards_are_deterministic_disjoint_and_union_identical():
     items = [
         ap.AuditWorkItem(
             repository="https://github.com/owner/repo",
@@ -91,7 +91,10 @@ def test_four_shards_are_disjoint_and_union_identical():
         for index in range(1, 33)
     ]
 
-    shards = [ap.select_audit_shard(items, 4, index) for index in range(4)]
+    shard_count = 14
+    shards = [
+        ap.select_audit_shard(items, shard_count, index) for index in range(shard_count)
+    ]
     identities = [
         {(item.repository, item.release["id"]) for item in shard} for shard in shards
     ]
@@ -102,9 +105,19 @@ def test_four_shards_are_disjoint_and_union_identical():
     assert sum(len(identity) for identity in identities) == len(items)
     assert all(
         identities[left].isdisjoint(identities[right])
-        for left in range(4)
-        for right in range(left + 1, 4)
+        for left in range(shard_count)
+        for right in range(left + 1, shard_count)
     )
+    for shard_index, shard in enumerate(shards):
+        assert all(
+            int.from_bytes(
+                hashlib.sha256(f"owner/repo\0{item.release['id']}".encode()).digest(),
+                "big",
+            )
+            % shard_count
+            == shard_index
+            for item in shard
+        )
 
 
 def test_latest_only_is_an_explicit_single_repository_worklist_mode():

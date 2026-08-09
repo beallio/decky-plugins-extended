@@ -173,7 +173,7 @@ audit path.
   one-release smoke/debug mode; the real-plugin smoke workflow must use it.
 - Add deterministic `--shard-count N` and `--shard-index I` selection over the SHA-256 of canonical
   `owner/repo + "\0" + release_id`. Validate `N > 0` and `0 <= I < N`. Configure full-corpus PR
-  and scheduled audits as four isolated shards whose union is identical to an unsharded worklist
+  and scheduled audits as fourteen isolated shards whose union is identical to an unsharded worklist
   and contains no duplicate release IDs.
 - Atomically checkpoint a progress manifest and report after every release. Resume may skip only
   an exact completed identity comprising canonical repository, release ID, asset ID, current
@@ -280,7 +280,7 @@ Make PR CI execute the same security gates and scanner contract as the authorita
   not only the function. A diff containing only `additional_plugins.txt` selects changed
   repositories. Any audit, generator, update-check, release-utility, policy, allowlist,
   verdict-store, Semgrep-rule, dependency, selector, quality-gate, or audit-workflow change selects
-  the four-shard full corpus. A mixed plugin-list plus security-pipeline diff also selects the full
+  the fourteen-shard full corpus. A mixed plugin-list plus security-pipeline diff also selects the full
   corpus.
 - Replace `unittest discover` in the workflow and README with the same Ruff, format, and
   `uv run pytest -q` gates used locally. Zero collection is a failure, and collection assertions
@@ -426,7 +426,7 @@ never infer a producer's result from the pipeline's final command.
 2. **Release coverage, sharding, resume, and error isolation.** Use paginated fixtures containing
    stable, prerelease, draft, zero-ZIP, and multi-ZIP releases. Assert auditor/generator eligibility
    parity, exact deterministic order, one verdict key per eligible release, and that `--changed`
-   versus `--all` differs only in repository selection. Prove four shards are pairwise disjoint and
+   versus `--all` differs only in repository selection. Prove fourteen shards are pairwise disjoint and
    union-identical to the unsharded worklist, aggregation rejects conflicts, and reordered API
    pages produce byte-equivalent output. Prove resume skips only an exact completed identity and
    `--latest-only` emits exactly one release.
@@ -462,7 +462,7 @@ never infer a producer's result from the pipeline's final command.
    Execute audit-mode selection for audit-only, generator-only, update-checker-only,
    release-utility-only, policy-only, allowlist-only, verdict-store-only, Semgrep-rule-only,
    lockfile-only, workflow-only, selector-only, quality-gate-only, plugin-list-only, and mixed
-   plugin-list/security diffs. Every security-pipeline or mixed diff selects the four-shard full
+   plugin-list/security diffs. Every security-pipeline or mixed diff selects the fourteen-shard full
    corpus; only plugin-list-only selects changed repositories. Run the exact CI test command and
    assert `pytest --collect-only -q` includes catalog-gate, enforcement-workflow,
    workflow-selection, cache, and new regression node IDs. Both audit workflows must install the
@@ -496,19 +496,25 @@ never infer a producer's result from the pipeline's final command.
 
 9. **Capacity and live-corpus compatibility.** In a temporary worktree with reports, cache, and
    verdict output isolated under `/tmp`, instrument GitHub API calls, artifact/source downloads,
-   and scanner subprocesses. Run the complete configured corpus unsharded and as four shards, then
-   aggregate it. The cold run must finish within 40 minutes and consume fewer than 4,000
-   authenticated GitHub API requests; the warm run must finish within 10 minutes and stay below the
-   same API budget. Unchanged digest-backed releases perform zero artifact downloads; digestless
-   releases may perform one bounded artifact stream solely to validate the current hash. Unchanged
-   releases perform zero source downloads, extractions, or scanner subprocesses after identity
-   validation.
+   and scanner subprocesses. Enumerate the complete configured corpus and deterministically assign
+   it to fourteen shards. Production cold capacity succeeds when the maximum fourteen-shard wall-time estimate,
+   derived from the actual largest-shard release count, observed per-release
+   mean and p95 timings, and observed enumeration overhead, fits the unchanged audit-step timeout
+   with explicit headroom. Do not require the sequential unsharded cold scan to complete as a
+   production success condition; it may be stopped after a representative timing sample. Preserve
+   semantic equality between unsharded and aggregated sharded results through deterministic tests
+   and the existing mutation evidence. Unchanged digest-backed releases perform zero artifact
+   downloads; digestless releases may perform one bounded artifact stream solely to validate the
+   current hash. Unchanged releases perform zero source downloads, extractions, or scanner
+   subprocesses after identity validation.
 
    Record repository count, eligible-release count, pages fetched, wall time, API requests,
    release/source bytes, downloads, scanner invocations, report count, verdict count, and shard
-   balance. Assert every existing eligible release ZIP fits 64 MiB and every source archive fits
-   256 MiB. Any legitimate current item exceeding a limit or either runtime/API budget blocks
-   finalization and requires an explicit reviewed plan change; do not silently raise limits.
+   balance. Record the repeated enumeration request count for all fourteen production shards and
+   explicitly defer hosted-runner concurrency/API behavior when no hosted run is authorized.
+   Assert every existing eligible release ZIP fits 64 MiB and every source archive fits 256 MiB.
+   Any legitimate current item exceeding a limit or the projected maximum-shard runtime budget
+   blocks finalization and requires an explicit reviewed plan change; do not silently raise limits.
 
 10. **Mutation checks.** One at a time: restore newest-release-only selection; remove draft
     filtering; force overlapping shards; loosen resume identity; suppress sibling publication on

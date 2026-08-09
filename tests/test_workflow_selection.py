@@ -8,6 +8,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "plugin-security-audit.yml"
+SCHEDULED_WORKFLOW = ROOT / ".github" / "workflows" / "scheduled-security-audit.yml"
 
 
 def _step_body(step_name: str) -> str:
@@ -317,16 +318,31 @@ def test_dispatch_changed_mode_fails_when_head_parent_is_unavailable(tmp_path: P
     )
 
 
-def test_full_corpus_is_four_isolated_shards():
+def test_full_corpus_is_fourteen_isolated_shards_with_expected_artifact_names():
     workflow = WORKFLOW.read_text(encoding="utf-8")
+    scheduled = SCHEDULED_WORKFLOW.read_text(encoding="utf-8")
+    matrix = "shard_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]"
 
     audit_shards = workflow.split("  audit-shards:\n", maxsplit=1)[1].split(
         "\n  aggregate-audit:", maxsplit=1
     )[0]
     assert "fetch-depth: 0" in audit_shards
-    assert "shard_index: [0, 1, 2, 3]" in workflow
-    assert "--shard-count 4" in workflow
+    assert matrix in workflow
+    assert matrix in scheduled
+    assert "--shard-count 14" in workflow
+    assert "--shard-count 14" in scheduled
     assert '--shard-index "${{ matrix.shard_index }}"' in workflow
+    assert '--shard-index "$SHARD_INDEX"' in scheduled
+    assert "Security Audit (shard ${{ matrix.shard_index }}/14)" in workflow
+    assert "Scheduled Audit (shard ${{ matrix.shard_index }}/14)" in scheduled
+    assert "Shard ${{ matrix.shard_index }} of 14" in workflow
+    assert "security-audit-shard-${{ matrix.shard_index }}-of-14" in workflow
+    assert "scheduled-security-audit-shard-${{ matrix.shard_index }}-of-14" in scheduled
+    assert "shard-${SHARD_INDEX}-of-14" in scheduled
+    assert "${#exit_files[@]} == 14" in workflow
+    assert "${#reports[@]} == 14 && ${#deltas[@]} == 14" in workflow
+    assert "${#exit_files[@]} == 14" in scheduled
+    assert "${#reports[@]} == 14 && ${#deltas[@]} == 14" in scheduled
     assert "--aggregate-reports" in workflow
     assert "--aggregate-verdict-deltas" in workflow
 

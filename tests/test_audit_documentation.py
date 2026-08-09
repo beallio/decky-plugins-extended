@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +26,7 @@ def test_readme_documents_current_identity_and_outcome_contract():
         "exit 4",
         "Exit 1",
         "--latest-only",
-        "--shard-count 4",
+        "--shard-count 14",
         "67,108,864 bytes",
         "268,435,456 bytes",
     ):
@@ -37,5 +38,41 @@ def test_current_gating_overview_supersedes_historical_rollout_text():
 
     assert "Current implementation state (2026-08-08)" in overview
     assert "supported but inactive" in overview
-    assert "four disjoint shards" in overview
+    assert "fourteen disjoint shards" in overview
     assert "Safe sibling outputs publish before exit 4" in overview
+
+
+def test_capacity_contract_uses_fourteen_shard_projection_and_preserves_blocker():
+    plan = (
+        ROOT
+        / "docs/plans/2026-08-08_close-audit-coverage-and-verdict-integrity-gaps.md"
+    ).read_text(encoding="utf-8")
+    evidence = json.loads(
+        (
+            ROOT
+            / "docs/agent_conversations/2026-08-08_audit-fourteen-shard-capacity-projection.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert "maximum fourteen-shard wall-time estimate" in plan
+    assert "Do not require the sequential unsharded cold scan" in plan
+    assert evidence["source_blocker"]["path"].endswith(
+        "2026-08-08_audit-live-corpus-capacity-blocker.json"
+    )
+    assert evidence["snapshot_inputs"]["production_shard_count"] == 14
+    assert evidence["snapshot_inputs"]["repeated_baseline_enumeration_requests"] == 1162
+    balance = evidence["fourteen_shard_assignment"]["release_count_by_shard_index"]
+    assert balance == [34, 30, 48, 32, 50, 38, 40, 42, 42, 47, 39, 44, 41, 52]
+    assert sum(balance) == evidence["snapshot_inputs"]["eligible_release_count"]
+    timings = evidence["observed_release_timings"]
+    assert timings["sample_count"] == 161
+    assert timings["mean_seconds"] == 14.796891
+    assert timings["p95_seconds"] == 18.541324
+    projection = evidence["maximum_shard_projection"]
+    assert projection["conservative_p95_rate_minutes"] < 22
+    assert projection["pull_request_headroom_seconds"] > 0
+    boundary = evidence["verification_boundary"]
+    assert not boundary["full_corpus_rerun_performed"]
+    assert (
+        boundary["hosted_runner_concurrency_and_api_behavior"] == "DEFERRED_VALIDATION"
+    )

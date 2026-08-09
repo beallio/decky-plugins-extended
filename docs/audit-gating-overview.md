@@ -13,7 +13,7 @@ the time those sub-plans landed. The current authoritative behavior is:
   supported but inactive.
 - The auditor processes every stable and prerelease catalog-eligible release in
   canonical repository and deterministic newest-first release order. Full PR
-  and scheduled runs use four disjoint shards, atomic per-release checkpoints,
+  and scheduled runs use fourteen disjoint shards, atomic per-release checkpoints,
   isolated verdict deltas, and duplicate-rejecting aggregation. Only explicit
   `--repository ... --latest-only` uses one release.
 - Catalog decisions bind the exact release key to the current artifact hash.
@@ -32,8 +32,13 @@ the time those sub-plans landed. The current authoritative behavior is:
   10/60-second connect/read timeouts, and 1 MiB chunks.
 - CI selects changed repositories only for a plugin-list-only diff. Security
   pipeline, policy, verdict, dependency, quality-gate, test, or audit-workflow
-  changes select the four-shard corpus. Local and CI gates use Ruff, pytest,
+  changes select the fourteen-shard corpus. Local and CI gates use Ruff, pytest,
   Semgrep 1.132.0, and checksummed actionlint 1.7.12.
+- Production capacity is measured against the largest fourteen-shard wall-time
+  projection rather than sequential unsharded completion. The preserved
+  579-release snapshot projects the largest shard to 16.58 minutes at the
+  observed p95 rate, within the unchanged 22-minute PR audit-step limit;
+  hosted-runner concurrency and API behavior remain deferred.
 
 ## Sub-plans, in execution order
 

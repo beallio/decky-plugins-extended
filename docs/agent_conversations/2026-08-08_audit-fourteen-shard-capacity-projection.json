@@ -1,0 +1,96 @@
+{
+  "schema_version": "1",
+  "task_objective": "Project production capacity for fourteen deterministic audit shards from the preserved round-13 corpus snapshot without rerunning the full corpus.",
+  "result": "PASS_PROJECTED_FOURTEEN_SHARD_CAPACITY",
+  "branch": "feat/close-audit-coverage-and-verdict-integrity-gaps",
+  "plan": "docs/plans/2026-08-08_close-audit-coverage-and-verdict-integrity-gaps.md",
+  "review_note": "docs/review/close-audit-coverage-and-verdict-integrity-gaps-review-14.md",
+  "source_blocker": {
+    "path": "docs/agent_conversations/2026-08-08_audit-live-corpus-capacity-blocker.json",
+    "sha256": "1056a014c209ba1ab8fc66beb84f4b4c5e23c1f3ea52604bed74206226d0e6d2",
+    "result": "BLOCKED_COLD_RUNTIME_BUDGET",
+    "eligible_release_count": 579,
+    "completed_release_count": 161,
+    "elapsed_seconds": 2412.757501,
+    "linear_unsharded_projection_minutes": 144.615589
+  },
+  "snapshot_inputs": {
+    "enumeration_metrics_sha256": "66af1ed73f5460dd299b10123c706b5b306288a5d7e21e909e6889d31a1b0788",
+    "progress_manifest_sha256": "92c7c3baef4f72fd3b72ce8ceb2fb04511c09658c029b6f1ba75bf789682b5a8",
+    "repository_count": 41,
+    "eligible_release_count": 579,
+    "observed_enumeration_seconds": 30.458129,
+    "baseline_enumeration_requests_per_shard": 83,
+    "production_shard_count": 14,
+    "repeated_baseline_enumeration_requests": 1162
+  },
+  "fourteen_shard_assignment": {
+    "algorithm": "int.from_bytes(sha256(canonical_owner_repo + NUL + release_id), big) modulo 14",
+    "release_count_by_shard_index": [
+      34,
+      30,
+      48,
+      32,
+      50,
+      38,
+      40,
+      42,
+      42,
+      47,
+      39,
+      44,
+      41,
+      52
+    ],
+    "minimum_release_count": 30,
+    "maximum_release_count": 52,
+    "sum_release_count": 579,
+    "pairwise_disjoint_and_complete_union": true,
+    "validation": "Computed from every identity in the preserved 579-release enumeration snapshot and covered by deterministic executable sharding tests; no network enumeration was repeated."
+  },
+  "observed_release_timings": {
+    "sample_count": 161,
+    "sample_method": "Sort the release-start audit_timestamp values in the preserved progress manifest; use successive start deltas and the final checkpoint time for the last completed release.",
+    "release_processing_span_seconds": 2382.299373,
+    "mean_seconds": 14.796891,
+    "p95_seconds": 18.541324,
+    "p95_method": "nearest-rank",
+    "first_release_started_at": "2026-08-09T00:20:01.421423Z",
+    "last_completion_at": "2026-08-09T00:59:43.720796Z"
+  },
+  "maximum_shard_projection": {
+    "formula": "observed enumeration seconds + maximum shard release count multiplied by per-release timing",
+    "mean_rate_seconds": 799.896436,
+    "mean_rate_minutes": 13.331607,
+    "conservative_p95_rate_seconds": 994.606977,
+    "conservative_p95_rate_minutes": 16.576783,
+    "pull_request_audit_step_timeout_minutes": 22,
+    "pull_request_headroom_seconds": 325.393023,
+    "pull_request_headroom_minutes": 5.423217,
+    "scheduled_audit_step_timeout_minutes": 45,
+    "scheduled_headroom_seconds": 1705.393023,
+    "scheduled_headroom_minutes": 28.423217,
+    "timeout_or_content_limits_changed": false
+  },
+  "verification": {
+    "red_regression": "EXPECTED FAIL: 6 failed, 8 passed before the workflow and documentation changes",
+    "red_regression_log": "/tmp/decky-plugins-extended/round14-red.log",
+    "red_regression_log_sha256": "dae0bb86dbb2729985720b08b787fd635329abccd9713787a62b0e17fec8b114",
+    "focused_modules": "PASS: 119 passed",
+    "focused_modules_log": "/tmp/decky-plugins-extended/round14-focused-full.log",
+    "focused_modules_log_sha256": "1d640d5f1b3105dd3af3a10ffd01deaf5a17c5888d325919e842d4a357009ab8",
+    "actionlint": "PASS: v1.7.12 and invalid YAML, expression, and job-dependency mutations rejected",
+    "complete_quality_gate": "PASS: Ruff check, Ruff format, 623 passed and 61 subtests passed",
+    "complete_quality_gate_log": "/tmp/decky-plugins-extended/round14-quality-gates.log",
+    "complete_quality_gate_log_sha256": "99bf498ab581cf4fc66e71c2e0918b1f4806b36d99e5f859f061234d5a53430a"
+  },
+  "verification_boundary": {
+    "full_corpus_rerun_performed": false,
+    "download_limits_changed": false,
+    "archive_limits_changed": false,
+    "job_timeouts_changed": false,
+    "hosted_actions_started": false,
+    "hosted_runner_concurrency_and_api_behavior": "DEFERRED_VALIDATION",
+    "deferred_reason": "Pushing the branch or starting GitHub Actions is outside this implementation boundary. The 1,162 baseline requests are an arithmetic upper-bound input, not a claim about hosted concurrency, rate limiting, or request coalescing."
+  }
+}

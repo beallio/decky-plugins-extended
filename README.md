@@ -298,7 +298,7 @@ uv run python audit_plugins.py --repository https://github.com/owner/repo
 uv run python audit_plugins.py --repository https://github.com/owner/repo --latest-only
 
 # Run one deterministic shard of the full worklist:
-uv run python audit_plugins.py --all --shard-count 4 --shard-index 0
+uv run python audit_plugins.py --all --shard-count 14 --shard-index 0
 ```
 
 Reports are written to `security-reports/security-report.json` and
@@ -390,12 +390,21 @@ build or install step compromises the CI runner.
 ### How scheduled release audits work
 
 `scheduled-security-audit.yml` runs every six hours and audits every eligible
-stable or prerelease release of every configured repository in four isolated,
+stable or prerelease release of every configured repository in fourteen isolated,
 deterministic shards, then rejects duplicate identities while aggregating their
 reports and verdict deltas. Its workflow cache covers policy, allowlist,
 Semgrep rules, implementation, and dependency inputs; runtime database
 freshness decides whether report-cache reuse is safe. It never modifies the
 allowlist or automatically approves a finding.
+
+Production capacity is measured against the maximum fourteen-shard wall-time
+estimate, not against a sequential unsharded scan. The preserved 579-release
+snapshot assigns 30–52 releases per shard. A 161-release cold sample observed a
+14.797-second mean and 18.541-second p95 per release; including enumeration, the
+largest shard projects to 16.58 minutes at p95, leaving 5.42 minutes of headroom
+inside the PR audit step's unchanged 22-minute limit. Fourteen shards repeat the
+83-request baseline enumeration 1,162 times. Hosted-runner concurrency and API
+behavior remain deferred until a reviewed workflow run is authorized.
 
 The scheduled audit clones and scans every configured repository on each run.
 That is the principal Actions-minutes cost; widen the cron interval if the
@@ -404,5 +413,5 @@ six-hour cadence becomes too expensive.
 For pull requests, a change only to `additional_plugins.txt` selects changed
 repositories. Any audit/generator/update/release-utility, policy, allowlist,
 verdict, Semgrep-rule, dependency, selector, quality-gate, test, or audit-workflow
-change selects the same four-shard full corpus. The one-release smoke remains a
+change selects the same fourteen-shard full corpus. The one-release smoke remains a
 separate fast end-to-end check and is never treated as corpus coverage.

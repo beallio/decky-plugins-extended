@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 SCHEDULED = WORKFLOWS / "scheduled-security-audit.yml"
 PULL_REQUEST = WORKFLOWS / "plugin-security-audit.yml"
+PRODUCTION_SHARD_COUNT = 14
 
 
 def _run_block(workflow: Path, step_name: str) -> str:
@@ -118,12 +119,7 @@ def _run_aggregate_step(
     bin_dir = _stub_uv(tmp_path, exit_code)
     outputs = tmp_path / "github_output"
     outputs.write_text("", encoding="utf-8")
-    for index in range(4):
-        shard = tmp_path / "shard-artifacts" / f"shard-{index}"
-        shard.mkdir(parents=True)
-        (shard / "audit-exit.txt").write_text("0\n", encoding="utf-8")
-        (shard / "security-report.json").write_text("{}\n", encoding="utf-8")
-        (shard / "security-verdict-delta.json").write_text("{}\n", encoding="utf-8")
+    _write_shard_artifacts(tmp_path)
     result = _bash(
         _run_block(workflow, "Aggregate safe shard reports and deltas"),
         tmp_path,
@@ -133,6 +129,15 @@ def _run_aggregate_step(
         },
     )
     return result, outputs.read_text(encoding="utf-8")
+
+
+def _write_shard_artifacts(tmp_path: Path, count: int = PRODUCTION_SHARD_COUNT):
+    for index in range(count):
+        shard = tmp_path / "shard-artifacts" / f"shard-{index}"
+        shard.mkdir(parents=True)
+        (shard / "audit-exit.txt").write_text("0\n", encoding="utf-8")
+        (shard / "security-report.json").write_text("{}\n", encoding="utf-8")
+        (shard / "security-verdict-delta.json").write_text("{}\n", encoding="utf-8")
 
 
 def _run_real_aggregate_step(
@@ -158,7 +163,7 @@ def _run_real_aggregate_step(
 
 def _run_executable_empty_shards(tmp_path: Path) -> list[Path]:
     shard_paths = []
-    for index in range(4):
+    for index in range(PRODUCTION_SHARD_COUNT):
         shard = tmp_path / "shard-artifacts" / f"shard-{index}"
         shard.mkdir(parents=True)
         result = subprocess.run(
@@ -169,7 +174,7 @@ def _run_executable_empty_shards(tmp_path: Path) -> list[Path]:
                 "--base-ref",
                 "HEAD",
                 "--shard-count",
-                "4",
+                str(PRODUCTION_SHARD_COUNT),
                 "--shard-index",
                 str(index),
                 "--output-dir",
@@ -256,7 +261,7 @@ def test_aggregate_step_rejects_unsafe_results(tmp_path, workflow, audit_exit):
 
 
 @pytest.mark.parametrize("workflow", [PULL_REQUEST, SCHEDULED])
-def test_workflow_aggregates_four_executable_empty_shards(tmp_path, workflow):
+def test_workflow_aggregates_fourteen_executable_empty_shards(tmp_path, workflow):
     tracked_verdict_path = ROOT / "security-verdicts.json"
     tracked_verdict_bytes = tracked_verdict_path.read_bytes()
     shards = _run_executable_empty_shards(tmp_path)
@@ -285,7 +290,7 @@ def test_workflow_aggregates_four_executable_empty_shards(tmp_path, workflow):
     assert tracked_verdict_path.read_bytes() == tracked_verdict_bytes
 
 
-def test_workflow_aggregation_merges_one_delta_with_three_empty_shards(tmp_path):
+def test_workflow_aggregation_merges_one_delta_with_thirteen_empty_shards(tmp_path):
     shards = _run_executable_empty_shards(tmp_path)
     report = ap.AuditReport(
         audit_timestamp="2026-08-08T00:00:00Z",
@@ -307,11 +312,11 @@ def test_workflow_aggregation_merges_one_delta_with_three_empty_shards(tmp_path)
         "reports": [ap._report_to_dict(report)],
     }
     expected_delta = ap._verdict_delta_from_reports([report])
-    (shards[3] / "security-report.json").write_text(
+    (shards[13] / "security-report.json").write_text(
         json.dumps(report_payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    (shards[3] / "security-verdict-delta.json").write_text(
+    (shards[13] / "security-verdict-delta.json").write_text(
         json.dumps(expected_delta, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
@@ -395,7 +400,7 @@ def test_publication_steps_require_executed_publishable_output(
 
 def test_aggregate_guard_rejects_a_run_global_error_before_publication(tmp_path):
     artifacts = tmp_path / "shard-artifacts"
-    for index in range(4):
+    for index in range(PRODUCTION_SHARD_COUNT):
         shard = artifacts / f"shard-{index}"
         shard.mkdir(parents=True)
         (shard / "audit-exit.txt").write_text("1\n", encoding="utf-8")
@@ -408,6 +413,26 @@ def test_aggregate_guard_rejects_a_run_global_error_before_publication(tmp_path)
 
     assert result.returncode == 1
     assert "no verdicts will be published" in result.stdout
+
+
+@pytest.mark.parametrize("workflow", [PULL_REQUEST, SCHEDULED])
+@pytest.mark.parametrize(
+    "artifact_name",
+    ["audit-exit.txt", "security-report.json", "security-verdict-delta.json"],
+)
+def test_aggregate_guard_requires_all_fourteen_artifacts(
+    tmp_path, workflow, artifact_name
+):
+    _write_shard_artifacts(tmp_path)
+    (tmp_path / "shard-artifacts" / "shard-13" / artifact_name).unlink()
+
+    result = _bash(
+        _run_block(workflow, "Aggregate safe shard reports and deltas"),
+        tmp_path,
+        {},
+    )
+
+    assert result.returncode == 1
 
 
 def _run_enforcement_step(tmp_path: Path, audit_exit: str):
