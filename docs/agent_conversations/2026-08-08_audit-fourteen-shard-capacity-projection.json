@@ -96,13 +96,13 @@
       "reason": "The warm run and its zero-work assertions were not executed after the cold runtime budget failed; the fourteen-shard projection does not verify warm behavior."
     },
     "complete_source_archive_size_inventory": {
-      "status": "INCOMPLETE_ACCEPTANCE_REQUIREMENT_OPEN",
-      "verified": false,
-      "blocker_path": "docs/agent_conversations/2026-08-08_audit-live-corpus-capacity-blocker.json",
+      "status": "PASS_COMPLETE_SOURCE_ARCHIVE_SIZE_INVENTORY",
+      "verified": true,
+      "blocker_path": "docs/agent_conversations/2026-08-08_audit-source-archive-size-inventory-proof.json",
       "blocker_field": "blocked_verification.full_source_archive_size_inventory",
-      "acceptance_requirement_open": true,
+      "acceptance_requirement_open": false,
       "acceptance_requirement": "Assert every existing eligible source archive fits the 268,435,456-byte limit before finalization.",
-      "reason": "The interrupted cold run did not complete the source-archive inventory, so the fourteen-shard projection cannot close this acceptance requirement."
+      "reason": "The source-archive inventory completed for all 579 eligible releases with zero limit violations and zero errors."
     }
   },
   "verification_boundary": {

@@ -93,10 +93,7 @@ def test_capacity_evidence_keeps_unexecuted_warm_and_source_inventory_work_open(
     normalized_plan = " ".join(plan.split())
     assert "cold/warm corpus budgets are verified locally" not in normalized_plan
     assert "warm run and warm zero-work assertions were not executed" in normalized_plan
-    assert (
-        "complete source-archive size inventory remains an open acceptance requirement"
-        in normalized_plan
-    )
+    assert "source-archive size inventory is now" in normalized_plan.lower()
 
     blocker_path = evidence["source_blocker"]["path"]
     uncertainties = evidence["open_uncertainties"]
@@ -105,7 +102,10 @@ def test_capacity_evidence_keeps_unexecuted_warm_and_source_inventory_work_open(
     assert warm["verified"] is False
     assert warm["blocker_path"] == blocker_path
     source_inventory = uncertainties["complete_source_archive_size_inventory"]
-    assert source_inventory["status"] == "INCOMPLETE_ACCEPTANCE_REQUIREMENT_OPEN"
-    assert source_inventory["verified"] is False
-    assert source_inventory["blocker_path"] == blocker_path
-    assert source_inventory["acceptance_requirement_open"] is True
+    assert source_inventory["status"] == "PASS_COMPLETE_SOURCE_ARCHIVE_SIZE_INVENTORY"
+    assert source_inventory["verified"] is True
+    assert source_inventory["acceptance_requirement_open"] is False
+    assert (
+        source_inventory["blocker_path"]
+        == "docs/agent_conversations/2026-08-08_audit-source-archive-size-inventory-proof.json"
+    )

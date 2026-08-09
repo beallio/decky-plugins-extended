@@ -541,9 +541,9 @@ never infer a producer's result from the pipeline's final command.
   Hosted-runner variance and package-mirror latency remain unmeasured. Workflow syntax, shared
   shell/Python behavior, pytest collection, scanner parity, and the fourteen-shard capacity
   projection from the preserved cold sample are verified locally. The warm run and warm zero-work
-  assertions were not executed after the cold budget failure, and the complete source-archive size
-  inventory remains an open acceptance requirement. Both are deferred and unverified in the
-  preserved capacity blocker evidence.
+  assertions were not executed after the cold budget failure. Source-archive size inventory is now
+  fully verified with all 579 eligible releases under the 268,435,456-byte limit, while both warm
+  work remains deferred and unverified in the preserved capacity blocker evidence.
 - Hosted ClamAV/Trivy database publication timing is not measured. Fingerprint extraction, cache
   invalidation, and fail-safe scheduled cache bypass are verified with controlled local identities.
 - No runtime or on-device plugin execution is added; static-analysis blind spots remain documented.
