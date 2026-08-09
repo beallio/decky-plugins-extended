@@ -5,16 +5,16 @@
 # Required fields:
 #   repository   - "owner/repo" (lowercase GitHub repo path)
 #   release      - exact version string matching the catalog entry
-#   artifact_sha256 - exact SHA-256 of the release ZIP (preferred; use "any"
-#                 only when the hash is genuinely unavailable and the rule is
-#                 not MALWARE, ARCHIVE_TRAVERSAL, or CREDENTIAL_THEFT)
+#   artifact_sha256 - exact lowercase SHA-256 of the release ZIP for every rule
+#                 named in security-policy.yml blockable_rules. Non-blockable
+#                 rules may use "any" only with every other exact scope below.
 #   rule         - exact rule_id being allowlisted (no wildcards)
 #   reason       - human-readable explanation
 #   approved_by  - GitHub username of the reviewer who approved this entry
 #   expires      - ISO 8601 date after which the entry is no longer valid
 #
-# Prohibited: no entry may allowlist MALWARE, ARCHIVE_TRAVERSAL, or
-# CREDENTIAL_THEFT using repository-only scope (artifact_sha256 must be set).
+# Prohibited: no blockable rule may use a missing, "any", malformed, uppercase,
+# or non-matching artifact hash. The requirement follows the live policy set.
 # No global "ignore all" switch exists.
 version: "1"
 

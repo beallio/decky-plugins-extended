@@ -1,0 +1,206 @@
+{
+  "schema_version": "1",
+  "task_objective": "Execute review round 13 live cold, four-shard, aggregate, and warm corpus capacity verification without mutating feature-worktree audit state.",
+  "result": "BLOCKED_COLD_RUNTIME_BUDGET",
+  "branch": "feat/close-audit-coverage-and-verdict-integrity-gaps",
+  "reviewed_commit": "ba0346aa59cd1c1f339fd371735612f35c3c2744",
+  "plan": "docs/plans/2026-08-08_close-audit-coverage-and-verdict-integrity-gaps.md",
+  "review_note": "docs/review/close-audit-coverage-and-verdict-integrity-gaps-review-13.md",
+  "isolation": {
+    "staging_repository": "/tmp/decky-plugins-extended/round13-capacity.rTIoVN/repo",
+    "staging_commit": "ba0346aa59cd1c1f339fd371735612f35c3c2744",
+    "state_root": "/tmp/decky-plugins-extended/round13-capacity.rTIoVN",
+    "reports_progress_cache_verdict_shards_aggregation_and_scanner_state_redirected": true,
+    "tracked_catalogs_or_verdicts_written": false,
+    "credentials_or_signed_urls_recorded": false,
+    "feature_worktree_status_before_live_run": "clean",
+    "feature_worktree_status_after_live_run_before_this_evidence": "clean",
+    "staging_worktree_status_after_live_run": "clean",
+    "feature_tracked_worktree_sha256_before": "318f695dd6d559c7bac191540895aa6248f7ffbe9bb28f3f5b66dc2ca7d2b291",
+    "feature_tracked_worktree_sha256_after": "318f695dd6d559c7bac191540895aa6248f7ffbe9bb28f3f5b66dc2ca7d2b291",
+    "tracked_security_verdicts_sha256_before": "6b8174425c720176d842f3b0f5f064a7be62821708ff4a190ed1fcbbb18259fb",
+    "tracked_security_verdicts_sha256_after": "6b8174425c720176d842f3b0f5f064a7be62821708ff4a190ed1fcbbb18259fb"
+  },
+  "environment": {
+    "os": "Linux 7.1.5-201.fc44.x86_64 x86_64",
+    "python": "3.14.6",
+    "git": "2.55.0",
+    "github_cli": "2.97.0",
+    "github_authentication": "healthy; token supplied in-memory by gh auth token and never logged",
+    "semgrep": "1.132.0",
+    "trivy": "0.73.0",
+    "clamav": "1.4.5 database 28086 dated 2026-08-07T23:24:10-07:00",
+    "policy_sha256": "eabdd63b3596972dd5182534d6a236d4c774fe4d03aec801ff05575fd25290c8",
+    "allowlist_sha256": "70ccdb224091ce446a6e4a23361dcf22a719537ff7d09c6f8718d6f4538d1f5f",
+    "semgrep_rules_sha256": "6201f88bd9425a4fcc622a142c1e40460715f6ea034e4f82a27b462b79a0d1be",
+    "trivy_metadata_sha256": "27c5d1feb537d55f5d7dfd1f576f6b8abd7a2870bd8c97e8380500f6f3b86c31",
+    "trivy_database_sha256": "9db2d291c734d3e02cbcfded1f92b8d457ee1122e2f691d03bc87acb3cf6926e",
+    "clamav_bytecode_sha256": "6d4aa01f219e988060fc419f495d07f27e0cdf1a2cccc065971da922c76f7ffb",
+    "clamav_daily_sha256": "32629e1167d7a7a5f5f169caa14ce9cc20603cd741a75be7e5f247bb26ec8f43",
+    "clamav_main_sha256": "0b2182d229f46981ec8f535382222f7c9dfdd656b250ad47988b910a8d302365"
+  },
+  "setup_validation": {
+    "baseline_quality_gate": "PASS: actionlint 1.7.12, Ruff check, Ruff format, 616 passed and 61 subtests passed",
+    "post_evidence_quality_gate": "PASS: actionlint 1.7.12 including three workflow mutations, Ruff check, Ruff format, 616 passed and 61 subtests passed; no deleted review notes",
+    "latest_release_smoke": {
+      "wall_seconds": 19.127981,
+      "classification": "MANUAL_REVIEW",
+      "scanner_statuses": {
+        "trivy": "passed",
+        "clamav": "passed",
+        "semgrep": "passed",
+        "source_artifact_diff": "passed"
+      },
+      "authenticated_github_api_requests": 9,
+      "release_downloads": 1,
+      "source_downloads": 1,
+      "scanner_subprocesses": 4
+    },
+    "excluded_first_cold_attempt": {
+      "reason": "The host's 4 GiB /tmp tmpfs initially had only 15 MiB free, so two releases checkpointed infrastructure-only extraction ENOSPC results.",
+      "remediation": "Moved only this workflow's pre-existing scanner binaries and databases to ignored .venv storage and replaced their original /tmp paths with symlinks; recovered 2.1 GiB without deleting scanner state or unrelated temporary data.",
+      "fresh_retry_used_empty_cache_and_progress": true,
+      "retry_tmp_free_bytes_approximate": 2254857830,
+      "included_in_capacity_verdict": false
+    }
+  },
+  "live_enumeration": {
+    "authenticated": true,
+    "repository_count": 41,
+    "eligible_release_count": 579,
+    "repository_errors": 0,
+    "github_api_requests": 83,
+    "github_api_retries": 0,
+    "release_pagination_pages": 41,
+    "http_status_counts": {
+      "200": 83
+    },
+    "shard_balance": [
+      135,
+      127,
+      159,
+      158
+    ],
+    "pairwise_overlap_count": 0,
+    "shard_union_count": 579,
+    "unsharded_identity_count": 579,
+    "shard_union_equals_unsharded": true,
+    "release_zip_inventory": {
+      "valid_declared_size_count": 579,
+      "missing_or_invalid_declared_size_count": 0,
+      "total_declared_bytes": 2120735502,
+      "maximum_declared_bytes": 50594127,
+      "limit_bytes": 67108864,
+      "over_limit_count": 0,
+      "digest_backed_count": 578,
+      "digestless_count": 1
+    }
+  },
+  "cold_unsharded": {
+    "budget_seconds": 2400,
+    "started_at": "2026-08-08T17:19:30.963294-07:00",
+    "first_post_budget_checkpoint_at": "2026-08-08T17:59:43.720796-07:00",
+    "elapsed_seconds": 2412.757501,
+    "over_budget_seconds": 12.757501,
+    "budget_result": "FAIL",
+    "eligible_release_count": 579,
+    "completed_release_count": 161,
+    "remaining_release_count": 418,
+    "completion_percent": 27.806563,
+    "effective_releases_per_minute": 4.003718,
+    "linear_full_corpus_projection_seconds": 8676.935361,
+    "linear_full_corpus_projection_minutes": 144.615589,
+    "completed_release_classifications": {
+      "MANUAL_REVIEW": 139,
+      "PASS": 2,
+      "PASS_WITH_WARNINGS": 20,
+      "BLOCK": 0,
+      "AUDIT_ERROR": 0
+    },
+    "scanner_statuses": {
+      "trivy_found_issue": 77,
+      "trivy_passed": 84,
+      "clamav_passed": 161,
+      "semgrep_passed": 161,
+      "source_artifact_diff_found_issue": 21,
+      "source_artifact_diff_passed": 140
+    },
+    "release_download_count": 161,
+    "release_download_declared_bytes": 179578275,
+    "maximum_completed_release_declared_bytes": 4254480,
+    "completed_digest_backed_release_count": 161,
+    "completed_digestless_release_count": 0,
+    "source_download_count": 161,
+    "source_download_bytes": null,
+    "source_download_bytes_note": "The temporary probe retained counts in process memory but the mandatory deadline stop prevented its final telemetry flush; source archives were removed by the production temporary-directory cleanup and byte totals cannot be reconstructed from reports.",
+    "release_extraction_count": 161,
+    "source_extraction_count": 161,
+    "scanner_subprocess_count": 644,
+    "scanner_subprocesses_by_name": {
+      "trivy": 322,
+      "clamav": 161,
+      "semgrep": 161
+    },
+    "scanner_count_derivation": "Every durable report has a safe archive, Trivy artifact and source scan detail, ClamAV status, and Semgrep status; the cold cache has one entry per report.",
+    "report_count": 161,
+    "verdict_delta_count": 161,
+    "cache_report_count": 161,
+    "authenticated_github_api_requests": null,
+    "authenticated_github_api_requests_note": "The forced deadline stop prevented the in-memory per-request counter from flushing. The independent complete enumeration used 83 authenticated requests; the full cold request budget cannot be claimed from this interrupted run.",
+    "tmp_free_space_stable": true
+  },
+  "blocked_verification": {
+    "cold_completion_under_40_minutes": false,
+    "four_shard_cold_execution": "NOT_RUN_AFTER_COLD_BUDGET_FAILURE",
+    "aggregate_report_and_verdict_equality": "NOT_RUN_AFTER_COLD_BUDGET_FAILURE",
+    "four_shard_warm_execution_under_10_minutes": "NOT_RUN_AFTER_COLD_BUDGET_FAILURE",
+    "full_source_archive_size_inventory": "NOT_RUN_AFTER_COLD_BUDGET_FAILURE",
+    "full_run_authenticated_api_budget": "NOT_CLAIMED_FROM_INTERRUPTED_COLD_RUN",
+    "warm_zero_artifact_source_extraction_and_scanner_assertions": "NOT_RUN_AFTER_COLD_BUDGET_FAILURE",
+    "reason_for_stopping": "Review round 13 explicitly requires stopping without raising limits or weakening the gate when the runtime budget fails. The production policy, scanner classifications, workflow timeouts, and audit behavior were not changed.",
+    "required_follow_up": "A separately reviewed plan change is required before capacity verification can continue, for example by changing the runtime budget or the production execution model. This evidence does not recommend or authorize either change."
+  },
+  "commands": [
+    "git clone --no-local --no-checkout <feature-worktree> /tmp/decky-plugins-extended/round13-capacity.rTIoVN/repo && git -C <staging-repo> checkout --detach ba0346aa59cd1c1f339fd371735612f35c3c2744",
+    "GITHUB_TOKEN=<(gh auth token; value not logged)> AUDIT_SCHEDULED=1 TRIVY_SKIP_DB_UPDATE=true <python> /tmp/decky-plugins-extended/round13-capacity.rTIoVN/capacity_probe.py --run-label unsharded-cold -- --all --shard-count 1 --shard-index 0 --output-dir <cold-output> --cache-dir <cold-cache> --progress-manifest <cold-progress> --verdict-delta <cold-delta>",
+    "GITHUB_TOKEN=<(gh auth token; value not logged)> CAPACITY_ENUMERATION_OUTPUT=<enumeration-metrics> <python> /tmp/decky-plugins-extended/round13-capacity.rTIoVN/enumerate_corpus.py",
+    "scripts/orchestration/run-quality-gates",
+    "scripts/orchestration/check-review-notes-not-deleted",
+    "git status --short"
+  ],
+  "artifacts": {
+    "cold_run_log": {
+      "path": "/tmp/decky-plugins-extended/round13-capacity.rTIoVN/unsharded-cold-retry/run.log",
+      "sha256": "f5198e92915a562d972ef904aa02332eab0d9121086e337df3155b1d32bfa92d"
+    },
+    "cold_report_json": {
+      "path": "/tmp/decky-plugins-extended/round13-capacity.rTIoVN/unsharded-cold-retry/output/security-report.json",
+      "sha256": "2dbac5e0ba7aa7df8cfab6a36a9b5c9f10251716c0dd7b185189ecd41fa934cb"
+    },
+    "cold_report_markdown": {
+      "path": "/tmp/decky-plugins-extended/round13-capacity.rTIoVN/unsharded-cold-retry/output/security-report.md",
+      "sha256": "35725823cf4c27aa28daaf66140ea8816d0b1097bbba8a3c5a84a493d83973b8"
+    },
+    "cold_progress_manifest": {
+      "path": "/tmp/decky-plugins-extended/round13-capacity.rTIoVN/unsharded-cold-retry/progress.json",
+      "sha256": "92c7c3baef4f72fd3b72ce8ceb2fb04511c09658c029b6f1ba75bf789682b5a8"
+    },
+    "cold_verdict_delta": {
+      "path": "/tmp/decky-plugins-extended/round13-capacity.rTIoVN/unsharded-cold-retry/verdict-delta.json",
+      "sha256": "d350fe431434eadeb19a0f1c26b516531f15c0e4b6e96fe8aacba63ea3d0fb04"
+    },
+    "enumeration_metrics": {
+      "path": "/tmp/decky-plugins-extended/round13-capacity.rTIoVN/enumeration/metrics.json",
+      "sha256": "66af1ed73f5460dd299b10123c706b5b306288a5d7e21e909e6889d31a1b0788"
+    },
+    "post_evidence_quality_gate_log": {
+      "path": "/tmp/decky-plugins-extended/round13-capacity.rTIoVN/final-gates/quality-gates.log",
+      "sha256": "6aabbfc502aacd7ce8bf3248b426a230ea1f39ef971de7d362065504432da3d8"
+    }
+  },
+  "deferred_environment_variance": [
+    "Hosted-runner CPU, filesystem, network, and package-mirror variance were not measured.",
+    "Hosted ClamAV and Trivy database publication timing was not measured.",
+    "The local result is a hard failure against the plan's local cold-run budget and does not claim hosted equivalence."
+  ]
+}

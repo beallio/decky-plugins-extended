@@ -285,13 +285,14 @@ class TestZipInspection(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    def test_corrupt_zip_blocked(self):
+    def test_corrupt_zip_is_not_a_fabricated_structural_block(self):
         path = _make_temp_zip(b"not a zip file at all!!!")
         try:
             stats, findings = ap.inspect_zip(path)
             self.assertFalse(stats.safe)
-            rule_ids = {f.rule_id for f in findings}
-            self.assertIn("CORRUPT_ARCHIVE", rule_ids)
+            corrupt = [f for f in findings if f.rule_id == "CORRUPT_ARCHIVE"]
+            self.assertEqual(len(corrupt), 1)
+            self.assertNotEqual(corrupt[0].classification, "BLOCK")
         finally:
             os.unlink(path)
 
@@ -546,13 +547,17 @@ class TestSecretsScanning(unittest.TestCase):
             self.assertNotIn("ghp_AAA", f.evidence)
             self.assertIn(ap.SECRET_REDACT, f.evidence)
 
-    def test_test_fixture_has_lower_severity(self):
+    def test_fixture_comment_and_filename_substring_do_not_lower_severity(self):
         content = "# test fixture: password = 'my_test_password_here'\n"
         findings = ap.scan_for_secrets(content, "test_config.py")
-        # Fixtures may be classified with lower severity
-        for f in findings:
-            if "password" in f.rule_id.lower():
-                self.assertIn(f.severity, ("low", "info", "medium"))
+        password_findings = [
+            finding
+            for finding in findings
+            if finding.rule_id == "SECRET_PASSWORD_LITERAL"
+        ]
+        self.assertEqual(len(password_findings), 1)
+        self.assertEqual(password_findings[0].severity, "critical")
+        self.assertEqual(password_findings[0].classification, "BLOCK")
 
     def test_github_token_pattern_detected(self):
         content = "token = 'ghp_" + "A" * 36 + "'\n"
@@ -669,7 +674,7 @@ class TestClassification(unittest.TestCase):
 
 
 class TestAllowlist(unittest.TestCase):
-    def _make_allowlist(self, exceptions: list[dict]) -> list[dict]:
+    def _write_allowlist(self, exceptions: list[dict]) -> str:
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
             f.write("version: '1'\nexceptions:\n")
             for exc in exceptions:
@@ -677,11 +682,27 @@ class TestAllowlist(unittest.TestCase):
                 for k, v in exc.items():
                     f.write(f'{k}: "{v}"\n    ')
                 f.write("\n")
-            name = f.name
+            return f.name
+
+    def _make_allowlist(
+        self, exceptions: list[dict], policy: dict | None = None
+    ) -> list[dict]:
+        name = self._write_allowlist(exceptions)
         try:
-            return ap.load_allowlist(name)
+            return ap.load_allowlist(name, policy=policy)
         finally:
             os.unlink(name)
+
+    def _exception(self, rule_id: str, sha: str) -> dict:
+        return {
+            "repository": "owner/repo",
+            "release": "1.0.0",
+            "artifact_sha256": sha,
+            "rule": rule_id,
+            "reason": "reviewed fixture",
+            "approved_by": "reviewer",
+            "expires": "2027-01-01",
+        }
 
     def _block_finding(self, rule_id: str = "ROOT_ACCESS") -> ap.Finding:
         return ap.Finding(
@@ -698,16 +719,7 @@ class TestAllowlist(unittest.TestCase):
     def test_matching_entry_allowlists_finding(self):
         sha = "a" * 64
         # Build exceptions directly
-        excs = [
-            {
-                "repository": "owner/repo",
-                "release": "1.0.0",
-                "artifact_sha256": sha,
-                "rule": "ROOT_ACCESS",
-                "reason": "Hardware plugin",
-                "approved_by": "reviewer",
-            }
-        ]
+        excs = [self._exception("ROOT_ACCESS", sha)]
         finding = self._block_finding("ROOT_ACCESS")
         findings, decisions = ap.apply_allowlist(
             [finding],
@@ -720,15 +732,7 @@ class TestAllowlist(unittest.TestCase):
         self.assertEqual(len(decisions), 1)
 
     def test_hash_mismatch_does_not_allowlist(self):
-        excs = [
-            {
-                "repository": "owner/repo",
-                "artifact_sha256": "a" * 64,
-                "rule": "ROOT_ACCESS",
-                "reason": "Hardware plugin",
-                "approved_by": "reviewer",
-            }
-        ]
+        excs = [self._exception("ROOT_ACCESS", "a" * 64)]
         finding = self._block_finding("ROOT_ACCESS")
         findings, decisions = ap.apply_allowlist(
             [finding],
@@ -742,12 +746,8 @@ class TestAllowlist(unittest.TestCase):
     def test_expired_entry_does_not_allowlist(self):
         excs = [
             {
-                "repository": "owner/repo",
-                "artifact_sha256": "a" * 64,
-                "rule": "ROOT_ACCESS",
-                "reason": "Hardware plugin",
-                "approved_by": "reviewer",
-                "expires": "2020-01-01",  # in the past
+                **self._exception("ROOT_ACCESS", "a" * 64),
+                "expires": "2020-01-01",
             }
         ]
         finding = self._block_finding("ROOT_ACCESS")
@@ -762,15 +762,7 @@ class TestAllowlist(unittest.TestCase):
 
     def test_malware_requires_exact_hash(self):
         """MALWARE rule cannot be allowlisted with artifact_sha256='any'."""
-        excs = [
-            {
-                "repository": "owner/repo",
-                "artifact_sha256": "any",
-                "rule": "MALWARE",
-                "reason": "false positive",
-                "approved_by": "reviewer",
-            }
-        ]
+        excs = [self._exception("MALWARE", "any")]
         finding = self._block_finding("MALWARE")
         findings, _ = ap.apply_allowlist(
             [finding],
@@ -780,6 +772,144 @@ class TestAllowlist(unittest.TestCase):
             "a" * 64,
         )
         self.assertFalse(findings[0].allowlisted)
+
+    def test_every_live_blockable_rule_requires_exact_lowercase_hash(self):
+        policy = ap.load_policy("security-policy.yml")
+        current_sha = "a" * 64
+
+        for rule_id in policy["blockable_rules"]:
+            with self.subTest(rule_id=rule_id):
+                for rejected in ("any", "A" * 64, "a" * 63, "g" * 64):
+                    name = self._write_allowlist([self._exception(rule_id, rejected)])
+                    try:
+                        with self.assertRaises(ValueError):
+                            ap.load_allowlist(name, policy=policy)
+                    finally:
+                        os.unlink(name)
+
+                exceptions = self._make_allowlist(
+                    [self._exception(rule_id, current_sha)], policy=policy
+                )
+                finding = self._block_finding(rule_id)
+                findings, decisions = ap.apply_allowlist(
+                    [finding],
+                    exceptions,
+                    "https://github.com/owner/repo",
+                    "1.0.0",
+                    current_sha,
+                    policy=policy,
+                )
+                self.assertTrue(findings[0].allowlisted)
+                self.assertEqual(len(decisions), 1)
+
+    def test_new_blockable_rule_immediately_requires_exact_hash(self):
+        policy = ap._default_policy()
+        policy["blockable_rules"].append("ROOT_ACCESS")
+        name = self._write_allowlist([self._exception("ROOT_ACCESS", "any")])
+        try:
+            with self.assertRaises(ValueError):
+                ap.load_allowlist(name, policy=policy)
+        finally:
+            os.unlink(name)
+
+    def test_non_blockable_rule_may_use_any_with_complete_scope(self):
+        policy = ap._default_policy()
+        exceptions = self._make_allowlist(
+            [self._exception("ROOT_ACCESS", "any")], policy=policy
+        )
+        finding = self._block_finding("ROOT_ACCESS")
+
+        findings, decisions = ap.apply_allowlist(
+            [finding],
+            exceptions,
+            "https://github.com/owner/repo",
+            "1.0.0",
+            "a" * 64,
+            policy=policy,
+        )
+
+        self.assertTrue(findings[0].allowlisted)
+        self.assertEqual(len(decisions), 1)
+
+    def test_load_canonicalizes_accepted_repository_scopes(self):
+        for repository in (
+            "Owner/Repo",
+            "https://github.com/Owner/Repo",
+            "HTTPS://GitHub.COM/Owner/Repo/",
+        ):
+            with self.subTest(repository=repository):
+                entry = {
+                    **self._exception("ROOT_ACCESS", "a" * 64),
+                    "repository": repository,
+                }
+
+                exceptions = self._make_allowlist([entry])
+
+                self.assertEqual(exceptions[0]["repository"], "owner/repo")
+
+    def test_load_rejects_hostile_and_malformed_repository_scopes(self):
+        invalid_repositories = (
+            "https://evil.example/owner/repo",
+            "http://github.com/owner/repo",
+            "https://user@github.com/owner/repo",
+            "https://github.com:443/owner/repo",
+            "https://github.com/owner/repo?ref=main",
+            "https://github.com/owner/repo#readme",
+            "https://github.com/owner/repo/extra",
+            "https://github.com/owner/repo.git",
+            "owner",
+            "owner/repo/",
+            "owner//repo",
+            "owner/..",
+            "owner/repo.git",
+            "owner%2Frewrite/repo",
+            "owner/repo%5Cother",
+            "owner/repo?ref=main",
+        )
+
+        for repository in invalid_repositories:
+            with self.subTest(repository=repository):
+                entry = {
+                    **self._exception("ROOT_ACCESS", "a" * 64),
+                    "repository": repository,
+                }
+
+                with self.assertRaisesRegex(
+                    ValueError, "Allowlist entry 0 has invalid repository"
+                ):
+                    self._make_allowlist([entry])
+
+    def test_invalid_repository_fails_loading_before_no_findings_can_bypass_it(self):
+        entry = {
+            **self._exception("ROOT_ACCESS", "a" * 64),
+            "repository": "https://evil.example/owner/repo",
+        }
+
+        with self.assertRaises(ValueError):
+            exceptions = self._make_allowlist([entry])
+            ap.apply_allowlist(
+                [],
+                exceptions,
+                "https://github.com/owner/repo",
+                "1.0.0",
+                "a" * 64,
+            )
+
+    def test_load_rejects_repository_scope_collisions_after_canonicalization(self):
+        first = {
+            **self._exception("ROOT_ACCESS", "a" * 64),
+            "repository": "Owner/Repo",
+        }
+        second = {
+            **self._exception("ROOT_ACCESS", "a" * 64),
+            "repository": "https://github.com/owner/repo/",
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Allowlist entries 0 and 1 collide after repository canonicalization",
+        ):
+            self._make_allowlist([first, second])
 
     def test_invalid_allowlist_raises(self):
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
@@ -1214,6 +1344,52 @@ class TestSemgrepSeverityMapping(unittest.TestCase):
         ):
             return ap.run_semgrep("/tmp/fake", self._policy())
 
+    def _run(self, stdout: str, ok: bool):
+        with (
+            patch("shutil.which", return_value="/usr/bin/semgrep"),
+            patch.object(
+                ap,
+                "_run_scanner",
+                return_value=(ok, stdout, "semgrep exited nonzero"),
+            ),
+        ):
+            return ap.run_semgrep("/tmp/fake", self._policy())
+
+    def test_valid_json_nonzero_exit_preserves_findings_but_fails(self):
+        payload = json.dumps(
+            {
+                "results": [
+                    {
+                        "check_id": "rule.id",
+                        "path": "/tmp/fake/main.py",
+                        "start": {"line": 3},
+                        "extra": {
+                            "severity": "ERROR",
+                            "message": "x",
+                            "lines": "x",
+                        },
+                    }
+                ]
+            }
+        )
+
+        status, findings = self._run(payload, ok=False)
+
+        self.assertEqual(status.status, "failed")
+        self.assertEqual(len(findings), 1)
+
+    def test_empty_output_nonzero_exit_fails(self):
+        status, findings = self._run("", ok=False)
+
+        self.assertEqual(status.status, "failed")
+        self.assertEqual(findings, [])
+
+    def test_valid_json_zero_exit_passes(self):
+        status, findings = self._run(json.dumps({"results": []}), ok=True)
+
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(findings, [])
+
     def test_uses_vendored_rules_without_registry_or_telemetry(self):
         calls = []
 
@@ -1372,7 +1548,9 @@ class TestSourceArtifactDiff(unittest.TestCase):
         self.assertEqual(status.status, "found_issue")
         self.assertIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
 
-    def _compare_metadata_files(self, source_files, artifact_files):
+    def _compare_metadata_files(
+        self, source_files, artifact_files, ref="v1.0.1-dev.gabc"
+    ):
         extract = self._mk_extract(
             {f"plugin/{path}": content for path, content in artifact_files.items()}
         )
@@ -1404,7 +1582,114 @@ class TestSourceArtifactDiff(unittest.TestCase):
             ),
             patch.object(ap, "get_repo_file_raw", side_effect=get_source),
         ):
-            return ap.compare_source_and_artifact(extract, "o", "r", "v1")
+            return ap.compare_source_and_artifact(extract, "o", "r", ref)
+
+    def _build_stamp(self, path, source, artifact, version="1.0.1-dev.gabc"):
+        return ap._metadata_diff_is_build_stamped(
+            path,
+            json.dumps(source).encode(),
+            json.dumps(artifact).encode(),
+            version,
+        )
+
+    def test_exact_package_version_build_stamp_is_allowed(self):
+        self.assertTrue(
+            self._build_stamp(
+                "package.json",
+                {"name": "plugin", "version": "1.0.0"},
+                {"name": "plugin", "version": "1.0.1-dev.gabc"},
+            )
+        )
+
+    def test_exact_debug_flag_removal_build_stamp_is_allowed(self):
+        self.assertTrue(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "flags": ["debug", "root"],
+                },
+                {"name": "Plugin", "version": "1.0.1-dev.gabc", "flags": ["root"]},
+            )
+        )
+
+    def test_exact_publish_image_build_stamp_is_allowed(self):
+        self.assertTrue(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/main/icon.png"
+                    },
+                },
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/icon.png"
+                    },
+                },
+            )
+        )
+
+    def test_arbitrary_version_build_stamp_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "package.json",
+                {"name": "plugin", "version": "1.0.0"},
+                {"name": "plugin", "version": "999.0.0"},
+            )
+        )
+
+    def test_combined_unrelated_build_drift_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "plugin.json",
+                {"name": "Plugin", "version": "1.0.0", "flags": ["debug"]},
+                {"name": "Renamed", "version": "1.0.1-dev.gabc", "flags": []},
+            )
+        )
+
+    def test_reordered_flags_build_stamp_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "flags": ["root", "debug", "network"],
+                },
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "flags": ["network", "root"],
+                },
+            )
+        )
+
+    def test_near_match_publish_image_build_stamp_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/mainly/icon.png"
+                    },
+                },
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/icon.png"
+                    },
+                },
+            )
+        )
 
     def test_version_only_metadata_drift_is_allowed(self):
         source_files = {
@@ -1765,7 +2050,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             for path, content in source_files.items()
         ]
 
-        def fake_download(_url, dest_path):
+        def fake_download(_url, dest_path, policy=None):
+            del policy
             Path(dest_path).write_bytes(zip_data)
             return hashlib.sha256(zip_data).hexdigest()
 
@@ -1875,7 +2161,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         try:
             import hashlib
 
-            def fake_download(url, dest_path):
+            def fake_download(url, dest_path, policy=None):
+                del url, policy
                 Path(dest_path).write_bytes(zip_data)
                 sha = hashlib.sha256(zip_data).hexdigest()
                 return sha
@@ -1945,7 +2232,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ],
         }
 
-        def fake_download(_url, dest_path):
+        def fake_download(_url, dest_path, policy=None):
+            del policy
             Path(dest_path).write_bytes(zip_data)
             return hashlib.sha256(zip_data).hexdigest()
 
@@ -2011,7 +2299,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ],
         }
 
-        def fake_download(url, dest_path):
+        def fake_download(url, dest_path, policy=None):
+            del url, policy
             Path(dest_path).write_bytes(zip_data)
             import hashlib
 
@@ -2085,7 +2374,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ],
         }
 
-        def fake_download(url, dest_path):
+        def fake_download(url, dest_path, policy=None):
+            del url, policy
             Path(dest_path).write_bytes(zip_data)
             import hashlib
 
@@ -2160,7 +2450,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ],
         }
 
-        def fake_download(url, dest_path):
+        def fake_download(url, dest_path, policy=None):
+            del url, policy
             Path(dest_path).write_bytes(zip_data)
             import hashlib
 
@@ -2222,7 +2513,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ],
         }
 
-        def fake_download(url, dest_path):
+        def fake_download(url, dest_path, policy=None):
+            del url, policy
             Path(dest_path).write_bytes(zip_data)
             import hashlib
 
@@ -2284,7 +2576,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ],
         }
 
-        def fake_download(url, dest_path):
+        def fake_download(url, dest_path, policy=None):
+            del url, policy
             Path(dest_path).write_bytes(zip_data)
             import hashlib
 
@@ -2347,7 +2640,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ],
         }
 
-        def fake_download(url, dest_path):
+        def fake_download(url, dest_path, policy=None):
+            del url, policy
             Path(dest_path).write_bytes(zip_data)
             import hashlib
 
@@ -2482,13 +2776,19 @@ class TestCLI(unittest.TestCase):
         self.assertNotEqual(ctx.exception.code, 0)
 
     def test_infrastructure_error_exits_1(self):
-        """AUDIT_ERROR always exits 1 regardless of enforcement mode."""
-        meta_err = Exception("network down")
+        """A repository-local enumeration error publishes output and exits 4."""
+        error_report = ap.AuditReport(
+            repository="https://github.com/owner/repo",
+            final_classification="AUDIT_ERROR",
+            completion_status="incomplete",
+            error_scope="repository",
+            errors=["network down"],
+        )
         with (
-            patch.object(ap, "get_repo_metadata", side_effect=meta_err),
             patch.object(
                 ap, "read_repo_urls", return_value=["https://github.com/owner/repo"]
             ),
+            patch.object(ap, "build_audit_worklist", return_value=([], [error_report])),
             tempfile.TemporaryDirectory() as tmp,
         ):
             code = ap.main(
@@ -2501,7 +2801,7 @@ class TestCLI(unittest.TestCase):
                     "--skip-cache",
                 ]
             )
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 4)
 
     def test_report_only_mode_does_not_exit_2_on_block(self):
         """In report-only mode, BLOCK findings must not exit 2."""
@@ -2513,7 +2813,14 @@ class TestCLI(unittest.TestCase):
             repository="https://github.com/owner/bad-plugin",
             final_classification="BLOCK",
             artifact_sha256="a" * 64,
+            completion_status="completed",
         )
+        release = {
+            "id": 1,
+            "tag_name": "v1",
+            "assets": [{"id": 10, "name": "plugin.zip"}],
+        }
+        work_item = ap.AuditWorkItem("https://github.com/owner/bad-plugin", release, {})
 
         with (
             patch.object(ap, "load_policy", return_value=policy),
@@ -2523,7 +2830,8 @@ class TestCLI(unittest.TestCase):
                 "read_repo_urls",
                 return_value=["https://github.com/owner/bad-plugin"],
             ),
-            patch.object(ap, "audit_repository", return_value=block_report),
+            patch.object(ap, "build_audit_worklist", return_value=([work_item], [])),
+            patch.object(ap, "audit_release", return_value=block_report),
             tempfile.TemporaryDirectory() as tmp,
         ):
             code = ap.main(
@@ -2933,17 +3241,20 @@ class TestTrivyStructuredFindings(unittest.TestCase):
         self.assertEqual(status.status, "failed")
         self.assertEqual(findings, [])
 
-    def test_findings_parsed_even_with_nonzero_exit(self):
-        # Trivy can exit non-zero (1) when vulnerabilities are found.
+    def test_findings_preserved_but_status_failed_with_nonzero_exit(self):
         stdout = self._trivy_json([self._vuln("critical")])
         status, findings = self._run(stdout, ok=False)
-        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(status.status, "failed")
         self.assertTrue(len(findings) > 0)
 
     def test_scans_artifact_and_exact_commit_source_lockfile(self):
         scanned_paths = []
+        supplied_policy = self._policy()
+        supplied_policy["downloads"]["source_max_bytes"] = 11
 
-        def fake_fetch(owner, repo, commit_sha, destination):
+        def fake_fetch(owner, repo, commit_sha, destination, policy=None):
+            self.assertIs(policy, supplied_policy)
+            self.assertEqual(policy["downloads"]["source_max_bytes"], 11)
             self.assertEqual((owner, repo, commit_sha), ("owner", "plugin", "abc123"))
             source_root = Path(destination) / "owner-plugin-abc123"
             source_root.mkdir()
@@ -2976,7 +3287,7 @@ class TestTrivyStructuredFindings(unittest.TestCase):
             ):
                 status, findings = ap.run_trivy(
                     artifact_dir,
-                    self._policy(),
+                    supplied_policy,
                     source_repo=("owner", "plugin", "abc123"),
                 )
 
@@ -3017,6 +3328,8 @@ class TestTrivyStructuredFindings(unittest.TestCase):
 class TestSourceTreeFetch(unittest.TestCase):
     def test_source_archive_is_materialized_without_executing_hooks(self):
         with tempfile.TemporaryDirectory() as td:
+            supplied_policy = ap._default_policy()
+            supplied_policy["downloads"]["source_max_bytes"] = 11
             sentinel = Path(td) / "executed"
             archive_path = Path(td) / "source.tar.gz"
             with tarfile.open(archive_path, "w:gz") as tf:
@@ -3040,7 +3353,9 @@ class TestSourceTreeFetch(unittest.TestCase):
 
             archive_bytes = archive_path.read_bytes()
 
-            def fake_download(_owner, _repo, _commit_sha, destination):
+            def fake_download(_owner, _repo, _commit_sha, destination, policy=None):
+                self.assertIs(policy, supplied_policy)
+                self.assertEqual(policy["downloads"]["source_max_bytes"], 11)
                 Path(destination).write_bytes(archive_bytes)
 
             destination = Path(td) / "source"
@@ -3048,7 +3363,13 @@ class TestSourceTreeFetch(unittest.TestCase):
                 ap, "_download_source_archive", side_effect=fake_download
             ):
                 source_root = Path(
-                    ap._fetch_source_tree("owner", "plugin", "abc123", destination)
+                    ap._fetch_source_tree(
+                        "owner",
+                        "plugin",
+                        "abc123",
+                        destination,
+                        policy=supplied_policy,
+                    )
                 )
 
             self.assertTrue((source_root / "package.json").is_file())

@@ -1,0 +1,115 @@
+{
+  "date": "2026-08-08",
+  "task_objective": "Close review round 11 by executing the bounded-download boundary contract through every production caller without mocking the shared bounded_stream_download helper.",
+  "branch": "feat/close-audit-coverage-and-verdict-integrity-gaps",
+  "plan": "docs/plans/2026-08-08_close-audit-coverage-and-verdict-integrity-gaps.md",
+  "review_note": "docs/review/close-audit-coverage-and-verdict-integrity-gaps-review-11.md",
+  "reviewed_implementation_commit": "19683299175a239f0a5f7150e89456fa4b09129e",
+  "committed_review_note_head": "8ab057b0593bb9a896a9c967b0e46c49db182b98",
+  "scope": {
+    "test_module": "tests/test_bounded_download_callers.py",
+    "production_files_changed": [],
+    "callers": [
+      "audit_plugins.audit_release through audit_plugins.download_zip",
+      "audit_plugins._fetch_source_tree through audit_plugins._download_source_archive",
+      "generate_json.build_version_object through generate_json.calculate_hash",
+      "check_for_updates.check_upstream through _resolve_upstream_release",
+      "check_for_updates.check_custom_repos"
+    ],
+    "http_boundary": "Only the HTTP session response is faked. plugin_release_utils.bounded_stream_download and each listed production caller execute unchanged.",
+    "deferred": [
+      "Mutation verification was not started because review round 11 explicitly excludes it.",
+      "Live-corpus capacity verification was not started because review round 11 explicitly excludes it."
+    ]
+  },
+  "matrix": {
+    "caller_count": 5,
+    "case_count_per_caller": 8,
+    "total_node_count": 40,
+    "failure_cases_run_first": [
+      "oversized Content-Length rejected before response iteration",
+      "absent Content-Length with streamed overflow",
+      "understated Content-Length with streamed overflow",
+      "malformed Content-Length with streamed overflow",
+      "negative Content-Length with streamed overflow",
+      "a second chunk crossing the declared-at-limit boundary"
+    ],
+    "negative_controls_run_last": [
+      "payload at limit minus one",
+      "payload exactly at limit"
+    ],
+    "policy_overrides": {
+      "release_max_bytes": "Derived small non-default boundary for release callers",
+      "source_max_bytes": "Derived distinct small non-default boundary for the source caller",
+      "connect_timeout_seconds": 2,
+      "read_timeout_seconds": 3,
+      "chunk_size_bytes": 4
+    },
+    "assertions": [
+      "Every success returns or consumes the expected SHA-256 and downloaded bytes; source extraction yields the expected fixture content.",
+      "Every release failure is a release-local incomplete AUDIT_ERROR.",
+      "Every generator and update failure raises ArtifactDownloadError and returns no safe result.",
+      "Every source overflow raises DownloadLimitError before extraction.",
+      "Failure paths leave no destination or .part file and no public output.",
+      "Release failures call no ZIP inspection, extraction, scanner, or source-diff work, create no cache entry, and preserve the prior tracked verdict byte-for-byte.",
+      "The release and source limits are distinct, non-default values, so selecting the wrong policy field makes the overflow cases fail.",
+      "All callers pass the configured timeout tuple and chunk size into the real bounded helper."
+    ]
+  },
+  "commands": [
+    "uv run pytest -q tests/test_bounded_download_callers.py",
+    "uv run pytest --collect-only -q tests/test_bounded_download_callers.py",
+    "scripts/orchestration/run-quality-gates"
+  ],
+  "results": {
+    "baseline_before_matrix": "576 passed, 61 subtests passed in 10.84s",
+    "focused_matrix": "40 passed, 0 subtests in 0.08s",
+    "focused_collection": "40 tests collected in 0.03s",
+    "quality_gate": "616 passed, 61 subtests passed in 10.96s",
+    "ruff": "check and format-check passed",
+    "actionlint": "v1.7.12 passed all workflows; invalid YAML, expression, and job dependency mutations were rejected",
+    "review_note_integrity": "no deleted review notes"
+  },
+  "focused_node_ids": [
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[oversized-content-length-release-audit]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[oversized-content-length-source-archive]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[oversized-content-length-generator-hash]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[oversized-content-length-upstream-reconciliation]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[oversized-content-length-update-detection]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[absent-length-overflow-release-audit]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[absent-length-overflow-source-archive]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[absent-length-overflow-generator-hash]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[absent-length-overflow-upstream-reconciliation]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[absent-length-overflow-update-detection]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[understated-length-overflow-release-audit]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[understated-length-overflow-source-archive]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[understated-length-overflow-generator-hash]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[understated-length-overflow-upstream-reconciliation]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[understated-length-overflow-update-detection]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[malformed-length-overflow-release-audit]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[malformed-length-overflow-source-archive]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[malformed-length-overflow-generator-hash]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[malformed-length-overflow-upstream-reconciliation]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[malformed-length-overflow-update-detection]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[negative-length-overflow-release-audit]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[negative-length-overflow-source-archive]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[negative-length-overflow-generator-hash]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[negative-length-overflow-upstream-reconciliation]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[negative-length-overflow-update-detection]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[chunk-crosses-limit-release-audit]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[chunk-crosses-limit-source-archive]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[chunk-crosses-limit-generator-hash]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[chunk-crosses-limit-upstream-reconciliation]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[chunk-crosses-limit-update-detection]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[limit-minus-one-release-audit]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[limit-minus-one-source-archive]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[limit-minus-one-generator-hash]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[limit-minus-one-upstream-reconciliation]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[limit-minus-one-update-detection]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[exact-limit-release-audit]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[exact-limit-source-archive]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[exact-limit-generator-hash]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[exact-limit-upstream-reconciliation]",
+    "tests/test_bounded_download_callers.py::test_bounded_download_boundary_matrix[exact-limit-update-detection]"
+  ]
+}

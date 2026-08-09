@@ -55,7 +55,8 @@ def _configure_successful_audit(monkeypatch, zip_data: bytes) -> None:
     monkeypatch.setattr(ap, "get_repo_metadata", lambda *_args: {"archived": False})
     monkeypatch.setattr(ap, "get_repo_file_raw", lambda *_args: None)
 
-    def download(_url: str, destination: str) -> str:
+    def download(_url: str, destination: str, policy=None) -> str:
+        del policy
         Path(destination).write_bytes(zip_data)
         return hashlib.sha256(zip_data).hexdigest()
 
@@ -104,6 +105,14 @@ def _seed_pass_verdict(cache_dir: Path, release_id: str) -> dict:
     cache_dir.mkdir(exist_ok=True)
     Path(ap.VERDICTS_FILE).write_text(json.dumps(verdicts), encoding="utf-8")
     return verdicts
+
+
+def _snapshot_files(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
 
 
 def test_audit_release_audits_the_exact_release_passed(monkeypatch, tmp_path):
@@ -168,7 +177,9 @@ def test_audit_error_preserves_good_verdict_and_reports_both_states(
     _seed_pass_verdict(tmp_path, "v1.0.0@1")
     _configure_successful_audit(monkeypatch, _zip_bytes())
     monkeypatch.setattr(
-        ap, "download_zip", lambda *_args: (_ for _ in ()).throw(OSError("offline"))
+        ap,
+        "download_zip",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
     )
 
     report = ap.audit_release(
@@ -183,8 +194,10 @@ def test_audit_error_preserves_good_verdict_and_reports_both_states(
     result = ap.classification_for(REPOSITORY, report, verdicts)
 
     assert verdicts[REPOSITORY]["v1.0.0@1"]["classification"] == "PASS"
-    assert result.effective_classification == "PASS"
+    assert result.effective_classification == "AUDIT_ERROR"
     assert result.audit_classification == "AUDIT_ERROR"
+    assert result.identity_status == "STALE_HASH"
+    assert result.stored_artifact_sha256 == "a" * 64
 
 
 def test_completed_audit_error_does_not_overwrite_good_verdict(monkeypatch, tmp_path):
@@ -215,11 +228,189 @@ def test_completed_audit_error_does_not_overwrite_good_verdict(monkeypatch, tmp_
     assert ap.load_verdicts(str(tmp_path)) == prior
 
 
+@pytest.mark.parametrize("scanners_enabled", [False, True], ids=["disabled", "healthy"])
+def test_corrupt_archive_preserves_prior_verdict_bytes(
+    monkeypatch, tmp_path, scanners_enabled
+):
+    release = _release("v1.0.0", 1)
+    _seed_pass_verdict(tmp_path, "v1.0.0@1")
+    verdict_path = Path(ap.VERDICTS_FILE)
+    prior_bytes = verdict_path.read_bytes()
+    _configure_successful_audit(monkeypatch, b"not a zip")
+    policy = _policy()
+    for scanner in policy["scanners"].values():
+        scanner["enabled"] = scanners_enabled
+
+    report = ap.audit_release(
+        REPOSITORY,
+        release,
+        policy,
+        [],
+        cache_dir=str(tmp_path),
+        skip_cache=True,
+    )
+
+    corrupt_findings = [
+        finding for finding in report.findings if finding.rule_id == "CORRUPT_ARCHIVE"
+    ]
+    assert report.final_classification == "AUDIT_ERROR"
+    assert report.completion_status == "incomplete"
+    assert len(corrupt_findings) == 1
+    assert not any(
+        finding.classification == "BLOCK" and not finding.allowlisted
+        for finding in report.findings
+    )
+    assert any("corrupt ZIP" in error for error in report.errors)
+    assert verdict_path.read_bytes() == prior_bytes
+
+
+def test_archive_inspection_oserror_returns_identity_complete_audit_error(
+    monkeypatch, tmp_path
+):
+    release = _release("v1.0.0", 1)
+    release["id"] = 101
+    release["published_at"] = "2026-08-08T00:00:00Z"
+    _configure_successful_audit(monkeypatch, _zip_bytes())
+    monkeypatch.setattr(
+        ap,
+        "inspect_zip",
+        lambda *_args: (_ for _ in ()).throw(
+            OSError('unreadable archive api_key="abcdefghijklmnop"')
+        ),
+    )
+
+    report = ap.audit_release(
+        REPOSITORY,
+        release,
+        _policy(),
+        [],
+        cache_dir=str(tmp_path),
+        skip_cache=True,
+    )
+
+    assert report.final_classification == "AUDIT_ERROR"
+    assert report.completion_status == "incomplete"
+    assert report.error_scope == "release"
+    assert report.repository == REPOSITORY
+    assert report.release == "v1.0.0"
+    assert report.release_id == "v1.0.0@1"
+    assert report.github_release_id == "101"
+    assert report.asset_id == "1"
+    assert report.artifact_url == "https://example.com/v1.0.0.zip"
+    assert report.artifact_sha256 == hashlib.sha256(_zip_bytes()).hexdigest()
+    assert report.resolved_tag_commit_sha == "commit-v1.0.0"
+    assert report.audit_context_hash
+    assert report.identity_status == "CURRENT"
+    assert report.scanner_statuses == [
+        ap.ScannerStatus(
+            name="zip-inspector",
+            status="failed",
+            detail='unreadable archive api_key="[REDACTED]"',
+        )
+    ]
+    assert report.errors == [
+        'Archive inspection failed: unreadable archive api_key="[REDACTED]"'
+    ]
+
+
+def test_bounded_release_failure_preserves_cache_and_verdict_bytes(
+    monkeypatch, tmp_path
+):
+    release = _release("v1.0.0", 1)
+    _seed_pass_verdict(tmp_path, "v1.0.0@1")
+    verdict_path = Path(ap.VERDICTS_FILE)
+    prior_verdict_bytes = verdict_path.read_bytes()
+    cache_dir = tmp_path / "cache"
+    prior_report = ap.AuditReport(
+        repository=REPOSITORY,
+        release="v1.0.0",
+        release_id="v1.0.0@1",
+        artifact_sha256="a" * 64,
+        audit_context_hash="prior-context",
+        resolved_tag_commit_sha="commit-v1.0.0",
+        final_classification="PASS",
+        completion_status="completed",
+    )
+    ap.save_cached_report(
+        str(cache_dir),
+        prior_report,
+        prior_report.release_id,
+        prior_report.audit_context_hash,
+        prior_report.resolved_tag_commit_sha,
+    )
+    prior_cache_bytes = _snapshot_files(cache_dir)
+
+    class OversizedResponse:
+        headers = {"Content-Length": "8"}
+        iterated = False
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        def iter_content(self, _chunk_size):
+            self.iterated = True
+            yield b"12345678"
+
+        @staticmethod
+        def close():
+            return None
+
+    response = OversizedResponse()
+    policy = _policy()
+    policy["downloads"].update(
+        {
+            "release_max_bytes": 7,
+            "connect_timeout_seconds": 2,
+            "read_timeout_seconds": 3,
+            "chunk_size_bytes": 2,
+        }
+    )
+    audit_tmp = tmp_path / "audit-temp"
+
+    monkeypatch.setattr(
+        ap,
+        "_resolve_ref_to_commit_and_tree_sha",
+        lambda _owner, _repo, ref: (f"commit-{ref}", f"tree-{ref}", None),
+    )
+    monkeypatch.setattr(ap, "get_repo_metadata", lambda *_args: {"archived": False})
+    monkeypatch.setattr(ap, "get_repo_file_raw", lambda *_args: None)
+    monkeypatch.setattr(ap._gh_session, "get", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(ap.tempfile, "mkdtemp", lambda **_kwargs: str(audit_tmp))
+    for downstream in ("inspect_zip", "run_clamav", "run_trivy", "run_semgrep"):
+        monkeypatch.setattr(
+            ap,
+            downstream,
+            lambda *_args, _downstream=downstream, **_kwargs: pytest.fail(
+                f"{_downstream} must not run after a bounded download failure"
+            ),
+        )
+
+    report = ap.audit_release(
+        REPOSITORY,
+        release,
+        policy,
+        [],
+        cache_dir=str(cache_dir),
+        skip_cache=False,
+    )
+
+    assert report.final_classification == "AUDIT_ERROR"
+    assert any("Content-Length 8 exceeds 7 bytes" in error for error in report.errors)
+    assert not response.iterated
+    assert _snapshot_files(cache_dir) == prior_cache_bytes
+    assert verdict_path.read_bytes() == prior_verdict_bytes
+    assert not audit_tmp.exists()
+    assert list(tmp_path.rglob("*.part")) == []
+
+
 def test_first_seen_audit_error_is_not_laundered_into_pass(monkeypatch, tmp_path):
     release = _release("v1.0.0", 1)
     _configure_successful_audit(monkeypatch, _zip_bytes())
     monkeypatch.setattr(
-        ap, "download_zip", lambda *_args: (_ for _ in ()).throw(OSError("offline"))
+        ap,
+        "download_zip",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
     )
 
     report = ap.audit_release(
@@ -311,7 +502,12 @@ def test_two_release_round_trip_negative_control(monkeypatch, tmp_path):
     assert second_report.final_classification == "PASS"
     assert set(verdicts[REPOSITORY]) == {"v1.0.0@1", "v2.0.0@2"}
     for release in (first, second):
-        result = ap.classification_for(REPOSITORY, release, verdicts)
+        result = ap.classification_for(
+            REPOSITORY,
+            release,
+            verdicts,
+            current_artifact_sha256=first_report.artifact_sha256,
+        )
         assert result.effective_classification == "PASS"
         assert result.audit_classification == "PASS"
         assert result.blocking_rule_ids == []

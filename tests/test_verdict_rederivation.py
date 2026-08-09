@@ -64,6 +64,7 @@ def test_configured_release_rederivation_only_demotes_stored_blocks(
         _release(),
         _stored_verdict(classification, blocking_rule_ids),
         BLOCKABLE_RULES,
+        current_artifact_sha256=ARTIFACT_HASH,
     )
 
     assert result.effective_classification == expected
@@ -113,38 +114,37 @@ def test_upstream_release_rederivation_only_demotes_stored_blocks(
     }
 
     assert (
-        generate_json.catalog_version_is_blocked(version, verdicts, BLOCKABLE_RULES)
+        generate_json.catalog_version_is_blocked(
+            version,
+            verdicts,
+            BLOCKABLE_RULES,
+            release=_release(),
+            current_artifact_sha256=ARTIFACT_HASH,
+        )
         is expected
     )
 
 
-@pytest.mark.parametrize("nonblocking_first", [True, False])
 @pytest.mark.parametrize(
-    ("nonblocking_classification", "nonblocking_rule_ids"),
+    ("asset_id", "expected"),
     [
-        ("MANUAL_REVIEW", ["MALWARE"]),
-        ("BLOCK", ["SHELL_CURL_PIPE"]),
+        (1, False),
+        (2, True),
     ],
 )
-def test_upstream_release_blocks_when_any_same_identity_verdict_is_blockable(
-    nonblocking_first,
-    nonblocking_classification,
-    nonblocking_rule_ids,
-    capsys,
-):
-    nonblocking_entry = _stored_verdict(
-        nonblocking_classification, nonblocking_rule_ids
-    )[REPOSITORY]["v1.0.0@1"]
+def test_upstream_release_uses_exact_current_asset_identity(asset_id, expected):
+    nonblocking_entry = _stored_verdict("MANUAL_REVIEW", ["MALWARE"])[REPOSITORY][
+        "v1.0.0@1"
+    ]
     blockable_entry = _stored_verdict("BLOCK", ["ARCHIVE_TRAVERSAL"])[REPOSITORY][
         "v1.0.0@1"
     ]
-    entries = [
-        ("v1.0.0@1", nonblocking_entry),
-        ("v1.0.0@2", blockable_entry),
-    ]
-    if not nonblocking_first:
-        entries.reverse()
-    verdicts = {REPOSITORY: dict(entries)}
+    verdicts = {
+        REPOSITORY: {
+            "v1.0.0@1": nonblocking_entry,
+            "v1.0.0@2": blockable_entry,
+        }
+    }
     version = {
         "name": "1.0.0",
         "hash": ARTIFACT_HASH,
@@ -153,8 +153,16 @@ def test_upstream_release_blocks_when_any_same_identity_verdict_is_blockable(
         ),
     }
 
-    assert generate_json.catalog_version_is_blocked(version, verdicts, BLOCKABLE_RULES)
-    assert "[policy-demotion]" not in capsys.readouterr().out
+    assert (
+        generate_json.catalog_version_is_blocked(
+            version,
+            verdicts,
+            BLOCKABLE_RULES,
+            release=_release(asset_id=asset_id),
+            current_artifact_sha256=ARTIFACT_HASH,
+        )
+        is expected
+    )
 
 
 def test_upstream_demotion_log_names_release_and_rule_ids_without_evidence(capsys):
@@ -169,7 +177,11 @@ def test_upstream_demotion_log_names_release_and_rule_ids_without_evidence(capsy
     }
 
     assert not generate_json.catalog_version_is_blocked(
-        version, verdicts, BLOCKABLE_RULES
+        version,
+        verdicts,
+        BLOCKABLE_RULES,
+        release=_release(),
+        current_artifact_sha256=ARTIFACT_HASH,
     )
 
     output = capsys.readouterr().out
@@ -200,6 +212,7 @@ def test_committed_verdicts_follow_current_blocking_policy():
                 release,
                 verdicts,
                 policy["blockable_rules"],
+                current_artifact_sha256=entry["artifact_sha256"],
             )
             evaluated.append((repository, release_id, entry, result))
 

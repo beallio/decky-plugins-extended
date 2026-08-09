@@ -139,6 +139,22 @@ def test_archive_traversal_and_setuid_members_still_block(tmp_path):
         assert selected[0].classification == "BLOCK"
 
 
+def test_traversal_remains_block_with_required_scanners_unavailable():
+    policy = ap.load_policy("security-policy.yml")
+    findings = [_finding("ARCHIVE_TRAVERSAL")]
+    ap.apply_rule_classification_policy(findings, policy)
+    statuses = [
+        ap.ScannerStatus(name=name, status="unavailable")
+        for name in ("clamav", "trivy", "semgrep", "source-artifact-diff")
+    ]
+
+    classification, _score = ap.classify_findings(
+        findings, scanner_statuses=statuses, policy=policy
+    )
+
+    assert classification == "BLOCK"
+
+
 def test_simulated_clamav_signature_still_blocks(monkeypatch, tmp_path):
     monkeypatch.setattr(ap.shutil, "which", lambda _command: "/usr/bin/clamscan")
     monkeypatch.setattr(
