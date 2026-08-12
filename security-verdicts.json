@@ -10702,56 +10702,6 @@
       ]
     }
   },
-  "https://github.com/xxjsonderuloxx/decky-bionic-fg": {
-    "v0.1.1@498252400": {
-      "artifact_sha256": "9369441460ff8c8b32f1e8bd90775ba5d2bbce80edaccd3c3e90a77029f1fd18",
-      "audit_context_hash": "840f6f5b6c298bb8d5c0b8497b865a96",
-      "audited_at": "2026-08-11T19:14:11.564808Z",
-      "blocking_rule_ids": [],
-      "classification": "MANUAL_REVIEW",
-      "review_rule_ids": [
-        "NATIVE_BINARY",
-        "ZIP_ONLY_EXECUTABLE"
-      ],
-      "warning_rule_ids": []
-    },
-    "v0.1.2@499433844": {
-      "artifact_sha256": "277a0aa86bcd9d2cb3d319ee3cced82b320b90199c622edce8d8cafa4b90aad6",
-      "audit_context_hash": "dc4d51fb41043b61e45b3ffd25f4c6ba",
-      "audited_at": "2026-08-11T19:08:06.948182Z",
-      "blocking_rule_ids": [],
-      "classification": "MANUAL_REVIEW",
-      "review_rule_ids": [
-        "NATIVE_BINARY",
-        "ZIP_ONLY_EXECUTABLE"
-      ],
-      "warning_rule_ids": []
-    },
-    "v0.1.5@499462835": {
-      "artifact_sha256": "68c48317ada42a6f06e4eec6ae829ed64674fdaf85667da194af8b9c9705c5b4",
-      "audit_context_hash": "deabd6bfd17abc7e8c03882cd90bc5fb",
-      "audited_at": "2026-08-11T19:12:51.438401Z",
-      "blocking_rule_ids": [],
-      "classification": "MANUAL_REVIEW",
-      "review_rule_ids": [
-        "NATIVE_BINARY",
-        "ZIP_ONLY_EXECUTABLE"
-      ],
-      "warning_rule_ids": []
-    },
-    "v0.1.6@499464645": {
-      "artifact_sha256": "d3758997fc9ba41b1441e82d3b7c2a67d283d247a09b9796065113f0525b335a",
-      "audit_context_hash": "dc4d51fb41043b61e45b3ffd25f4c6ba",
-      "audited_at": "2026-08-11T19:07:54.117571Z",
-      "blocking_rule_ids": [],
-      "classification": "MANUAL_REVIEW",
-      "review_rule_ids": [
-        "NATIVE_BINARY",
-        "ZIP_ONLY_EXECUTABLE"
-      ],
-      "warning_rule_ids": []
-    }
-  },
   "https://github.com/xxjsonderuloxx/decky-lsfg-vk": {
     "Latest@272752395": {
       "artifact_sha256": "818f44ae9b81688000f0b19a6ec7dd96f8915d48ddc7f98b432192fff7e50722",
