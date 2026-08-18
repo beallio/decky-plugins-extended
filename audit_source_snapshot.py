@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import re
@@ -20,6 +21,8 @@ _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _ALLOWED_SOURCE_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _DEFAULT_CODELOAD_HOSTS = frozenset({"codeload.github.com"})
 _DEFAULT_MAX_REDIRECTS = 3
+_ALLOWED_REDIRECTS_PER_WORKER = range(0, 4)
+_SOURCE_STREAM_CHUNK_SIZE = 1_048_576
 
 _DEFAULT_ARCHIVE_LIMITS = {
     "max_files": 10_000,
@@ -82,7 +85,7 @@ def _snapshot_source_url(repository: str, commit_sha: str) -> str:
 
 
 def _git_blob_sha1(payload: bytes) -> str:
-    header = f"blob {len(payload)}\\0".encode("ascii")
+    header = f"blob {len(payload)}\0".encode("ascii")
     return hashlib.sha1(header + payload).hexdigest()
 
 
@@ -107,22 +110,40 @@ def _validate_archive_limits(policy: Optional[Mapping[str, Any]]) -> dict[str, i
     return limits
 
 
+def _validate_max_redirects(max_redirects: int) -> int:
+    if isinstance(max_redirects, bool) or type(max_redirects) is not int:
+        raise SourceSnapshotError("max_redirects must be an int")
+    if max_redirects not in _ALLOWED_REDIRECTS_PER_WORKER:
+        raise SourceSnapshotError("max_redirects must be 0, 1, 2, or 3")
+    return max_redirects
+
+
 def _validate_and_normalize_archive_path(raw_name: str) -> str:
     if not isinstance(raw_name, str) or not raw_name:
         raise SourceSnapshotError("archive member path must be a non-empty string")
+    if "\\" in raw_name:
+        raise SourceSnapshotError(
+            f"invalid archive member path {raw_name!r}: backslash"
+        )
     if "\x00" in raw_name:
         raise SourceSnapshotError(
             f"invalid archive member path {raw_name!r}: null byte"
         )
 
-    normalized = unicodedata.normalize("NFC", raw_name.replace("\\", "/"))
+    normalized = unicodedata.normalize("NFC", raw_name)
     if normalized.startswith("/"):
         raise SourceSnapshotError(f"invalid archive member path {raw_name!r}: absolute")
 
     parts = normalized.split("/")
-    if any(part in {"", ".", ".."} for part in parts):
+    if any(part == "" for part in parts) or any(
+        part == "." or part == ".." for part in parts
+    ):
         raise SourceSnapshotError(
             f"unsafe archive member path {raw_name!r}: relative traversal"
+        )
+    if any(len(part) > 1 and part[0].isalpha() and part[1] == ":" for part in parts):
+        raise SourceSnapshotError(
+            f"unsafe archive member path {raw_name!r}: windows drive form"
         )
 
     return "/".join(parts)
@@ -137,12 +158,20 @@ def _archive_member_github_mode(member: tarfile.TarInfo, kind: str) -> str:
 
 
 def _extract_redirect_host(url: str, *, allowed_hosts: frozenset[str]) -> str:
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except Exception as exc:
+        raise RedirectPolicyError(f"invalid redirect URL: {url!r}") from exc
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise RedirectPolicyError(f"invalid redirect URL port: {url!r}") from exc
+
     if parsed.scheme.lower() != "https":
         raise RedirectPolicyError(f"non-HTTPS URL rejected: {url!r}")
     if parsed.username is not None or parsed.password is not None:
         raise RedirectPolicyError(f"url contains userinfo and was rejected: {url!r}")
-    if parsed.port is not None:
+    if port is not None:
         raise RedirectPolicyError(f"explicit port rejected: {url!r}")
     if not parsed.hostname:
         raise RedirectPolicyError(f"url without hostname rejected: {url!r}")
@@ -170,13 +199,32 @@ def _authorize_for_url(
     return prepared
 
 
+@contextlib.contextmanager
+def _disable_session_authorization_headers(session: Any) -> Any:
+    headers = getattr(session, "headers", None)
+    if not hasattr(headers, "pop") or not hasattr(headers, "__setitem__"):
+        yield
+        return
+
+    removed: list[tuple[str, str]] = []
+    for key in list(headers.keys()):  # type: ignore[attr-defined]
+        if str(key).lower() == "authorization":
+            removed.append((str(key), headers[key]))  # type: ignore[index]
+            headers.pop(key)  # type: ignore[attr-defined]
+
+    try:
+        yield
+    finally:
+        for key, value in removed:
+            headers[key] = value  # type: ignore[index]
+
+
 def _codeload_session(
     session: Any,
     *,
     max_redirects: int,
 ) -> Any:
-    if max_redirects < 0:
-        raise SourceSnapshotError("max_redirects must be non-negative")
+    validated_max_redirects = _validate_max_redirects(max_redirects)
     allowed_hosts = _DEFAULT_CODELOAD_HOSTS
 
     class _Session:
@@ -185,11 +233,12 @@ def _codeload_session(
 
         def _fetch(self, current_url: str, kwargs: Mapping[str, Any]) -> Any:
             _extract_redirect_host(current_url, allowed_hosts=allowed_hosts)
-            response = self._inner.get(
-                current_url,
-                allow_redirects=False,
-                **dict(kwargs),
-            )
+            with _disable_session_authorization_headers(self._inner):
+                response = self._inner.get(
+                    current_url,
+                    allow_redirects=False,
+                    **dict(kwargs),
+                )
             return response
 
         def _safe_headers(
@@ -225,11 +274,23 @@ def _codeload_session(
                         raise RedirectPolicyError(
                             f"invalid response from {current_url!r}: missing status_code"
                         )
+
+                    if (
+                        status // 100 == 3
+                        and status not in _ALLOWED_SOURCE_REDIRECT_STATUSES
+                    ):
+                        response.close()
+                        response = None
+                        raise RedirectPolicyError(
+                            f"unsupported redirect status {status} at {current_url!r}"
+                        )
+
                     if status not in _ALLOWED_SOURCE_REDIRECT_STATUSES:
                         return response
 
-                    if redirects >= max_redirects:
+                    if redirects >= validated_max_redirects:
                         response.close()
+                        response = None
                         raise RedirectPolicyError(
                             f"too many redirects while requesting {url!r}"
                         )
@@ -237,6 +298,7 @@ def _codeload_session(
                     location = getattr(response, "headers", {}).get("Location")
                     if not isinstance(location, str) or not location:
                         response.close()
+                        response = None
                         raise RedirectPolicyError(
                             f"missing or malformed redirect location at {current_url!r}"
                         )
@@ -265,76 +327,94 @@ def _preflight_source_archive(
     int,
 ]:
     top_dirs: set[str] = set()
-    seen_paths: set[str] = set()
+    path_types: dict[str, str] = {}
     planned: list[tuple[tarfile.TarInfo, str, str, Optional[str]]] = []
     regular_file_count = 0
     file_count = 0
     total_uncompressed = 0
 
-    with tarfile.open(archive_path, "r:*") as archive:
-        for member in archive.getmembers():
-            normalized = _validate_and_normalize_archive_path(member.name)
-            path = PurePosixPath(normalized)
-            if len(path.parts) == 0:
-                continue
-            if len(path.parts) > limits["max_path_depth"]:
-                raise SourceSnapshotError(f"archive path too deep: {member.name!r}")
-
-            top_dirs.add(path.parts[0])
-            normalized_key = path.as_posix()
-            if normalized_key in seen_paths:
-                raise SourceSnapshotError(f"duplicate archive member: {member.name!r}")
-            seen_paths.add(normalized_key)
-
-            if member.isdir():
-                continue
-
-            if member.islnk():
-                raise SourceSnapshotError(f"hard link not allowed: {member.name!r}")
-            if (
-                member.ischr()
-                or member.isblk()
-                or member.isfifo()
-                or member.type == getattr(tarfile, "SOCKTYPE", "7")
+    def _check_ambiguous_paths(candidate: str, kind: str) -> None:
+        for existing_path, existing_kind in path_types.items():
+            if existing_path == candidate:
+                raise SourceSnapshotError(
+                    f"ambiguous archive path {candidate!r}: duplicate with {existing_kind}"
+                )
+            if existing_path.startswith(candidate + "/") or candidate.startswith(
+                existing_path + "/"
             ):
                 raise SourceSnapshotError(
-                    f"special archive member not allowed: {member.name!r}"
+                    f"ambiguous archive path {candidate!r} conflicts with {existing_path!r}"
                 )
 
-            if not member.isfile() and not member.issym():
-                raise SourceSnapshotError(
-                    f"unsupported archive member: {member.name!r}"
-                )
+    try:
+        with tarfile.open(archive_path, "r:*") as archive:
+            for member in archive.getmembers():
+                normalized = _validate_and_normalize_archive_path(member.name)
+                path = PurePosixPath(normalized)
+                if len(path.parts) == 0:
+                    continue
+                if len(path.parts) > limits["max_path_depth"]:
+                    raise SourceSnapshotError(f"archive path too deep: {member.name!r}")
 
-            kind = "symlink" if member.issym() else "file"
-            if kind == "symlink":
-                link_target = member.linkname
-                if not isinstance(link_target, str):
+                top_dirs.add(path.parts[0])
+                normalized_key = path.as_posix()
+                if member.isdir():
+                    _check_ambiguous_paths(normalized_key, "dir")
+                    path_types[normalized_key] = "dir"
+                    continue
+                _check_ambiguous_paths(normalized_key, "file")
+                path_types[normalized_key] = "file"
+
+                if member.islnk():
+                    raise SourceSnapshotError(f"hard link not allowed: {member.name!r}")
+                if (
+                    member.ischr()
+                    or member.isblk()
+                    or member.isfifo()
+                    or member.type == getattr(tarfile, "SOCKTYPE", b"7")
+                ):
                     raise SourceSnapshotError(
-                        f"symlink target must be text for {member.name!r}"
+                        f"special archive member not allowed: {member.name!r}"
                     )
-                size = len(link_target.encode("utf-8", errors="replace"))
-            else:
-                if member.size < 0:
+
+                if not member.isfile() and not member.issym():
                     raise SourceSnapshotError(
-                        f"invalid archive member size: {member.name!r}"
+                        f"unsupported archive member: {member.name!r}"
                     )
-                size = member.size
-                regular_file_count += 1
 
-            if size > limits["max_single_file_bytes"]:
-                raise SourceSnapshotError(f"archive member too large: {member.name!r}")
-            file_count += 1
-            total_uncompressed += size
-            if file_count > limits["max_files"]:
-                raise SourceSnapshotError("source archive exceeds max file count")
-            if total_uncompressed > limits["max_uncompressed_bytes"]:
-                raise SourceSnapshotError(
-                    "source archive exceeds max uncompressed size"
-                )
+                kind = "symlink" if member.issym() else "file"
+                if kind == "symlink":
+                    link_target = member.linkname
+                    if not isinstance(link_target, str):
+                        raise SourceSnapshotError(
+                            f"symlink target must be text for {member.name!r}"
+                        )
+                    size = len(link_target.encode("utf-8", errors="surrogateescape"))
+                else:
+                    if member.size < 0:
+                        raise SourceSnapshotError(
+                            f"invalid archive member size: {member.name!r}"
+                        )
+                    size = member.size
+                    regular_file_count += 1
 
-            target = link_target if kind == "symlink" else None
-            planned.append((member, normalized, kind, target))
+                if size > limits["max_single_file_bytes"]:
+                    raise SourceSnapshotError(
+                        f"archive member too large: {member.name!r}"
+                    )
+                file_count += 1
+                total_uncompressed += size
+                if file_count > limits["max_files"]:
+                    raise SourceSnapshotError("source archive exceeds max file count")
+                if total_uncompressed > limits["max_uncompressed_bytes"]:
+                    raise SourceSnapshotError(
+                        "source archive exceeds max uncompressed size"
+                    )
+
+                target = link_target if kind == "symlink" else None
+                planned.append((member, normalized, kind, target))
+    except tarfile.TarError as exc:
+        raise SourceSnapshotError("source archive is malformed or unreadable") from exc
 
     if regular_file_count == 0:
         raise SourceSnapshotError("source archive contains no regular files")
@@ -350,6 +430,77 @@ def _preflight_source_archive(
         )
 
     return top_dir, planned, file_count, total_uncompressed
+
+
+def _extract_regular_member(
+    *,
+    archive_stream: Any,
+    destination_parent: Path,
+    member: tarfile.TarInfo,
+    normalized_path: str,
+    size: int,
+) -> SourceInventoryEntry:
+    target = PurePosixPath(normalized_path)
+    if len(target.parts) < 2:
+        raise SourceSnapshotError(f"malformed archive member path: {normalized_path!r}")
+    rel_path = "/".join(target.parts[1:])
+
+    output_path = destination_parent / rel_path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    hasher = hashlib.sha1()
+    hasher.update(f"blob {size}\0".encode("ascii"))
+    remaining = size
+    bytes_read = 0
+
+    def _read_chunk(chunk_size: int) -> bytes:
+        if chunk_size <= 0:
+            raise SourceSnapshotError(
+                f"invalid source read size for {normalized_path!r}: {chunk_size}"
+            )
+        chunk = archive_stream.read(chunk_size)
+        if not isinstance(chunk, (bytes, bytearray, memoryview)):
+            raise SourceSnapshotError(f"invalid archive chunk for {normalized_path!r}")
+        payload = bytes(chunk)
+        if len(payload) > chunk_size:
+            raise SourceSnapshotError(
+                f"source archive chunk exceeded requested size for {normalized_path!r}"
+            )
+        return payload
+
+    try:
+        with output_path.open("wb") as output:
+            while remaining > 0:
+                to_read = min(_SOURCE_STREAM_CHUNK_SIZE, remaining)
+                chunk = _read_chunk(to_read)
+                payload = bytes(chunk)
+                if len(payload) == 0:
+                    raise SourceSnapshotError(
+                        f"source archive size mismatch: {normalized_path!r}"
+                    )
+                output.write(payload)
+                hasher.update(payload)
+                remaining -= len(payload)
+                bytes_read += len(payload)
+
+            trailing = _read_chunk(1)
+            if trailing:
+                raise SourceSnapshotError(
+                    f"source archive size mismatch: {normalized_path!r}"
+                )
+
+        mode = _archive_member_github_mode(member, kind="file")
+        return SourceInventoryEntry(
+            path=rel_path,
+            kind="file",
+            size_bytes=bytes_read,
+            git_blob_sha1=hasher.hexdigest(),
+            mode=mode,
+        )
+    finally:
+        close = getattr(archive_stream, "close", None)
+        if callable(close):
+            close()
 
 
 def _extract_source_archive(
@@ -368,7 +519,7 @@ def _extract_source_archive(
             rel_path = "/".join(relative_parts)
 
             if kind == "symlink":
-                payload = symlink_target.encode("utf-8", errors="replace")
+                payload = symlink_target.encode("utf-8", errors="surrogateescape")
                 entries.append(
                     SourceInventoryEntry(
                         path=rel_path,
@@ -386,31 +537,21 @@ def _extract_source_archive(
                 raise SourceSnapshotError(
                     f"unable to read archive member: {normalized!r}"
                 )
-            payload = stream.read()
-            if len(payload) != member.size:
-                raise SourceSnapshotError(
-                    f"source archive size mismatch: {normalized!r}"
-                )
-            stream.close()
-
-            out_path = destination / rel_path
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_bytes(payload)
-            mode = _archive_member_github_mode(member, kind="file")
-            entries.append(
-                SourceInventoryEntry(
-                    path=rel_path,
-                    kind="file",
-                    size_bytes=len(payload),
-                    git_blob_sha1=_git_blob_sha1(payload),
-                    mode=mode,
-                )
+            entry = _extract_regular_member(
+                archive_stream=stream,
+                destination_parent=destination,
+                member=member,
+                normalized_path=normalized,
+                size=member.size,
             )
+            entries.append(entry)
 
             if rel_path == "plugin.json":
-                plugin_json = payload
+                with (destination / rel_path).open("rb") as payload_file:
+                    plugin_json = payload_file.read()
             if rel_path == "package.json":
-                package_json = payload
+                with (destination / rel_path).open("rb") as payload_file:
+                    package_json = payload_file.read()
 
     return (
         tuple(sorted(entries, key=lambda item: item.path)),
@@ -439,6 +580,7 @@ def materialize_source_snapshot(
 
     archive_limits = _validate_archive_limits(policy)
     source_download_policy = policy
+    download_session = _codeload_session(session, max_redirects=max_redirects)
 
     staging_root = Path(
         tempfile.mkdtemp(prefix="source-snapshot-", dir=str(destination_path.parent))
@@ -446,8 +588,9 @@ def materialize_source_snapshot(
     archive_path = staging_root / "source.tar.gz"
     extracted_path = staging_root / "source-root"
 
+    staging_paths = (archive_path, extracted_path, staging_root)
+
     try:
-        download_session = _codeload_session(session, max_redirects=max_redirects)
         download_result = pru.bounded_stream_download(
             source_url,
             archive_path,
@@ -478,6 +621,8 @@ def materialize_source_snapshot(
         )
 
         # Promote as a completed snapshot in one atomic swap.
+        if destination_path.exists():
+            raise SourceSnapshotError(f"destination already exists: {destination_path}")
         os.replace(extracted_path, destination_path)
 
         return SourceSnapshot(
@@ -491,13 +636,10 @@ def materialize_source_snapshot(
             plugin_json=plugin_json,
             package_json=package_json,
         )
-    except BaseException:
-        if destination_path.exists():
-            shutil.rmtree(destination_path, ignore_errors=True)
-        raise
     finally:
-        if archive_path.exists():
-            archive_path.unlink(missing_ok=True)
-        if extracted_path.exists():
-            shutil.rmtree(extracted_path, ignore_errors=True)
-        shutil.rmtree(staging_root, ignore_errors=True)
+        for path in reversed(staging_paths):
+            if isinstance(path, Path) and path.exists():
+                if path == staging_root or path == extracted_path:
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    path.unlink(missing_ok=True)
