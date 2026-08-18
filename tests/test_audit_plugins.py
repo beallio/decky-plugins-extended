@@ -3917,7 +3917,18 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
         self,
     ):
         payload = json.dumps({"name": "Syncthing", "version": "1.0.0"}).encode()
-        snapshot = self._mk_source_snapshot({"plugin.json": payload})
+        source_snapshot = self._mk_source_snapshot({"plugin.json": payload})
+        snapshot = audit_source_snapshot.SourceSnapshot(
+            repository=source_snapshot.repository,
+            commit_sha=source_snapshot.commit_sha,
+            source_url=source_snapshot.source_url,
+            archive_sha256=source_snapshot.archive_sha256,
+            archive_size_bytes=source_snapshot.archive_size_bytes,
+            source_root=source_snapshot.source_root,
+            inventory=source_snapshot.inventory,
+            plugin_json=b"{invalid captured plugin json",
+            package_json=source_snapshot.package_json,
+        )
         original_open = ap.os.open
 
         def deny_source_open(file, flags, *args, **kwargs):
@@ -4072,24 +4083,26 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             source_root = Path(td)
             payload = b'{"name":"expected"}'
-            source_file = source_root / "plugin.json"
+            source_dir = source_root / "plugin"
+            source_dir.mkdir()
+            source_file = source_dir / "plugin.json"
             source_file.write_bytes(payload)
             entry = audit_source_snapshot.SourceInventoryEntry(
-                path="plugin.json",
+                path="plugin/plugin.json",
                 kind="file",
                 size_bytes=len(payload),
                 git_blob_sha1=ap.git_blob_sha1(payload),
                 mode="100644",
             )
 
-            opened: list[int] = []
+            opened: list[tuple[str, int]] = []
             closed: list[int] = []
             original_open = ap.os.open
             original_close = ap.os.close
 
             def tracked_open(file, flags, *args, **kwargs):
                 fd = original_open(file, flags, *args, **kwargs)
-                opened.append(fd)
+                opened.append((file, fd))
                 return fd
 
             def tracked_close(fd):
@@ -4102,16 +4115,31 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
             ):
                 read_payload = ap._read_snapshot_metadata_file(entry, str(source_root))
             self.assertEqual(read_payload, payload)
-            self.assertEqual(set(opened), set(closed))
+            self.assertEqual(
+                [path for path, _ in opened],
+                [str(source_root), "plugin", "plugin.json"],
+            )
+            self.assertEqual(len(opened), 3)
+            self.assertEqual(len(closed), 3)
+            open_fds = [fd for _, fd in opened]
+            self.assertEqual(len(set(open_fds)), len(open_fds))
+            self.assertEqual(len(set(closed)), len(closed))
+            open_by_fd = {fd: path for path, fd in opened}
+            self.assertEqual(
+                [open_by_fd[fd] for fd in closed],
+                ["plugin.json", "plugin", str(source_root)],
+            )
 
     def test_snapshot_metadata_file_descriptor_lifecycle_validation_failure(self):
         with tempfile.TemporaryDirectory() as td:
             source_root = Path(td)
             payload = b'{"name":"expected"}'
-            source_file = source_root / "plugin.json"
+            source_dir = source_root / "plugin"
+            source_dir.mkdir()
+            source_file = source_dir / "plugin.json"
             source_file.write_bytes(payload)
             entry = audit_source_snapshot.SourceInventoryEntry(
-                path="plugin.json",
+                path="plugin/plugin.json",
                 kind="file",
                 size_bytes=len(payload),
                 git_blob_sha1=ap.git_blob_sha1(payload),
@@ -4125,14 +4153,14 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
                 mode=entry.mode,
             )
 
-            opened: list[int] = []
+            opened: list[tuple[str, int]] = []
             closed: list[int] = []
             original_open = ap.os.open
             original_close = ap.os.close
 
             def tracked_open(file, flags, *args, **kwargs):
                 fd = original_open(file, flags, *args, **kwargs)
-                opened.append(fd)
+                opened.append((file, fd))
                 return fd
 
             def tracked_close(fd):
@@ -4145,15 +4173,28 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
             ):
                 with self.assertRaises(ValueError):
                     ap._read_snapshot_metadata_file(failing_entry, str(source_root))
-            self.assertEqual(set(opened), set(closed))
+            self.assertEqual(
+                [path for path, _ in opened],
+                [str(source_root), "plugin", "plugin.json"],
+            )
+            self.assertEqual(len(opened), 3)
+            self.assertEqual(len(closed), 3)
+            open_fds = [fd for _, fd in opened]
+            self.assertEqual(len(set(open_fds)), len(open_fds))
+            self.assertEqual(len(set(closed)), len(closed))
+            open_by_fd = {fd: path for path, fd in opened}
+            self.assertEqual(
+                [open_by_fd[fd] for fd in closed],
+                ["plugin.json", "plugin", str(source_root)],
+            )
 
     def test_snapshot_metadata_rejects_final_path_symlink_swap(self):
         with tempfile.TemporaryDirectory() as td:
             source_root = Path(td)
             target_file = source_root / "plugin.source.json"
             target_file.write_text('{"name":"expected"}')
-            symlink_path = source_root / "plugin.json"
-            os.symlink(str(target_file), symlink_path)
+            source_file = source_root / "plugin.json"
+            source_file.write_text('{"name":"expected"}')
 
             payload = target_file.read_bytes()
             entry = audit_source_snapshot.SourceInventoryEntry(
@@ -4168,11 +4209,45 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
 
             def open_with_final_swap(file, flags, *args, **kwargs):
                 if file == "plugin.json" and not (flags & ap.os.O_DIRECTORY):
-                    symlink_path.unlink()
-                    os.symlink(str(target_file), symlink_path)
+                    source_file.unlink()
+                    os.symlink(str(target_file), source_file)
                 return original_open(file, flags, *args, **kwargs)
 
             with patch.object(ap.os, "open", side_effect=open_with_final_swap):
+                with self.assertRaises(ValueError) as exc:
+                    ap._read_snapshot_metadata_file(entry, str(source_root))
+            self.assertIn("Could not read source snapshot metadata", str(exc.exception))
+
+    def test_snapshot_metadata_rejects_ancestor_path_symlink_swap(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td)
+            source_dir = source_root / "plugin"
+            source_dir.mkdir()
+            source_file = source_dir / "plugin.json"
+            payload = b'{"name":"expected"}'
+            source_file.write_bytes(payload)
+            replacement_dir = source_root / "plugin-replacement"
+            replacement_dir.mkdir()
+            (replacement_dir / "plugin.json").write_text('{"name":"replacement"}')
+
+            entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin/plugin.json",
+                kind="file",
+                size_bytes=len(payload),
+                git_blob_sha1=ap.git_blob_sha1(payload),
+                mode="100644",
+            )
+
+            original_open = ap.os.open
+
+            def open_with_ancestor_swap(file, flags, *args, **kwargs):
+                if file == "plugin" and (flags & ap.os.O_DIRECTORY):
+                    source_file.unlink()
+                    os.rmdir(source_dir)
+                    os.symlink(str(replacement_dir), source_dir)
+                return original_open(file, flags, *args, **kwargs)
+
+            with patch.object(ap.os, "open", side_effect=open_with_ancestor_swap):
                 with self.assertRaises(ValueError) as exc:
                     ap._read_snapshot_metadata_file(entry, str(source_root))
             self.assertIn("Could not read source snapshot metadata", str(exc.exception))
