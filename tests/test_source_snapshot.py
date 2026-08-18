@@ -74,6 +74,10 @@ def _build_tar(entries: list[tuple[str, bytes, int, str, str | None]]) -> bytes:
                 info.linkname = link_target or ""
                 archive.addfile(info)
                 continue
+            if kind == "dir":
+                info.type = tarfile.DIRTYPE
+                archive.addfile(info)
+                continue
             if kind == "hardlink":
                 info.type = tarfile.LNKTYPE
                 info.linkname = link_target or "target"
@@ -460,6 +464,38 @@ def test_session_and_header_authorization_is_not_reused_for_request_scope(
     assert response.closed == 1
 
 
+def test_session_auth_hook_is_disabled_for_source_transport(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+
+    class SessionWithAuth(FakeSession):
+        def __init__(
+            self, responses: list[FakeResponse], headers: dict[str, str] | None = None
+        ):
+            super().__init__(responses, headers=headers)
+            self.auth = ("user", "password")
+            self.observed_auth: list[Any] = []
+
+        def get(self, url: str, **kwargs: Any) -> FakeResponse:
+            self.observed_auth.append(getattr(self, "auth", None))
+            return super().get(url, **kwargs)
+
+    session = SessionWithAuth([FakeResponse(chunks=[_valid_payload()])])
+    wrapped = ss._codeload_session(session, max_redirects=0)
+    response = wrapped.get(
+        f"https://codeload.github.com/owner/plugin/tar.gz/{COMMIT}",
+        headers={"X-From": "caller"},
+    )
+    try:
+        assert response.status_code == 200
+        assert session.observed_auth == [None]
+        captured_headers = session.calls[0][1]["headers"]
+        assert captured_headers["Authorization"] == "Bearer test-token"
+    finally:
+        response.close()
+        assert response.closed == 1
+        assert session.auth == ("user", "password")
+
+
 def test_redirect_chain_and_disallowed_hosts_do_not_iterate_rejected_body(tmp_path):
     payload = _valid_payload()
     session = FakeSession(
@@ -676,6 +712,15 @@ def test_session_authorization_header_is_stripped_from_defaults(monkeypatch, tmp
             ),
         ),
         (
+            "type-conflict",
+            _build_tar(
+                [
+                    (f"{TOP_DIR}/node", b"{}", 0o644, "file", None),
+                    (f"{TOP_DIR}/node", b"", 0o755, "dir", None),
+                ]
+            ),
+        ),
+        (
             "ancestor-before-descendant",
             _build_tar(
                 [
@@ -748,6 +793,32 @@ def test_archive_safety_rejects_layout_and_path_failures(tmp_path, path_case, pa
             session=FakeSession([FakeResponse(chunks=[payload])]),
             policy=_policy(max_path_depth=3),
         )
+
+
+def test_archive_safety_allows_explicit_directory_ancestors(tmp_path):
+    payload = _build_tar(
+        [
+            (f"{TOP_DIR}", b"", 0o755, "dir", None),
+            (f"{TOP_DIR}/sub", b"", 0o755, "dir", None),
+            (f"{TOP_DIR}/sub/file", b"{}", 0o644, "file", None),
+        ]
+    )
+    snapshot = ss.materialize_source_snapshot(
+        REPOSITORY,
+        COMMIT,
+        tmp_path / "explicit-dir",
+        session=FakeSession([FakeResponse(chunks=[payload])]),
+        policy=_policy(),
+    )
+    assert snapshot.inventory == (
+        ss.SourceInventoryEntry(
+            path="sub/file",
+            kind="file",
+            size_bytes=2,
+            git_blob_sha1=_git_blob_sha1(b"{}"),
+            mode="100644",
+        ),
+    )
 
 
 def test_archive_safety_rejects_no_regular_files(tmp_path):
@@ -885,17 +956,19 @@ def test_no_partial_snapshot_on_failure(tmp_path):
 def test_destination_survives_promotion_race_and_cleanup_staging(tmp_path, monkeypatch):
     payload = _valid_payload()
     destination = tmp_path / "snapshot"
-    original_replace = ss.os.replace
+    original_rename = ss.os.rename
+    destination_inodes: list[int] = []
 
-    def failing_replace(_src: Path, dst: Path) -> None:
+    def raced_rename(src: Path, dst: Path) -> None:
         if dst != destination:
-            return original_replace(_src, dst)
+            return original_rename(src, dst)
         dst.mkdir(parents=True, exist_ok=True)
         (dst / "sentinel").write_text("preserve")
-        raise RuntimeError("promotion failed")
+        destination_inodes.append(dst.stat().st_ino)
+        return original_rename(src, dst)
 
-    monkeypatch.setattr(ss.os, "replace", failing_replace)
-    with pytest.raises(RuntimeError, match="promotion failed"):
+    monkeypatch.setattr(ss.os, "rename", raced_rename)
+    with pytest.raises(ss.SourceSnapshotError, match="destination already exists"):
         ss.materialize_source_snapshot(
             REPOSITORY,
             COMMIT,
@@ -905,10 +978,9 @@ def test_destination_survives_promotion_race_and_cleanup_staging(tmp_path, monke
         )
 
     assert destination.exists()
+    assert destination_inodes == [destination.stat().st_ino]
     assert (destination / "sentinel").read_text() == "preserve"
     _assert_no_source_snapshot_staging(tmp_path)
-
-    monkeypatch.setattr(ss.os, "replace", original_replace)
 
 
 def test_extract_regular_member_uses_chunked_reads_and_closes_stream(
@@ -951,20 +1023,63 @@ def test_extract_regular_member_uses_chunked_reads_and_closes_stream(
 
         destination = tmp_path / "extracted"
         destination.mkdir()
-        entry = ss._extract_regular_member(
+        entry, metadata = ss._extract_regular_member(
             archive_stream=GuardedStream(),
             destination_parent=destination,
             member=member,
             normalized_path=member.name,
             size=member.size,
+            capture_metadata=True,
         )
     assert entry.path == "plugin.json"
     assert entry.mode == "100644"
     assert entry.size_bytes == 17
     assert entry.git_blob_sha1 == _git_blob_sha1(b"x" * 17)
+    assert metadata == b"x" * 17
     assert len(read_sizes) >= 3
     assert read_sizes[0] == 4
     assert all(chunk_size > 0 for chunk_size in read_sizes)
+
+
+def test_extract_regular_member_enforces_metadata_capture_limit(tmp_path):
+    oversized = b"y" * (ss._SOURCE_METADATA_BYTE_LIMIT + 1)
+    payload = _build_tar(
+        [
+            (
+                f"{TOP_DIR}/plugin.json",
+                oversized,
+                0o644,
+                "file",
+                None,
+            ),
+        ]
+    )
+
+    archive_path = tmp_path / "oversized.tar.gz"
+    archive_path.write_bytes(payload)
+    with tarfile.open(archive_path, "r:*") as archive:
+        member = next(
+            m
+            for m in archive.getmembers()
+            if m.isfile() and m.name.endswith("plugin.json")
+        )
+        stream = archive.extractfile(member)
+        assert stream is not None
+
+        destination = tmp_path / "too-large-metadata"
+        destination.mkdir()
+        with pytest.raises(
+            ss.SourceSnapshotError,
+            match="metadata file too large for bounded capture",
+        ):
+            ss._extract_regular_member(
+                archive_stream=stream,
+                destination_parent=destination,
+                member=member,
+                normalized_path=member.name,
+                size=member.size,
+                capture_metadata=True,
+            )
 
 
 def test_midstream_read_failure_cleans_staging_and_destination(tmp_path):

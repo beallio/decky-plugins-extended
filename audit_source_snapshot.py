@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import os
 import re
@@ -23,6 +24,7 @@ _DEFAULT_CODELOAD_HOSTS = frozenset({"codeload.github.com"})
 _DEFAULT_MAX_REDIRECTS = 3
 _ALLOWED_REDIRECTS_PER_WORKER = range(0, 4)
 _SOURCE_STREAM_CHUNK_SIZE = 1_048_576
+_SOURCE_METADATA_BYTE_LIMIT = 1_048_576
 
 _DEFAULT_ARCHIVE_LIMITS = {
     "max_files": 10_000,
@@ -219,6 +221,22 @@ def _disable_session_authorization_headers(session: Any) -> Any:
             headers[key] = value  # type: ignore[index]
 
 
+@contextlib.contextmanager
+def _disable_session_auth(session: Any) -> Any:
+    if not hasattr(session, "auth"):
+        yield
+        return
+
+    had_auth = getattr(session, "auth")
+    try:
+        if had_auth is not None:
+            setattr(session, "auth", None)
+        yield
+    finally:
+        if had_auth is not None:
+            setattr(session, "auth", had_auth)
+
+
 def _codeload_session(
     session: Any,
     *,
@@ -233,7 +251,10 @@ def _codeload_session(
 
         def _fetch(self, current_url: str, kwargs: Mapping[str, Any]) -> Any:
             _extract_redirect_host(current_url, allowed_hosts=allowed_hosts)
-            with _disable_session_authorization_headers(self._inner):
+            with (
+                _disable_session_authorization_headers(self._inner),
+                _disable_session_auth(self._inner),
+            ):
                 response = self._inner.get(
                     current_url,
                     allow_redirects=False,
@@ -339,6 +360,23 @@ def _preflight_source_archive(
                 raise SourceSnapshotError(
                     f"ambiguous archive path {candidate!r}: duplicate with {existing_kind}"
                 )
+            if existing_kind == "dir" and kind == "dir":
+                continue
+            if existing_kind == "dir" and kind in {"file", "symlink"}:
+                if existing_path.startswith(candidate + "/"):
+                    raise SourceSnapshotError(
+                        f"ambiguous archive path {candidate!r} conflicts with {existing_path!r}"
+                    )
+                if candidate.startswith(existing_path + "/"):
+                    continue
+            if kind == "dir" and existing_kind in {"file", "symlink"}:
+                if existing_path.startswith(candidate + "/") or candidate.startswith(
+                    existing_path + "/"
+                ):
+                    raise SourceSnapshotError(
+                        f"ambiguous archive path {candidate!r} conflicts with {existing_path!r}"
+                    )
+                continue
             if existing_path.startswith(candidate + "/") or candidate.startswith(
                 existing_path + "/"
             ):
@@ -433,13 +471,14 @@ def _preflight_source_archive(
 
 
 def _extract_regular_member(
-    *,
     archive_stream: Any,
     destination_parent: Path,
     member: tarfile.TarInfo,
     normalized_path: str,
     size: int,
-) -> SourceInventoryEntry:
+    *,
+    capture_metadata: bool = False,
+) -> tuple[SourceInventoryEntry, Optional[bytes]]:
     target = PurePosixPath(normalized_path)
     if len(target.parts) < 2:
         raise SourceSnapshotError(f"malformed archive member path: {normalized_path!r}")
@@ -452,6 +491,7 @@ def _extract_regular_member(
     hasher.update(f"blob {size}\0".encode("ascii"))
     remaining = size
     bytes_read = 0
+    metadata_bytes: Optional[list[bytes]] = [] if capture_metadata else None
 
     def _read_chunk(chunk_size: int) -> bytes:
         if chunk_size <= 0:
@@ -482,6 +522,15 @@ def _extract_regular_member(
                 hasher.update(payload)
                 remaining -= len(payload)
                 bytes_read += len(payload)
+                if (
+                    metadata_bytes is not None
+                    and bytes_read > _SOURCE_METADATA_BYTE_LIMIT
+                ):
+                    raise SourceSnapshotError(
+                        f"metadata file too large for bounded capture: {normalized_path!r}"
+                    )
+                if metadata_bytes is not None:
+                    metadata_bytes.append(payload)
 
             trailing = _read_chunk(1)
             if trailing:
@@ -496,7 +545,7 @@ def _extract_regular_member(
             size_bytes=bytes_read,
             git_blob_sha1=hasher.hexdigest(),
             mode=mode,
-        )
+        ), (b"".join(metadata_bytes) if metadata_bytes is not None else None)
     finally:
         close = getattr(archive_stream, "close", None)
         if callable(close):
@@ -537,27 +586,39 @@ def _extract_source_archive(
                 raise SourceSnapshotError(
                     f"unable to read archive member: {normalized!r}"
                 )
-            entry = _extract_regular_member(
+            entry, captured_metadata = _extract_regular_member(
                 archive_stream=stream,
                 destination_parent=destination,
                 member=member,
                 normalized_path=normalized,
                 size=member.size,
+                capture_metadata=rel_path in {"plugin.json", "package.json"},
             )
             entries.append(entry)
 
             if rel_path == "plugin.json":
-                with (destination / rel_path).open("rb") as payload_file:
-                    plugin_json = payload_file.read()
+                plugin_json = captured_metadata
             if rel_path == "package.json":
-                with (destination / rel_path).open("rb") as payload_file:
-                    package_json = payload_file.read()
+                package_json = captured_metadata
 
     return (
         tuple(sorted(entries, key=lambda item: item.path)),
         plugin_json,
         package_json,
     )
+
+
+def _promote_snapshot(extracted_path: Path, destination_path: Path) -> None:
+    try:
+        os.rename(extracted_path, destination_path)
+    except OSError as exc:
+        if exc.errno in (errno.EEXIST, errno.ENOTEMPTY, errno.EISDIR, errno.ENOTDIR):
+            raise SourceSnapshotError(
+                f"destination already exists: {destination_path}"
+            ) from exc
+        raise SourceSnapshotError(
+            f"failed to publish source snapshot to {destination_path}"
+        ) from exc
 
 
 def materialize_source_snapshot(
@@ -574,8 +635,6 @@ def materialize_source_snapshot(
     source_url = _snapshot_source_url(canonical_repo, canonical_commit)
 
     destination_path = Path(destination)
-    if destination_path.exists():
-        raise SourceSnapshotError(f"destination already exists: {destination_path}")
     destination_path.parent.mkdir(parents=True, exist_ok=True)
 
     archive_limits = _validate_archive_limits(policy)
@@ -621,9 +680,7 @@ def materialize_source_snapshot(
         )
 
         # Promote as a completed snapshot in one atomic swap.
-        if destination_path.exists():
-            raise SourceSnapshotError(f"destination already exists: {destination_path}")
-        os.replace(extracted_path, destination_path)
+        _promote_snapshot(extracted_path, destination_path)
 
         return SourceSnapshot(
             repository=canonical_repo,
