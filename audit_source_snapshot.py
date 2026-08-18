@@ -381,7 +381,7 @@ def _preflight_source_archive(
 
     try:
         with tarfile.open(archive_path, "r:*") as archive:
-            for member in archive.getmembers():
+            for member in archive:
                 normalized = _validate_and_normalize_archive_path(member.name)
                 path = PurePosixPath(normalized)
                 if len(path.parts) == 0:
@@ -398,6 +398,7 @@ def _preflight_source_archive(
                 if member.isdir():
                     _check_ambiguous_paths(normalized_key, "dir")
                     path_types[normalized_key] = "dir"
+                    planned.append((member, normalized, "dir", None))
                     for depth in range(1, len(path.parts)):
                         prefix = "/".join(path.parts[:depth])
                         file_count_for_prefix[prefix] = (
@@ -471,7 +472,10 @@ def _preflight_source_archive(
         )
 
     top_dir = next(iter(top_dirs))
-    if any(len(PurePosixPath(path).parts) == 1 for _, path, _, _ in planned):
+    if any(
+        len(PurePosixPath(path).parts) == 1 and kind != "dir"
+        for _, path, kind, _ in planned
+    ):
         raise SourceSnapshotError(
             "archive members must all be inside a single top-level directory"
         )
@@ -574,6 +578,13 @@ def _extract_source_archive(
         for member, normalized, kind, symlink_target in planned:
             path = PurePosixPath(normalized)
             relative_parts = path.parts[1:]
+            if kind == "dir":
+                if relative_parts:
+                    (destination / "/".join(relative_parts)).mkdir(
+                        parents=True, exist_ok=True
+                    )
+                continue
+
             rel_path = "/".join(relative_parts)
 
             if kind == "symlink":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import tarfile
@@ -803,10 +804,11 @@ def test_archive_safety_allows_explicit_directory_ancestors(tmp_path):
             (f"{TOP_DIR}/sub/file", b"{}", 0o644, "file", None),
         ]
     )
+    destination = tmp_path / "explicit-dir"
     snapshot = ss.materialize_source_snapshot(
         REPOSITORY,
         COMMIT,
-        tmp_path / "explicit-dir",
+        destination,
         session=FakeSession([FakeResponse(chunks=[payload])]),
         policy=_policy(),
     )
@@ -819,6 +821,7 @@ def test_archive_safety_allows_explicit_directory_ancestors(tmp_path):
             mode="100644",
         ),
     )
+    assert (destination / "sub").is_dir()
 
 
 def test_archive_safety_allows_directory_headers_after_child_entries(tmp_path):
@@ -829,10 +832,11 @@ def test_archive_safety_allows_directory_headers_after_child_entries(tmp_path):
             (f"{TOP_DIR}/sub", b"", 0o755, "dir", None),
         ]
     )
+    destination = tmp_path / "explicit-dir-after-child"
     snapshot = ss.materialize_source_snapshot(
         REPOSITORY,
         COMMIT,
-        tmp_path / "explicit-dir-after-child",
+        destination,
         session=FakeSession([FakeResponse(chunks=[payload])]),
         policy=_policy(),
     )
@@ -845,6 +849,55 @@ def test_archive_safety_allows_directory_headers_after_child_entries(tmp_path):
             mode="100644",
         ),
     )
+    assert (destination / "sub").is_dir()
+
+
+def test_archive_safety_materializes_empty_nested_directories(tmp_path):
+    payload = _build_tar(
+        [
+            (f"{TOP_DIR}", b"", 0o755, "dir", None),
+            (f"{TOP_DIR}/nested", b"", 0o755, "dir", None),
+            (f"{TOP_DIR}/nested/empty", b"", 0o755, "dir", None),
+            (f"{TOP_DIR}/plugin.json", PLUGIN_JSON_BYTES, 0o644, "file", None),
+        ]
+    )
+    destination = tmp_path / "materialize-empty"
+    ss.materialize_source_snapshot(
+        REPOSITORY,
+        COMMIT,
+        destination,
+        session=FakeSession([FakeResponse(chunks=[payload])]),
+        policy=_policy(),
+    )
+
+    assert (destination / "nested").is_dir()
+    assert (destination / "nested" / "empty").is_dir()
+
+
+def test_root_or_nested_directory_header_is_allowed_but_top_level_file_is_not(tmp_path):
+    valid = ss.SourceSnapshotError
+
+    payload = _build_tar([(f"{TOP_DIR}", b"", 0o755, "dir", None)])
+    with pytest.raises(valid, match="source archive contains no regular files"):
+        ss.materialize_source_snapshot(
+            REPOSITORY,
+            COMMIT,
+            tmp_path / "top-dir-only",
+            session=FakeSession([FakeResponse(chunks=[payload])]),
+            policy=_policy(max_single_file_bytes=1024, max_uncompressed_bytes=1024),
+        )
+
+    payload = _build_tar([(f"{TOP_DIR}", b"{}", 0o644, "file", None)])
+    with pytest.raises(
+        ss.SourceSnapshotError, match="archive members must all be inside"
+    ):
+        ss.materialize_source_snapshot(
+            REPOSITORY,
+            COMMIT,
+            tmp_path / "top-file",
+            session=FakeSession([FakeResponse(chunks=[payload])]),
+            policy=_policy(max_single_file_bytes=1024, max_uncompressed_bytes=1024),
+        )
 
 
 def test_archive_safety_rejects_no_regular_files(tmp_path):
@@ -962,6 +1015,99 @@ def test_archive_limits_are_enforced(tmp_path):
         )
 
 
+def test_preflight_streaming_parser_stops_at_first_file_limit_overrun(tmp_path):
+    payload = _build_tar(
+        [
+            (f"{TOP_DIR}/a", b"1", 0o644, "file", None),
+            (f"{TOP_DIR}/b", b"2", 0o644, "file", None),
+            (f"{TOP_DIR}/c", b"3", 0o644, "file", None),
+        ]
+    )
+    archive_path = tmp_path / "archive.tar.gz"
+    archive_path.write_bytes(payload)
+    original_open = tarfile.open
+
+    calls: dict[str, int] = {"iter": 0, "getmembers": 0}
+
+    class TrackedArchive:
+        def __init__(self, file_path: Any, mode: str):
+            self._archive = original_open(file_path, mode)
+            self._iterator = iter(self._archive)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            return self._archive.__exit__(*exc)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            calls["iter"] += 1
+            if calls["iter"] > 3:
+                raise AssertionError("parsed more members than allowed")
+            return next(self._iterator)
+
+        def getmembers(self):
+            calls["getmembers"] += 1
+            return self._archive.getmembers()
+
+    def open_guarded(file_path: Any, mode: str, *args: Any, **kwargs: Any):
+        return TrackedArchive(file_path, mode)
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(tarfile, "open", open_guarded)
+        with pytest.raises(ss.SourceSnapshotError, match="max file count"):
+            ss.materialize_source_snapshot(
+                REPOSITORY,
+                COMMIT,
+                tmp_path / "max-file-stream",
+                session=FakeSession([FakeResponse(chunks=[payload])]),
+                policy=_policy(max_files=2),
+            )
+    finally:
+        monkeypatch.undo()
+
+    assert calls["iter"] == 3
+    assert calls["getmembers"] == 0
+
+
+def test_directory_headers_count_toward_max_and_block_materialization(
+    tmp_path, monkeypatch
+):
+    payload = _build_tar(
+        [
+            (f"{TOP_DIR}", b"", 0o755, "dir", None),
+            (f"{TOP_DIR}/empty", b"", 0o755, "dir", None),
+            (f"{TOP_DIR}/a", b"{}", 0o644, "file", None),
+            (f"{TOP_DIR}/b", b"{}", 0o644, "file", None),
+        ]
+    )
+    blocked = {"called": False}
+
+    def blocked_extract_source_archive(
+        archive_path: Path,
+        destination: Path,
+        planned: list[tuple[tarfile.TarInfo, str, str, str | None]],
+    ) -> None:
+        blocked["called"] = True
+        raise AssertionError("materializer should not run on limit error")
+
+    monkeypatch.setattr(ss, "_extract_source_archive", blocked_extract_source_archive)
+    with pytest.raises(ss.SourceSnapshotError, match="max file count"):
+        ss.materialize_source_snapshot(
+            REPOSITORY,
+            COMMIT,
+            tmp_path / "dir-header-limit",
+            session=FakeSession([FakeResponse(chunks=[payload])]),
+            policy=_policy(max_files=3),
+        )
+
+    assert blocked["called"] is False
+
+
 def test_repeatable_inventory_and_hashes(tmp_path):
     payload = _valid_payload()
     first = ss.materialize_source_snapshot(
@@ -1010,18 +1156,49 @@ def test_no_partial_snapshot_on_failure(tmp_path):
 def test_destination_survives_promotion_race_and_cleanup_staging(tmp_path, monkeypatch):
     destination = tmp_path / "snapshot"
     destination.mkdir()
+    session = FakeSession([])
     with pytest.raises(ss.SourceSnapshotError, match="destination already exists"):
         ss.materialize_source_snapshot(
             REPOSITORY,
             COMMIT,
             destination,
-            session=FakeSession([FakeResponse(chunks=[_valid_payload()])]),
+            session=session,
             policy=_policy(),
         )
+    assert session.calls == []
     _assert_no_source_snapshot_staging(tmp_path)
 
 
-def test_destination_survives_promotion_race_and_cleanup(tmp_path, monkeypatch):
+def test_destination_survives_promotion_race_and_cleanup_real_renameat2_with_empty_destination(
+    tmp_path,
+):
+    payload = _valid_payload()
+    destination = tmp_path / "snapshot"
+    destination.mkdir()
+    destination_inode = destination.stat().st_ino
+
+    with pytest.raises(ss.SourceSnapshotError, match="destination already exists"):
+        ss.materialize_source_snapshot(
+            REPOSITORY,
+            COMMIT,
+            destination,
+            session=FakeSession([FakeResponse(chunks=[payload])]),
+            policy=_policy(
+                max_single_file_bytes=ss._SOURCE_METADATA_BYTE_LIMIT + 2,
+                max_uncompressed_bytes=(ss._SOURCE_METADATA_BYTE_LIMIT + 2) * 2,
+            ),
+        )
+
+    assert destination.exists()
+    assert destination.stat().st_ino == destination_inode
+    assert not any(child.name != "" for child in destination.iterdir())
+    _assert_no_source_snapshot_staging(tmp_path)
+
+
+def test_destination_survives_promotion_race_and_cleanup_with_nonempty_destination(
+    tmp_path,
+    monkeypatch,
+):
     payload = _valid_payload()
     destination = tmp_path / "snapshot"
     original_rename = ss._rename_without_replace
@@ -1052,6 +1229,80 @@ def test_destination_survives_promotion_race_and_cleanup(tmp_path, monkeypatch):
     assert destination_inodes == [destination.stat().st_ino]
     assert (destination / "sentinel").read_text() == "preserve"
     _assert_no_source_snapshot_staging(tmp_path)
+
+
+def test_rename_without_replace_fails_closed_when_renameat2_is_missing(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+
+    class FakeLib:
+        pass
+
+    monkeypatch.setattr(ss.ctypes, "CDLL", lambda *_args, **_kwargs: FakeLib())
+    monkeypatch.setattr(
+        ss.os,
+        "replace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fallback rename must not run")
+        ),
+    )
+    monkeypatch.setattr(
+        ss.shutil,
+        "move",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fallback move must not run")
+        ),
+    )
+
+    with pytest.raises(
+        ss.SourceSnapshotError, match="no-clobber promotion unavailable"
+    ):
+        ss._rename_without_replace(source, destination)
+
+    assert source.exists()
+    assert not destination.exists()
+
+
+def test_rename_without_replace_fails_closed_when_renameat2_unsupported(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+
+    class FakeLib:
+        @staticmethod
+        def renameat2(
+            *_args: Any,
+            **_kwargs: Any,
+        ) -> int:
+            return -1
+
+    monkeypatch.setattr(ss.ctypes, "CDLL", lambda *_args, **_kwargs: FakeLib())
+    monkeypatch.setattr(ss.ctypes, "get_errno", lambda: errno.EINVAL)
+    monkeypatch.setattr(
+        ss.os,
+        "replace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fallback rename must not run")
+        ),
+    )
+    monkeypatch.setattr(
+        ss.shutil,
+        "move",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fallback move must not run")
+        ),
+    )
+
+    with pytest.raises(ss.SourceSnapshotError, match="atomic no-clobber rename"):
+        ss._rename_without_replace(source, destination)
+
+    assert source.exists()
+    assert not destination.exists()
 
 
 def test_file_and_symlink_ancestry_rejections_keep_extraction_on_preflight_seam(
@@ -1272,12 +1523,19 @@ def test_midstream_read_failure_cleans_staging_and_destination(tmp_path):
     class GuardedArchive:
         def __init__(self, file_path: Any, mode: str):
             self._archive = original_open(file_path, mode)
+            self._iterator = iter(self._archive)
 
         def __enter__(self):
             return self
 
         def __exit__(self, *exc: Any) -> None:
             self._archive.__exit__(*exc)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._iterator)
 
         def getmembers(self):
             return self._archive.getmembers()
