@@ -1171,11 +1171,37 @@ def test_destination_survives_promotion_race_and_cleanup_staging(tmp_path, monke
 
 def test_destination_survives_promotion_race_and_cleanup_real_renameat2_with_empty_destination(
     tmp_path,
+    monkeypatch,
 ):
     payload = _valid_payload()
     destination = tmp_path / "snapshot"
-    destination.mkdir()
-    destination_inode = destination.stat().st_ino
+    destination_inodes: list[int] = []
+    rename_reached = [False]
+
+    original_rename = ss._rename_without_replace
+
+    def raced_rename(source: Path, destination_path: Path) -> None:
+        rename_reached[0] = True
+        destination.mkdir()
+        destination_inodes.append(destination.stat().st_ino)
+        with monkeypatch.context() as rename_context:
+            rename_context.setattr(
+                ss.os,
+                "replace",
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    AssertionError("fallback rename must not run")
+                ),
+            )
+            rename_context.setattr(
+                ss.shutil,
+                "move",
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    AssertionError("fallback move must not run")
+                ),
+            )
+            return original_rename(source, destination_path)
+
+    monkeypatch.setattr(ss, "_rename_without_replace", raced_rename)
 
     with pytest.raises(ss.SourceSnapshotError, match="destination already exists"):
         ss.materialize_source_snapshot(
@@ -1190,7 +1216,8 @@ def test_destination_survives_promotion_race_and_cleanup_real_renameat2_with_emp
         )
 
     assert destination.exists()
-    assert destination.stat().st_ino == destination_inode
+    assert rename_reached[0]
+    assert destination_inodes == [destination.stat().st_ino]
     assert not any(child.name != "" for child in destination.iterdir())
     _assert_no_source_snapshot_staging(tmp_path)
 
