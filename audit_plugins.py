@@ -49,6 +49,7 @@ import yaml
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+import audit_worklist
 import plugin_release_utils
 
 # ---------------------------------------------------------------------------
@@ -72,6 +73,14 @@ SECRET_REDACT = "[REDACTED]"
 SEMGREP_RULES_FILE = str(Path(__file__).with_name("semgrep-rules.yml"))
 
 log = logging.getLogger("audit_plugins")
+
+
+def _write_worklist_fingerprint_to_github_output(fingerprint: str) -> None:
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if not output_path:
+        return
+    with open(output_path, "a", encoding="utf-8") as output_file:
+        output_file.write(f"worklist_fingerprint={fingerprint}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -5345,6 +5354,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         metavar="DELTA",
         help="Validate and atomically merge one verdict delta into the tracked store",
     )
+    mode_group.add_argument(
+        "--prepare-worklist",
+        metavar="WORKLIST",
+        help="Prepare immutable worklist JSON at the given path",
+    )
     parser.add_argument(
         "--aggregate-verdict-deltas",
         nargs="*",
@@ -5356,6 +5370,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--latest-only",
         action="store_true",
         help="Audit one latest eligible release; valid only with --repository",
+    )
+    parser.add_argument(
+        "--source-revision",
+        help="Source revision used for worklist preparation mode",
+    )
+    parser.add_argument(
+        "--api-deadline-seconds",
+        type=int,
+        default=300,
+        help="API timeout for producer-mode repository discovery",
     )
     parser.add_argument("--shard-count", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
@@ -5417,6 +5441,16 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.latest_only and not args.repository:
         parser.error("--latest-only is valid only with --repository")
+    if args.prepare_worklist and not (args.all or args.changed or args.repository):
+        parser.error(
+            "--prepare-worklist requires one of --all, --changed, or --repository"
+        )
+    if args.prepare_worklist and not args.source_revision:
+        parser.error("--source-revision is required with --prepare-worklist")
+    if args.prepare_worklist and args.changed and not args.base_ref:
+        parser.error("--prepare-worklist with --changed requires --base-ref")
+    if args.prepare_worklist and args.api_deadline_seconds <= 0:
+        parser.error("--api-deadline-seconds must be greater than zero")
     try:
         select_audit_shard([], args.shard_count, args.shard_index)
     except ValueError as exc:
@@ -5432,6 +5466,38 @@ def main(argv: Optional[list[str]] = None) -> int:
             log.error("Verdict delta merge failed: %s", exc)
             return 1
         return 0
+
+    if args.prepare_worklist:
+        try:
+            if args.all:
+                repository_urls = read_repo_urls(args.plugins_file)
+                selection_mode = "all"
+            elif args.changed:
+                repository_urls = get_changed_repos(args.plugins_file, args.base_ref)
+                selection_mode = "changed"
+            else:
+                repository_urls = [args.repository]
+                selection_mode = "repository"
+
+            fingerprint, _ = audit_worklist.prepare_audit_worklist(
+                args.prepare_worklist,
+                source_revision=args.source_revision,
+                selection_mode=selection_mode,
+                repository_urls=repository_urls,
+                shard_count=args.shard_count,
+                latest_only=args.latest_only,
+                base_ref=args.base_ref if args.changed else None,
+                release_fetcher=get_releases,
+                metadata_fetcher=get_repo_metadata,
+                tag_resolver=audit_worklist.resolve_repository_tags_via_ls_remote,
+                api_deadline_seconds=args.api_deadline_seconds,
+            )
+            print(f"worklist_fingerprint={fingerprint}")
+            _write_worklist_fingerprint_to_github_output(fingerprint)
+            return 0
+        except Exception as exc:
+            log.error("Failed to prepare audit worklist: %s", exc)
+            return 1
 
     # Load configuration
     try:
