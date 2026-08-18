@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import stat
 import sys
 import tarfile
@@ -20,6 +21,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import requests
+
+import audit_source_snapshot
 
 # Ensure the module is importable
 os.environ.setdefault("GITHUB_TOKEN", "test-token")
@@ -3534,6 +3537,49 @@ class TestTrivyStructuredFindings(unittest.TestCase):
         self.assertIn("source", status.detail)
         self.assertIn("artifact", status.detail)
 
+    def test_scans_artifact_and_prepared_source_root_without_fetch(self):
+        scanned_paths = []
+        supplied_policy = self._policy()
+        with (
+            tempfile.TemporaryDirectory() as artifact_dir,
+            tempfile.TemporaryDirectory() as source_dir,
+        ):
+            Path(artifact_dir, "package-lock.json").write_text("artifact-lock")
+            Path(source_dir, "package-lock.json").write_text("source-lock")
+
+            def fake_scanner(args, _name, timeout=120):
+                scanned_paths.append(Path(args[-1]))
+                return True, self._trivy_json([self._vuln("high")]), ""
+
+            with (
+                patch("shutil.which", return_value="/usr/bin/trivy"),
+                patch.object(
+                    ap,
+                    "_fetch_source_tree",
+                    side_effect=AssertionError("legacy source fetch should not run"),
+                ),
+                patch.object(
+                    ap,
+                    "_run_scanner",
+                    side_effect=fake_scanner,
+                ),
+            ):
+                with patch(
+                    "audit_plugins.tempfile.TemporaryDirectory",
+                    side_effect=AssertionError("temp source fetch should not run"),
+                ):
+                    status, findings = ap.run_trivy(
+                        artifact_dir,
+                        supplied_policy,
+                        source_root=source_dir,
+                    )
+
+        self.assertEqual(len(scanned_paths), 2)
+        self.assertEqual(scanned_paths.count(Path(artifact_dir)), 1)
+        self.assertEqual(scanned_paths.count(Path(source_dir)), 1)
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(len(findings), 2)
+
     def test_failed_source_fetch_is_not_reported_as_passed(self):
         with tempfile.TemporaryDirectory() as artifact_dir:
             with (
@@ -3611,6 +3657,213 @@ class TestSourceTreeFetch(unittest.TestCase):
             self.assertTrue((source_root / "package.json").is_file())
             self.assertTrue((source_root / "setup.py").is_file())
             self.assertFalse(sentinel.exists())
+
+
+class TestSourceArtifactDiffSnapshot(unittest.TestCase):
+    def _mk_source_snapshot(
+        self, files: dict[str, bytes | str], *, symlinks: dict[str, str] | None = None
+    ) -> audit_source_snapshot.SourceSnapshot:
+        symlinks = {} if symlinks is None else symlinks
+        source_dir = Path(tempfile.mkdtemp(prefix="audit-source-snapshot-"))
+        self.addCleanup(lambda: source_dir.exists() and shutil.rmtree(source_dir))
+
+        entries: list[audit_source_snapshot.SourceInventoryEntry] = []
+        for rel, payload in files.items():
+            rel_path = rel.replace("\\", "/")
+            path = source_dir / rel_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            raw = payload if isinstance(payload, bytes) else payload.encode("utf-8")
+            path.write_bytes(raw)
+            entries.append(
+                audit_source_snapshot.SourceInventoryEntry(
+                    path=rel_path,
+                    kind="file",
+                    size_bytes=len(raw),
+                    git_blob_sha1=ap.git_blob_sha1(raw),
+                    mode="100644",
+                )
+            )
+
+        for rel, target in symlinks.items():
+            rel_path = rel.replace("\\", "/")
+            target_raw = target.encode("utf-8", errors="surrogateescape")
+            entries.append(
+                audit_source_snapshot.SourceInventoryEntry(
+                    path=rel_path,
+                    kind="symlink",
+                    size_bytes=len(target_raw),
+                    git_blob_sha1=ap.git_blob_sha1(target_raw),
+                    mode="120000",
+                    symlink_target=target,
+                )
+            )
+
+        return audit_source_snapshot.SourceSnapshot(
+            repository="https://github.com/o/r",
+            commit_sha="a" * 40,
+            source_url="https://codeload.github.com/o/r/tar.gz/" + ("a" * 40),
+            archive_sha256="0" * 64,
+            archive_size_bytes=0,
+            source_root=str(source_dir),
+            inventory=tuple(entries),
+            plugin_json=(
+                files.get("plugin.json", "").encode("utf-8")
+                if isinstance(files.get("plugin.json"), str)
+                else files.get("plugin.json")
+            ),
+            package_json=(
+                files.get("package.json", "").encode("utf-8")
+                if isinstance(files.get("package.json"), str)
+                else files.get("package.json")
+            ),
+        )
+
+    def _snapshot_compare(
+        self,
+        extract_files: dict[str, bytes | str],
+        snapshot: audit_source_snapshot.SourceSnapshot,
+        ref: str = "v1",
+    ):
+        with (
+            tempfile.TemporaryDirectory() as extract_dir,
+            patch.object(
+                ap,
+                "_gh_get",
+                side_effect=AssertionError("_gh_get should not be used"),
+            ),
+            patch.object(
+                ap,
+                "_resolve_ref_to_tree_sha",
+                side_effect=AssertionError(
+                    "_resolve_ref_to_tree_sha should not be used"
+                ),
+            ),
+            patch.object(
+                ap,
+                "get_repo_file_raw",
+                side_effect=AssertionError("get_repo_file_raw should not be used"),
+            ),
+            patch.object(
+                ap,
+                "_fetch_source_tree",
+                side_effect=AssertionError("_fetch_source_tree should not be used"),
+            ),
+            patch.object(
+                ap,
+                "_download_source_archive",
+                side_effect=AssertionError(
+                    "legacy source archive download should not be used"
+                ),
+            ),
+        ):
+            for rel, payload in extract_files.items():
+                path = Path(extract_dir, rel.replace("\\", "/"))
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if isinstance(payload, str):
+                    payload = payload.encode("utf-8")
+                path.write_bytes(payload)
+            return ap.compare_source_and_artifact_from_snapshot(
+                extract_dir,
+                snapshot,
+                ref,
+            )
+
+    def test_snapshot_adapter_detects_modified_and_matching_files(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('original')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/main.py": b"print('original')"},
+            snapshot,
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertTrue(summary["checked"])
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertEqual(findings, [])
+
+    def test_snapshot_adapter_flags_modified_source_file(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('original')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/main.py": b"print('modified')"},
+            snapshot,
+        )
+        self.assertEqual(status.status, "found_issue")
+        self.assertIn("plugin/main.py", summary["modified_source_files"])
+        self.assertIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
+
+    def test_snapshot_adapter_normalizes_crlf_differences(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": "print('x')\n"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/main.py": "print('x')\r\n"},
+            snapshot,
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertEqual(findings, [])
+
+    def test_snapshot_adapter_build_stamped_metadata(self):
+        snapshot = self._mk_source_snapshot(
+            {"plugin.json": json.dumps({"name": "Syncthing", "version": "1.0.0"})}
+        )
+        summary, findings, status = self._snapshot_compare(
+            {
+                "plugin/plugin.json": json.dumps(
+                    {"name": "Syncthing", "version": "1.0.1-dev.gabc"}
+                )
+            },
+            snapshot,
+            ref="v1.0.1-dev.gabc",
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertEqual(findings, [])
+
+    def test_snapshot_adapter_case_insensitive_matching(self):
+        snapshot = self._mk_source_snapshot({"plugin/MAIN.PY": b"print('x')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/main.py": b"print('x')"},
+            snapshot,
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(findings, [])
+        self.assertTrue(summary["checked"])
+
+    def test_snapshot_adapter_leading_artifact_directory(self):
+        snapshot = self._mk_source_snapshot({"main.py": b"print('x')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/main.py": b"print('x')"},
+            snapshot,
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(findings, [])
+        self.assertEqual(summary["modified_source_files"], [])
+
+    def test_snapshot_adapter_zip_only_executable_and_script(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('x')"})
+        summary, findings, status = self._snapshot_compare(
+            {
+                "plugin/main.py": b"print('x')",
+                "plugin/extra-bin": b"\x7fELF\x02\x01\x01\x00abc",
+                "plugin/extra-script": "#!/bin/sh\necho hi\n",
+            },
+            snapshot,
+        )
+        self.assertEqual(status.status, "found_issue")
+        self.assertIn("plugin/extra-bin", summary["zip_only_executables"])
+        self.assertIn("plugin/extra-script", summary["zip_only_scripts"])
+        self.assertIn("ZIP_ONLY_EXECUTABLE", {f.rule_id for f in findings})
+        self.assertIn("ZIP_ONLY_SCRIPT", {f.rule_id for f in findings})
+
+    def test_snapshot_adapter_uses_symlink_blob_payload(self):
+        snapshot = self._mk_source_snapshot(
+            {"plugin/main.py": b"print('x')"},
+            symlinks={"plugin/link": "payload-target"},
+        )
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/link": "payload-target", "plugin/main.py": b"print('x')"},
+            snapshot,
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertEqual(findings, [])
 
 
 # ---------------------------------------------------------------------------

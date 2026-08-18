@@ -49,6 +49,7 @@ import yaml
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+import audit_source_snapshot
 import audit_worklist
 import plugin_release_utils
 
@@ -2199,6 +2200,7 @@ def run_trivy(
     policy: dict[str, Any],
     *,
     source_repo: Optional[tuple[str, str, str]] = None,
+    source_root: Optional[str] = None,
 ) -> tuple[ScannerStatus, list[Finding]]:
     """Scan the release artifact and exact-tag source tree with Trivy."""
     if not _scanner_enabled(policy, "trivy"):
@@ -2227,7 +2229,19 @@ def run_trivy(
     findings: list[Finding] = []
 
     try:
-        if source_repo is not None:
+        if source_root is not None and source_repo is not None:
+            raise ValueError(
+                "source_repo is transitional only; use source_root instead"
+            )
+
+        if source_root is not None:
+            if os.path.isdir(source_root):
+                scan_targets.append(("source", source_root))
+            else:
+                errors.append(
+                    f"source scan failed: source_root unavailable: {source_root!r}"
+                )
+        elif source_repo is not None:
             owner, repo, commit_sha = source_repo
             source_temp = tempfile.TemporaryDirectory(prefix="decky-source-")
             try:
@@ -2560,6 +2574,43 @@ def _looks_like_script_asset(path: str, data: bytes, executable_bits: bool) -> b
     return False
 
 
+def _snapshot_source_inventory_lookup(
+    snapshot_inventory: tuple[audit_source_snapshot.SourceInventoryEntry, ...],
+) -> tuple[
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+    dict[str, audit_source_snapshot.SourceInventoryEntry],
+]:
+    exact: dict[str, str] = {}
+    lower: dict[str, str] = {}
+    path_for_lower: dict[str, str] = {}
+    entry_by_path: dict[str, audit_source_snapshot.SourceInventoryEntry] = {}
+
+    for entry in snapshot_inventory:
+        exact[entry.path] = entry.git_blob_sha1
+        lower_key = entry.path.lower()
+        lower[lower_key] = entry.git_blob_sha1
+        path_for_lower[lower_key] = entry.path
+        entry_by_path[entry.path] = entry
+
+    return exact, lower, path_for_lower, entry_by_path
+
+
+def _snapshot_source_blob(
+    entry: audit_source_snapshot.SourceInventoryEntry,
+    source_root: str,
+) -> bytes:
+    if entry.kind == "symlink":
+        target = entry.symlink_target
+        if target is None:
+            raise ValueError(f"source symlink entry missing target: {entry.path!r}")
+        return target.encode("utf-8", errors="surrogateescape")
+    source_path = os.path.join(source_root, entry.path)
+    with open(source_path, "rb") as source_file:
+        return source_file.read()
+
+
 def _metadata_diff_is_build_stamped(
     path: str,
     source_raw: bytes,
@@ -2696,6 +2747,210 @@ def _resolve_ref_to_tree_sha(
     """Resolve tag/ref/commit to a tree SHA. Returns (tree_sha, error_detail)."""
     _c_sha, t_sha, err = _resolve_ref_to_commit_and_tree_sha(owner, repo, ref)
     return t_sha, err
+
+
+def compare_source_and_artifact_from_snapshot(
+    extract_dir: str,
+    source_snapshot: audit_source_snapshot.SourceSnapshot,
+    ref: str,
+) -> tuple[dict[str, Any], list[Finding], ScannerStatus]:
+    """Compare extracted ZIP against materialized source snapshot.
+
+    Returns (diff_summary, findings, status).
+    """
+    summary: dict[str, Any] = {
+        "ref": ref,
+        "checked": False,
+        "zip_only_executables": [],
+        "zip_only_scripts": [],
+        "modified_source_files": [],
+        "large_binaries_absent_from_source": [],
+        "unexpected_urls": [],
+    }
+    findings: list[Finding] = []
+    normalized_release_version = plugin_release_utils.normalize_version(ref)
+
+    if not os.path.isdir(extract_dir):
+        return (
+            summary,
+            findings,
+            ScannerStatus(
+                name="source-artifact-diff",
+                status="unavailable",
+                detail="Extraction directory is unavailable.",
+            ),
+        )
+
+    if not os.path.isdir(source_snapshot.source_root):
+        return (
+            summary,
+            findings,
+            ScannerStatus(
+                name="source-artifact-diff",
+                status="failed",
+                detail="Source snapshot root is unavailable.",
+            ),
+        )
+
+    source_tree_exact, source_tree_lower, source_path_lower, source_entries = (
+        _snapshot_source_inventory_lookup(source_snapshot.inventory)
+    )
+
+    summary["checked"] = True
+
+    # ------------------------------------------------------------------
+    # Walk extracted directory and compare with the provided source snapshot.
+    # ------------------------------------------------------------------
+    for root, _dirs, files in os.walk(extract_dir):
+        for fname in files:
+            full_path = os.path.join(root, fname)
+            rel_path = os.path.relpath(full_path, extract_dir).replace("\\", "/")
+            rel_lower = rel_path.lower()
+
+            # Strip a leading plugin-name directory (common in release ZIPs)
+            parts = rel_path.split("/", 1)
+            short_path = parts[1] if len(parts) == 2 else parts[0]
+            short_lower = short_path.lower()
+
+            source_path: Optional[str] = None
+            if short_path in source_tree_exact:
+                source_path = short_path
+            elif rel_path in source_tree_exact:
+                source_path = rel_path
+            elif short_lower in source_tree_lower:
+                source_path = source_path_lower[short_lower]
+            elif rel_lower in source_tree_lower:
+                source_path = source_path_lower[rel_lower]
+            source_sha = (
+                source_tree_exact.get(source_path) if source_path is not None else None
+            )
+            in_source = source_path is not None
+
+            try:
+                if os.path.islink(full_path):
+                    raw = os.readlink(full_path).encode("utf-8", errors="replace")
+                else:
+                    with open(full_path, "rb") as source_file:
+                        raw = source_file.read()
+            except Exception:
+                continue
+
+            if not in_source:
+                bin_info = identify_binary(raw[:16], rel_path)
+                if bin_info:
+                    summary["zip_only_executables"].append(rel_path)
+                    findings.append(
+                        Finding(
+                            rule_id="ZIP_ONLY_EXECUTABLE",
+                            severity="high",
+                            classification="MANUAL_REVIEW",
+                            path=rel_path,
+                            line=0,
+                            message=(
+                                f"Binary file {rel_path!r} ({bin_info['label']}) is present "
+                                "in the release ZIP but absent from the repository source."
+                            ),
+                            evidence=bin_info["label"],
+                            scanner="source-artifact-diff",
+                        )
+                    )
+                else:
+                    executable_bits = bool(
+                        os.stat(full_path).st_mode
+                        & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                    )
+                    if _looks_like_script_asset(short_path, raw, executable_bits):
+                        summary["zip_only_scripts"].append(rel_path)
+                        findings.append(
+                            Finding(
+                                rule_id="ZIP_ONLY_SCRIPT",
+                                severity="high",
+                                classification="MANUAL_REVIEW",
+                                path=rel_path,
+                                line=0,
+                                message=(
+                                    f"Script-like file {rel_path!r} is present in the "
+                                    "release ZIP but absent from the repository source."
+                                ),
+                                evidence="script-heuristic",
+                                scanner="source-artifact-diff",
+                            )
+                        )
+                continue
+
+            source_entry = source_entries[source_path]
+            if source_sha is None:
+                summary["modified_source_files"].append(rel_path)
+                findings.append(
+                    Finding(
+                        rule_id="MODIFIED_SOURCE_FILE",
+                        severity="high",
+                        classification="MANUAL_REVIEW",
+                        path=rel_path,
+                        line=0,
+                        message=(
+                            f"File {rel_path!r} is present in repository source "
+                            "but has modified content in the release ZIP."
+                        ),
+                        evidence=f"hash-mismatch (source: <missing>, zip: {git_blob_sha1(raw)[:8]})",
+                        scanner="source-artifact-diff",
+                    )
+                )
+                continue
+
+            try:
+                source_raw = _snapshot_source_blob(
+                    source_entry, source_snapshot.source_root
+                )
+            except Exception as exc:
+                detail = f"Could not read source snapshot file {source_path!r}: {exc}"
+                return (
+                    summary,
+                    findings,
+                    ScannerStatus(
+                        name="source-artifact-diff",
+                        status="failed",
+                        detail=detail,
+                    ),
+                )
+
+            zip_sha = git_blob_sha1(raw)
+            if zip_sha != source_sha:
+                raw_lf = raw.replace(b"\r\n", b"\n")
+                zip_sha_lf = git_blob_sha1(raw_lf)
+                if zip_sha_lf != source_sha:
+                    build_stamped_metadata = False
+                    base = os.path.basename(source_path).lower()
+                    if base in {"plugin.json", "package.json"}:
+                        build_stamped_metadata = _metadata_diff_is_build_stamped(
+                            source_path,
+                            source_raw,
+                            raw,
+                            normalized_release_version,
+                        )
+                    if not build_stamped_metadata:
+                        summary["modified_source_files"].append(rel_path)
+                        findings.append(
+                            Finding(
+                                rule_id="MODIFIED_SOURCE_FILE",
+                                severity="high",
+                                classification="MANUAL_REVIEW",
+                                path=rel_path,
+                                line=0,
+                                message=(
+                                    f"File {rel_path!r} is present in repository source "
+                                    "but has modified content in the release ZIP."
+                                ),
+                                evidence=f"hash-mismatch (source: {source_sha[:8]}, zip: {zip_sha[:8]})",
+                                scanner="source-artifact-diff",
+                            )
+                        )
+
+    summary["zip_only_executables"].sort()
+    summary["zip_only_scripts"].sort()
+    summary["modified_source_files"].sort()
+    status = "found_issue" if findings else "passed"
+    return summary, findings, ScannerStatus(name="source-artifact-diff", status=status)
 
 
 def compare_source_and_artifact(
