@@ -3003,6 +3003,16 @@ def compare_source_and_artifact_from_snapshot(
             source_raw = None
             build_stamped_metadata = False
             base = os.path.basename(source_path).lower()
+
+            zip_sha = git_blob_sha1(raw)
+            if zip_sha == source_sha:
+                continue
+
+            raw_lf = raw.replace(b"\r\n", b"\n")
+            zip_sha_lf = git_blob_sha1(raw_lf)
+            if zip_sha_lf == source_sha:
+                continue
+
             if base in {"plugin.json", "package.json"}:
                 source_lookup = {
                     "plugin.json": source_snapshot.plugin_json,
@@ -3041,25 +3051,6 @@ def compare_source_and_artifact_from_snapshot(
                             detail=detail,
                         ),
                     )
-
-            zip_sha = git_blob_sha1(raw)
-            if zip_sha == source_sha:
-                if source_raw is not None:
-                    build_stamped_metadata = _metadata_diff_is_build_stamped(
-                        source_path,
-                        source_raw,
-                        raw,
-                        normalized_release_version,
-                    )
-                    if build_stamped_metadata:
-                        continue
-                else:
-                    continue
-
-            raw_lf = raw.replace(b"\r\n", b"\n")
-            zip_sha_lf = git_blob_sha1(raw_lf)
-            if zip_sha_lf == source_sha:
-                continue
 
             if source_raw is not None:
                 build_stamped_metadata = _metadata_diff_is_build_stamped(

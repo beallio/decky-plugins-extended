@@ -3913,27 +3913,50 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
         self.assertEqual(summary["modified_source_files"], [])
         self.assertEqual(findings, [])
 
-    def test_snapshot_adapter_matches_without_reading_unmodified_file_source_bytes(
+    def test_snapshot_adapter_root_metadata_passes_without_source_metadata_reads(
         self,
     ):
-        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('x')"})
-        (Path(snapshot.source_root) / "plugin/main.py").unlink()
-        source_root = Path(snapshot.source_root).resolve()
-        original_open = open
+        payload = json.dumps({"name": "Syncthing", "version": "1.0.0"}).encode()
+        snapshot = self._mk_source_snapshot({"plugin.json": payload})
+        original_open = ap.os.open
 
-        def deny_source_open(file, *args, **kwargs):
-            abs_path = os.path.abspath(file)
-            if abs_path == str(source_root) or abs_path.startswith(
-                f"{source_root}{os.path.sep}"
-            ):
+        def deny_source_open(file, flags, *args, **kwargs):
+            if file == "plugin.json" and not (flags & ap.os.O_DIRECTORY):
                 raise AssertionError("source snapshot file should not be read")
-            return original_open(file, *args, **kwargs)
+            return original_open(file, flags, *args, **kwargs)
 
-        summary, findings, status = self._snapshot_compare(
-            {"plugin/main.py": b"print('x')"},
-            snapshot,
-            source_open_side_effect=deny_source_open,
-        )
+        with patch.object(ap.os, "open", side_effect=deny_source_open):
+            summary, findings, status = self._snapshot_compare(
+                {"plugin.json": payload},
+                snapshot,
+                ref="v1.0.0",
+            )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(findings, [])
+        self.assertEqual(summary["modified_source_files"], [])
+
+    def test_snapshot_adapter_nested_metadata_passes_without_source_metadata_reads_when_file_missing(
+        self,
+    ):
+        payload = json.dumps(
+            {"name": "Syncthing", "version": "1.0.1-dev.gabc"}
+        ).encode()
+        snapshot = self._mk_source_snapshot({"plugin/plugin.json": payload})
+        source_root = (Path(snapshot.source_root) / "plugin").resolve()
+        (source_root / "plugin.json").unlink()
+        original_open = ap.os.open
+
+        def deny_source_open(file, flags, *args, **kwargs):
+            if file == "plugin.json" and not (flags & ap.os.O_DIRECTORY):
+                raise AssertionError("source snapshot file should not be read")
+            return original_open(file, flags, *args, **kwargs)
+
+        with patch.object(ap.os, "open", side_effect=deny_source_open):
+            summary, findings, status = self._snapshot_compare(
+                {"plugin/plugin.json": payload},
+                snapshot,
+                ref="v1.0.1-dev.gabc",
+            )
         self.assertEqual(status.status, "passed")
         self.assertEqual(findings, [])
         self.assertEqual(summary["modified_source_files"], [])
@@ -3942,28 +3965,24 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
         snapshot = self._mk_source_snapshot(
             {"plugin.json": json.dumps({"name": "Syncthing", "version": "1.0.0"})}
         )
-        source_root = Path(snapshot.source_root).resolve()
         (Path(snapshot.source_root) / "plugin.json").unlink()
-        original_open = open
+        original_open = ap.os.open
 
-        def deny_source_open(file, *args, **kwargs):
-            abs_path = os.path.abspath(file)
-            if abs_path == str(source_root) or abs_path.startswith(
-                f"{source_root}{os.path.sep}"
-            ):
+        def deny_source_open(file, flags, *args, **kwargs):
+            if file == "plugin.json" and not (flags & ap.os.O_DIRECTORY):
                 raise AssertionError("source snapshot file should not be read")
-            return original_open(file, *args, **kwargs)
+            return original_open(file, flags, *args, **kwargs)
 
-        summary, findings, status = self._snapshot_compare(
-            {
-                "plugin/plugin.json": json.dumps(
-                    {"name": "Syncthing", "version": "1.0.1-dev.gabc"}
-                )
-            },
-            snapshot,
-            ref="v1.0.1-dev.gabc",
-            source_open_side_effect=deny_source_open,
-        )
+        with patch.object(ap.os, "open", side_effect=deny_source_open):
+            summary, findings, status = self._snapshot_compare(
+                {
+                    "plugin/plugin.json": json.dumps(
+                        {"name": "Syncthing", "version": "1.0.1-dev.gabc"}
+                    )
+                },
+                snapshot,
+                ref="v1.0.1-dev.gabc",
+            )
         self.assertEqual(status.status, "passed")
         self.assertEqual(summary["modified_source_files"], [])
         self.assertEqual(findings, [])
@@ -3980,18 +3999,27 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
         source_content = prefix + padding + suffix
         artifact_payload = prefix + b"b" + padding[1:] + suffix
         snapshot = self._mk_source_snapshot({str(source_path): source_content})
-        original_open = open
-        target_file = (Path(snapshot.source_root) / source_path).resolve()
+        original_fdopen = ap.os.fdopen
+        read_sizes: list[int] = []
 
         class _BoundedReader:
             def __init__(self, inner):
                 self.inner = inner
+                self.read_count = 0
 
             def read(self, size: int = -1):
                 if size == -1:
                     raise AssertionError("unbounded metadata read blocked")
-                if size > audit_source_snapshot._SOURCE_METADATA_BYTE_LIMIT + 1:
-                    raise AssertionError("metadata read exceeded bound")
+                read_sizes.append(size)
+                self.read_count += 1
+                if self.read_count == 1:
+                    if size > audit_source_snapshot._SOURCE_METADATA_BYTE_LIMIT:
+                        raise AssertionError("metadata read exceeded bound")
+                elif self.read_count == 2:
+                    if size > 1:
+                        raise AssertionError("metadata read exceeded bound")
+                else:
+                    raise AssertionError("unexpected metadata read count")
                 return self.inner.read(size)
 
             def __enter__(self):
@@ -4004,21 +4032,23 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
             def __getattr__(self, name):
                 return getattr(self.inner, name)
 
-        def guarded_open(file, *args, **kwargs):
-            abs_path = os.path.abspath(file)
-            if abs_path == str(target_file):
-                return _BoundedReader(original_open(file, *args, **kwargs))
-            return original_open(file, *args, **kwargs)
+        def guarded_fdopen(*args, **kwargs):
+            return _BoundedReader(original_fdopen(*args, **kwargs))
 
-        summary, findings, status = self._snapshot_compare(
-            {str(source_path): artifact_payload},
-            snapshot,
-            ref="v1.0.1-dev.gabc",
-            source_open_side_effect=guarded_open,
-        )
+        with patch.object(ap.os, "fdopen", side_effect=guarded_fdopen):
+            summary, findings, status = self._snapshot_compare(
+                {str(source_path): artifact_payload},
+                snapshot,
+                ref="v1.0.1-dev.gabc",
+            )
         self.assertEqual(status.status, "failed")
         self.assertEqual(findings, [])
         self.assertIn("metadata file too large", status.detail or "")
+        self.assertEqual(len(read_sizes), 2)
+        self.assertLessEqual(
+            read_sizes[0], audit_source_snapshot._SOURCE_METADATA_BYTE_LIMIT
+        )
+        self.assertLessEqual(read_sizes[1], 1)
 
     def test_snapshot_metadata_rejects_non_canonical_path_without_filesystem_probe(
         self,
@@ -4033,10 +4063,89 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
             mode="100644",
         )
         with patch.object(
-            os, "open", side_effect=AssertionError("filesystem open called")
+            ap.os, "open", side_effect=AssertionError("filesystem open called")
         ):
             with self.assertRaises(ValueError):
                 ap._read_snapshot_metadata_file(entry, str(source_root))
+
+    def test_snapshot_metadata_file_descriptor_lifecycle_success(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td)
+            payload = b'{"name":"expected"}'
+            source_file = source_root / "plugin.json"
+            source_file.write_bytes(payload)
+            entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin.json",
+                kind="file",
+                size_bytes=len(payload),
+                git_blob_sha1=ap.git_blob_sha1(payload),
+                mode="100644",
+            )
+
+            opened: list[int] = []
+            closed: list[int] = []
+            original_open = ap.os.open
+            original_close = ap.os.close
+
+            def tracked_open(file, flags, *args, **kwargs):
+                fd = original_open(file, flags, *args, **kwargs)
+                opened.append(fd)
+                return fd
+
+            def tracked_close(fd):
+                closed.append(fd)
+                return original_close(fd)
+
+            with (
+                patch.object(ap.os, "open", side_effect=tracked_open),
+                patch.object(ap.os, "close", side_effect=tracked_close),
+            ):
+                read_payload = ap._read_snapshot_metadata_file(entry, str(source_root))
+            self.assertEqual(read_payload, payload)
+            self.assertEqual(set(opened), set(closed))
+
+    def test_snapshot_metadata_file_descriptor_lifecycle_validation_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td)
+            payload = b'{"name":"expected"}'
+            source_file = source_root / "plugin.json"
+            source_file.write_bytes(payload)
+            entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin.json",
+                kind="file",
+                size_bytes=len(payload),
+                git_blob_sha1=ap.git_blob_sha1(payload),
+                mode="100644",
+            )
+            failing_entry = audit_source_snapshot.SourceInventoryEntry(
+                path=entry.path,
+                kind=entry.kind,
+                size_bytes=entry.size_bytes + 1,
+                git_blob_sha1=entry.git_blob_sha1,
+                mode=entry.mode,
+            )
+
+            opened: list[int] = []
+            closed: list[int] = []
+            original_open = ap.os.open
+            original_close = ap.os.close
+
+            def tracked_open(file, flags, *args, **kwargs):
+                fd = original_open(file, flags, *args, **kwargs)
+                opened.append(fd)
+                return fd
+
+            def tracked_close(fd):
+                closed.append(fd)
+                return original_close(fd)
+
+            with (
+                patch.object(ap.os, "open", side_effect=tracked_open),
+                patch.object(ap.os, "close", side_effect=tracked_close),
+            ):
+                with self.assertRaises(ValueError):
+                    ap._read_snapshot_metadata_file(failing_entry, str(source_root))
+            self.assertEqual(set(opened), set(closed))
 
     def test_snapshot_metadata_rejects_final_path_symlink_swap(self):
         with tempfile.TemporaryDirectory() as td:
@@ -4055,14 +4164,15 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
                 mode="100644",
             )
 
-            original_lstat = os.lstat
+            original_open = ap.os.open
 
-            def lstat_allow_symlink(path):
-                if os.path.samefile(path, str(symlink_path)):
-                    return original_lstat(str(target_file))
-                return original_lstat(path)
+            def open_with_final_swap(file, flags, *args, **kwargs):
+                if file == "plugin.json" and not (flags & ap.os.O_DIRECTORY):
+                    symlink_path.unlink()
+                    os.symlink(str(target_file), symlink_path)
+                return original_open(file, flags, *args, **kwargs)
 
-            with patch.object(os, "lstat", side_effect=lstat_allow_symlink):
+            with patch.object(ap.os, "open", side_effect=open_with_final_swap):
                 with self.assertRaises(ValueError) as exc:
                     ap._read_snapshot_metadata_file(entry, str(source_root))
             self.assertIn("Could not read source snapshot metadata", str(exc.exception))
@@ -4085,16 +4195,8 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
                 mode="100644",
             )
 
-            original_lstat = os.lstat
-
-            def lstat_allow_symlink(path):
-                if os.path.samefile(path, str(link_root)):
-                    return original_lstat(str(source_root))
-                return original_lstat(path)
-
-            with patch.object(os, "lstat", side_effect=lstat_allow_symlink):
-                with self.assertRaises(ValueError) as exc:
-                    ap._read_snapshot_metadata_file(entry, str(link_root))
+            with self.assertRaises(ValueError) as exc:
+                ap._read_snapshot_metadata_file(entry, str(link_root))
             self.assertIn("Could not read source snapshot metadata", str(exc.exception))
 
     def test_snapshot_metadata_rejects_special_final_node_without_block(self):
@@ -4194,7 +4296,7 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
             )
 
             summary, findings, status = self._snapshot_compare(
-                {"plugin.json": source_bytes},
+                {"plugin.json": b'{"name":"artifact","version":"2.0.0"}'},
                 snapshot,
                 ref="v1.0.0",
             )
