@@ -1187,6 +1187,13 @@ def test_destination_survives_promotion_race_and_cleanup_real_renameat2_with_emp
         with monkeypatch.context() as rename_context:
             rename_context.setattr(
                 ss.os,
+                "rename",
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    AssertionError("fallback rename must not run")
+                ),
+            )
+            rename_context.setattr(
+                ss.os,
                 "replace",
                 lambda *_args, **_kwargs: (_ for _ in ()).throw(
                     AssertionError("fallback rename must not run")
