@@ -2597,18 +2597,64 @@ def _snapshot_source_inventory_lookup(
     return exact, lower, path_for_lower, entry_by_path
 
 
-def _snapshot_source_blob(
-    entry: audit_source_snapshot.SourceInventoryEntry,
+def _snapshot_source_symlink_payload(
+    source_entry: audit_source_snapshot.SourceInventoryEntry,
+) -> bytes:
+    if source_entry.kind != "symlink":
+        raise ValueError(f"expected symlink snapshot entry: {source_entry.path!r}")
+    target = source_entry.symlink_target
+    if target is None:
+        raise ValueError(f"source symlink entry missing target: {source_entry.path!r}")
+    return target.encode("utf-8", errors="surrogateescape")
+
+
+def _read_snapshot_metadata_file(
+    source_entry: audit_source_snapshot.SourceInventoryEntry,
     source_root: str,
 ) -> bytes:
-    if entry.kind == "symlink":
-        target = entry.symlink_target
-        if target is None:
-            raise ValueError(f"source symlink entry missing target: {entry.path!r}")
-        return target.encode("utf-8", errors="surrogateescape")
-    source_path = os.path.join(source_root, entry.path)
+    if source_entry.kind != "file":
+        raise ValueError(f"metadata entry is not a regular file: {source_entry.path!r}")
+    if (
+        not source_entry.path
+        or source_entry.path.startswith("..")
+        or "\\" in source_entry.path
+    ):
+        raise ValueError(f"invalid snapshot metadata path: {source_entry.path!r}")
+    if "\\" in source_entry.path:
+        source_entry_path = source_entry.path.replace("\\", "/")
+    else:
+        source_entry_path = source_entry.path
+
+    source_root_abs = os.path.abspath(source_root)
+    source_path = os.path.abspath(os.path.join(source_root_abs, source_entry_path))
+    source_dir = source_root_abs
+    for part in source_entry_path.split("/"):
+        source_dir = os.path.join(source_dir, part)
+        try:
+            mode = os.lstat(source_dir).st_mode
+        except FileNotFoundError as exc:
+            raise ValueError(
+                f"metadata snapshot file is missing: {source_entry.path!r}"
+            ) from exc
+        if stat.S_ISLNK(mode):
+            raise ValueError(
+                f"metadata snapshot path is symlink-prohibited: {source_entry.path!r}"
+            )
+
+    if os.path.relpath(source_path, source_root_abs).startswith(".."):
+        raise ValueError(
+            f"metadata snapshot path escapes source root: {source_entry.path!r}"
+        )
+
     with open(source_path, "rb") as source_file:
-        return source_file.read()
+        cap = audit_source_snapshot._SOURCE_METADATA_BYTE_LIMIT
+        payload = source_file.read(cap)
+        extra = source_file.read(1)
+        if extra:
+            raise ValueError(
+                f"metadata file too large for bounded read: {source_entry.path!r}"
+            )
+    return payload
 
 
 def _metadata_diff_is_build_stamped(
@@ -2898,53 +2944,69 @@ def compare_source_and_artifact_from_snapshot(
                 )
                 continue
 
-            try:
-                source_raw = _snapshot_source_blob(
-                    source_entry, source_snapshot.source_root
-                )
-            except Exception as exc:
-                detail = f"Could not read source snapshot file {source_path!r}: {exc}"
-                return (
-                    summary,
-                    findings,
-                    ScannerStatus(
-                        name="source-artifact-diff",
-                        status="failed",
-                        detail=detail,
-                    ),
-                )
-
             zip_sha = git_blob_sha1(raw)
-            if zip_sha != source_sha:
-                raw_lf = raw.replace(b"\r\n", b"\n")
-                zip_sha_lf = git_blob_sha1(raw_lf)
-                if zip_sha_lf != source_sha:
-                    build_stamped_metadata = False
-                    base = os.path.basename(source_path).lower()
-                    if base in {"plugin.json", "package.json"}:
-                        build_stamped_metadata = _metadata_diff_is_build_stamped(
-                            source_path,
-                            source_raw,
-                            raw,
-                            normalized_release_version,
-                        )
-                    if not build_stamped_metadata:
-                        summary["modified_source_files"].append(rel_path)
-                        findings.append(
-                            Finding(
-                                rule_id="MODIFIED_SOURCE_FILE",
-                                severity="high",
-                                classification="MANUAL_REVIEW",
-                                path=rel_path,
-                                line=0,
-                                message=(
-                                    f"File {rel_path!r} is present in repository source "
-                                    "but has modified content in the release ZIP."
-                                ),
-                                evidence=f"hash-mismatch (source: {source_sha[:8]}, zip: {zip_sha[:8]})",
-                                scanner="source-artifact-diff",
+            if zip_sha == source_sha:
+                continue
+
+            raw_lf = raw.replace(b"\r\n", b"\n")
+            zip_sha_lf = git_blob_sha1(raw_lf)
+            if zip_sha_lf == source_sha:
+                continue
+
+            build_stamped_metadata = False
+            base = os.path.basename(source_path).lower()
+            if base in {"plugin.json", "package.json"}:
+                source_raw = None
+                source_lookup = {
+                    "plugin.json": source_snapshot.plugin_json,
+                    "package.json": source_snapshot.package_json,
+                }
+                source_raw = source_lookup.get(source_path.lower())
+                if source_raw is None:
+                    try:
+                        if source_entry.kind == "symlink":
+                            source_raw = _snapshot_source_symlink_payload(source_entry)
+                        else:
+                            source_raw = _read_snapshot_metadata_file(
+                                source_entry, source_snapshot.source_root
                             )
+                    except Exception as exc:
+                        detail = (
+                            f"Could not read source snapshot file {source_path!r}: "
+                            f"{_redacted_exception_detail(exc)}"
                         )
+                        return (
+                            summary,
+                            findings,
+                            ScannerStatus(
+                                name="source-artifact-diff",
+                                status="failed",
+                                detail=detail,
+                            ),
+                        )
+                build_stamped_metadata = _metadata_diff_is_build_stamped(
+                    source_path,
+                    source_raw,
+                    raw,
+                    normalized_release_version,
+                )
+            if not build_stamped_metadata:
+                summary["modified_source_files"].append(rel_path)
+                findings.append(
+                    Finding(
+                        rule_id="MODIFIED_SOURCE_FILE",
+                        severity="high",
+                        classification="MANUAL_REVIEW",
+                        path=rel_path,
+                        line=0,
+                        message=(
+                            f"File {rel_path!r} is present in repository source "
+                            "but has modified content in the release ZIP."
+                        ),
+                        evidence=f"hash-mismatch (source: {source_sha[:8]}, zip: {zip_sha[:8]})",
+                        scanner="source-artifact-diff",
+                    )
+                )
 
     summary["zip_only_executables"].sort()
     summary["zip_only_scripts"].sort()

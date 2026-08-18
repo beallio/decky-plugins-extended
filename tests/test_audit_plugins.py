@@ -3563,6 +3563,30 @@ class TestTrivyStructuredFindings(unittest.TestCase):
                     "_run_scanner",
                     side_effect=fake_scanner,
                 ),
+                patch.object(
+                    ap,
+                    "_gh_get",
+                    side_effect=AssertionError("_gh_get should not be used"),
+                ),
+                patch.object(
+                    ap,
+                    "_resolve_ref_to_tree_sha",
+                    side_effect=AssertionError(
+                        "_resolve_ref_to_tree_sha should not be used"
+                    ),
+                ),
+                patch.object(
+                    ap,
+                    "get_repo_file_raw",
+                    side_effect=AssertionError("get_repo_file_raw should not be used"),
+                ),
+                patch.object(
+                    ap,
+                    "_download_source_archive",
+                    side_effect=AssertionError(
+                        "_download_source_archive should not be used"
+                    ),
+                ),
             ):
                 with patch(
                     "audit_plugins.tempfile.TemporaryDirectory",
@@ -3723,6 +3747,7 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
         extract_files: dict[str, bytes | str],
         snapshot: audit_source_snapshot.SourceSnapshot,
         ref: str = "v1",
+        source_open_side_effect=None,
     ):
         with (
             tempfile.TemporaryDirectory() as extract_dir,
@@ -3762,11 +3787,22 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
                 if isinstance(payload, str):
                     payload = payload.encode("utf-8")
                 path.write_bytes(payload)
-            return ap.compare_source_and_artifact_from_snapshot(
-                extract_dir,
-                snapshot,
-                ref,
-            )
+            if source_open_side_effect is None:
+                return ap.compare_source_and_artifact_from_snapshot(
+                    extract_dir,
+                    snapshot,
+                    ref,
+                )
+
+            def _open(file, *args, **kwargs):
+                return source_open_side_effect(file, *args, **kwargs)
+
+            with patch("builtins.open", side_effect=_open):
+                return ap.compare_source_and_artifact_from_snapshot(
+                    extract_dir,
+                    snapshot,
+                    ref,
+                )
 
     def test_snapshot_adapter_detects_modified_and_matching_files(self):
         snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('original')"})
@@ -3857,13 +3893,132 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
             {"plugin/main.py": b"print('x')"},
             symlinks={"plugin/link": "payload-target"},
         )
+        source_root = Path(snapshot.source_root).resolve()
+        original_open = open
+
+        def deny_source_open(file, *args, **kwargs):
+            abs_path = os.path.abspath(file)
+            if abs_path == str(source_root) or abs_path.startswith(
+                f"{source_root}{os.path.sep}"
+            ):
+                raise AssertionError("source snapshot file should not be read")
+            return original_open(file, *args, **kwargs)
+
         summary, findings, status = self._snapshot_compare(
             {"plugin/link": "payload-target", "plugin/main.py": b"print('x')"},
             snapshot,
+            source_open_side_effect=deny_source_open,
         )
         self.assertEqual(status.status, "passed")
         self.assertEqual(summary["modified_source_files"], [])
         self.assertEqual(findings, [])
+
+    def test_snapshot_adapter_matches_without_reading_unmodified_file_source_bytes(
+        self,
+    ):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('x')"})
+        (Path(snapshot.source_root) / "plugin/main.py").unlink()
+        source_root = Path(snapshot.source_root).resolve()
+        original_open = open
+
+        def deny_source_open(file, *args, **kwargs):
+            abs_path = os.path.abspath(file)
+            if abs_path == str(source_root) or abs_path.startswith(
+                f"{source_root}{os.path.sep}"
+            ):
+                raise AssertionError("source snapshot file should not be read")
+            return original_open(file, *args, **kwargs)
+
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/main.py": b"print('x')"},
+            snapshot,
+            source_open_side_effect=deny_source_open,
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(findings, [])
+        self.assertEqual(summary["modified_source_files"], [])
+
+    def test_snapshot_adapter_root_metadata_uses_captured_bytes_when_file_missing(self):
+        snapshot = self._mk_source_snapshot(
+            {"plugin.json": json.dumps({"name": "Syncthing", "version": "1.0.0"})}
+        )
+        source_root = Path(snapshot.source_root).resolve()
+        (Path(snapshot.source_root) / "plugin.json").unlink()
+        original_open = open
+
+        def deny_source_open(file, *args, **kwargs):
+            abs_path = os.path.abspath(file)
+            if abs_path == str(source_root) or abs_path.startswith(
+                f"{source_root}{os.path.sep}"
+            ):
+                raise AssertionError("source snapshot file should not be read")
+            return original_open(file, *args, **kwargs)
+
+        summary, findings, status = self._snapshot_compare(
+            {
+                "plugin/plugin.json": json.dumps(
+                    {"name": "Syncthing", "version": "1.0.1-dev.gabc"}
+                )
+            },
+            snapshot,
+            ref="v1.0.1-dev.gabc",
+            source_open_side_effect=deny_source_open,
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertEqual(findings, [])
+
+    def test_snapshot_adapter_rejects_large_local_metadata_read(self):
+        source_path = Path(
+            "plugin",
+            "plugin.json",
+        )
+        target_size = audit_source_snapshot._SOURCE_METADATA_BYTE_LIMIT + 1
+        prefix = b'{"name":"x","value":"'
+        suffix = b'"}'
+        padding = b"a" * (target_size - len(prefix) - len(suffix))
+        source_content = prefix + padding + suffix
+        artifact_payload = prefix + b"b" + padding[1:] + suffix
+        snapshot = self._mk_source_snapshot({str(source_path): source_content})
+        original_open = open
+        target_file = (Path(snapshot.source_root) / source_path).resolve()
+
+        class _BoundedReader:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def read(self, size: int = -1):
+                if size == -1:
+                    raise AssertionError("unbounded metadata read blocked")
+                if size > audit_source_snapshot._SOURCE_METADATA_BYTE_LIMIT + 1:
+                    raise AssertionError("metadata read exceeded bound")
+                return self.inner.read(size)
+
+            def __enter__(self):
+                self.inner.__enter__()
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return self.inner.__exit__(exc_type, exc, tb)
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+        def guarded_open(file, *args, **kwargs):
+            abs_path = os.path.abspath(file)
+            if abs_path == str(target_file):
+                return _BoundedReader(original_open(file, *args, **kwargs))
+            return original_open(file, *args, **kwargs)
+
+        summary, findings, status = self._snapshot_compare(
+            {str(source_path): artifact_payload},
+            snapshot,
+            ref="v1.0.1-dev.gabc",
+            source_open_side_effect=guarded_open,
+        )
+        self.assertEqual(status.status, "failed")
+        self.assertEqual(findings, [])
+        self.assertIn("metadata file too large", status.detail or "")
 
 
 # ---------------------------------------------------------------------------
