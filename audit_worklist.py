@@ -48,6 +48,7 @@ _ITEM_KEYS = {
     "source_resolution_error",
     "repository_archived",
 }
+_WORKLIST_IDENTITY_KEYS = {"repository", "github_release_id", "asset_id"}
 
 _SOURCE_RESOLUTION_ERROR_FORMS = {
     "source-resolution-failed",
@@ -91,6 +92,44 @@ def _normalise_timestamp(value: Any, field_name: str) -> str:
     except ValueError as exc:
         raise ValueError(f"Invalid {field_name}: {value!r}") from exc
     return value
+
+
+def _normalise_worklist_fingerprint(value: Any, field_name: str) -> str:
+    value = _normalise_str(value, field_name)
+    if not _CANONICAL_SHA256.fullmatch(value):
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    return value
+
+
+def _normalise_worklist_identity(raw: Mapping[str, Any]) -> dict[str, str]:
+    if not isinstance(raw, Mapping):
+        raise ValueError("Worklist identity must be an object")
+    provided = set(raw.keys())
+    if provided != _WORKLIST_IDENTITY_KEYS:
+        extras = ", ".join(sorted(provided - _WORKLIST_IDENTITY_KEYS))
+        missing = ", ".join(sorted(_WORKLIST_IDENTITY_KEYS - provided))
+        if extras and missing:
+            raise ValueError(
+                f"Unexpected worklist identity keys: {extras}; missing: {missing}"
+            )
+        if extras:
+            raise ValueError(f"Unexpected worklist identity keys: {extras}")
+        raise ValueError(f"Missing worklist identity keys: {missing}")
+
+    repository = plugin_release_utils.canonicalize_github_repository_url(
+        _normalise_str(raw["repository"], "repository")
+    )
+    release_id = _normalise_str(raw["github_release_id"], "github_release_id")
+    if not release_id.isdigit():
+        raise ValueError("github_release_id must be a decimal string")
+    asset_id = _normalise_str(raw["asset_id"], "asset_id")
+    if not asset_id.isdigit():
+        raise ValueError("asset_id must be a decimal string")
+    return {
+        "repository": repository,
+        "github_release_id": release_id,
+        "asset_id": asset_id,
+    }
 
 
 def _resolve_base_ref_to_commit(
@@ -687,6 +726,68 @@ def _load_worklist_bytes(raw: Any) -> dict[str, Any]:
         "fingerprint": fingerprint,
         "payload": normalized_payload,
     }
+
+
+def load_expected_worklist_document(
+    path: str | os.PathLike[str],
+    expected_worklist_fingerprint: str,
+) -> dict[str, Any]:
+    document = load_worklist_document(path)
+    fingerprint = _normalise_worklist_fingerprint(
+        expected_worklist_fingerprint, "expected_worklist_fingerprint"
+    )
+    if document["fingerprint"] != fingerprint:
+        raise ValueError("Worklist fingerprint does not match expected value")
+    return document
+
+
+def worklist_identity(item: Mapping[str, Any]) -> dict[str, str]:
+    if not isinstance(item, Mapping):
+        raise ValueError("Worklist item must be an object")
+    return _normalise_worklist_identity(
+        {
+            "repository": _normalise_str(item.get("repository"), "repository"),
+            "github_release_id": str(
+                _normalise_positive_int(item["release_id"], "release_id")
+            ),
+            "asset_id": str(_normalise_positive_int(item["asset_id"], "asset_id")),
+        }
+    )
+
+
+def shard_index_for_worklist_item(item: Mapping[str, Any], shard_count: int) -> int:
+    shard_count = _normalise_positive_int(shard_count, "shard_count")
+    identity = worklist_identity(item)
+    repository_key = plugin_release_utils.canonical_repository_key(
+        identity["repository"]
+    )
+    digest = hashlib.sha256(
+        f"{repository_key}\0{identity['github_release_id']}".encode("utf-8")
+    ).digest()
+    return int.from_bytes(digest, "big") % shard_count
+
+
+def select_worklist_shard(
+    payload: Mapping[str, Any],
+    shard_index: int,
+) -> list[dict[str, Any]]:
+    """Return one validated shard from a loaded worklist payload."""
+    normalized_payload = _validate_worklist_payload(payload)
+    shard_count = normalized_payload["shard_count"]
+    if (
+        isinstance(shard_index, bool)
+        or not isinstance(shard_index, int)
+        or shard_index < 0
+    ):
+        raise ValueError("shard_index must satisfy 0 <= index < shard_count")
+    if shard_index < 0 or shard_index >= shard_count:
+        raise ValueError("shard_index must satisfy 0 <= index < shard_count")
+    shard: list[dict[str, Any]] = []
+    items = normalized_payload["items"]
+    for item in items:
+        if shard_index_for_worklist_item(item, shard_count) == shard_index:
+            shard.append(item)
+    return shard
 
 
 def load_worklist_document(path: str | os.PathLike[str]) -> dict[str, Any]:

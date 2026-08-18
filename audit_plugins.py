@@ -440,6 +440,25 @@ def _deep_merge(base: dict, override: dict) -> None:
 
 
 _CANONICAL_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_CANONICAL_GIT_SHA1 = re.compile(r"^[0-9a-f]{40}$")
+_WORKER_PROGRESS_SCHEMA_V2 = "2"
+_WORKER_PROGRESS_ROOT_KEYS_V2 = {
+    "schema_version",
+    "worklist_fingerprint",
+    "entries",
+}
+_SHARD_MANIFEST_SCHEMA_VERSION = "1"
+_SHARD_MANIFEST_ROOT_KEYS = {
+    "schema_version",
+    "worklist_fingerprint",
+    "source_revision",
+    "shard_count",
+    "shard_index",
+    "assigned_identities",
+    "attempted_identities",
+    "report_identities",
+}
+_SHARD_MANIFEST_IDENTITY_KEYS = {"repository", "github_release_id", "asset_id"}
 
 
 def load_allowlist(
@@ -5170,8 +5189,10 @@ def _report_identity_key(report: AuditReport) -> str:
     return "\0".join((report.repository, report.github_release_id, report.asset_id))
 
 
-def _progress_record(report: AuditReport) -> dict[str, Any]:
-    return {
+def _progress_record(
+    report: AuditReport, worklist_fingerprint: Optional[str] = None
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
         "repository": report.repository,
         "github_release_id": report.github_release_id,
         "asset_id": report.asset_id,
@@ -5181,30 +5202,304 @@ def _progress_record(report: AuditReport) -> dict[str, Any]:
         "completion_status": report.completion_status,
         "report": _report_to_dict(report),
     }
+    if worklist_fingerprint is not None:
+        normalized = _normalise_worklist_fingerprint(
+            worklist_fingerprint, "worklist_fingerprint"
+        )
+        record["worklist_fingerprint"] = normalized
+    return record
 
 
 def _write_progress_manifest(
-    path: str | Path, records: dict[str, dict[str, Any]]
+    path: str | Path,
+    records: dict[str, dict[str, Any]],
+    worklist_fingerprint: Optional[str] = None,
 ) -> None:
+    if worklist_fingerprint is not None:
+        normalized_fingerprint = _normalise_worklist_fingerprint(
+            worklist_fingerprint, "worklist_fingerprint"
+        )
+        normalized_records = {
+            key: {
+                **value,
+                "worklist_fingerprint": normalized_fingerprint,
+            }
+            for key, value in records.items()
+        }
+        payload = {
+            "schema_version": _WORKER_PROGRESS_SCHEMA_V2,
+            "worklist_fingerprint": normalized_fingerprint,
+            "entries": normalized_records,
+        }
+    else:
+        payload = {"schema_version": "1", "entries": records}
     _atomic_write_text(
         path,
-        json.dumps(
-            {"schema_version": "1", "entries": records},
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
     )
 
 
-def _load_progress_manifest(path: str | Path) -> dict[str, dict[str, Any]]:
+def _normalise_worklist_fingerprint(
+    value: Any, field_name: str = "worklist_fingerprint"
+) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    if not _CANONICAL_SHA256.fullmatch(value):
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    return value
+
+
+def _load_progress_manifest(
+    path: str | Path, expected_worklist_fingerprint: Optional[str] = None
+) -> dict[str, dict[str, Any]]:
     if not Path(path).is_file():
         return {}
+
+    expected_fingerprint = (
+        None
+        if expected_worklist_fingerprint is None
+        else _normalise_worklist_fingerprint(expected_worklist_fingerprint)
+    )
+
     with open(path, encoding="utf-8") as progress_file:
         payload = json.load(progress_file)
-    if not isinstance(payload, dict) or not isinstance(payload.get("entries"), dict):
+
+    if not isinstance(payload, dict):
         raise ValueError(f"Invalid progress manifest: {path}")
-    return payload["entries"]
+    if expected_fingerprint is None:
+        if payload.get("schema_version") != "1":
+            raise ValueError(f"Invalid progress manifest: {path}")
+        if not isinstance(payload.get("entries"), dict):
+            raise ValueError(f"Invalid progress manifest: {path}")
+        return payload["entries"]
+
+    if payload.get("schema_version") == "1":
+        return {}
+    if payload.get("schema_version") != _WORKER_PROGRESS_SCHEMA_V2:
+        raise ValueError(f"Invalid progress manifest: {path}")
+    if set(payload.keys()) != _WORKER_PROGRESS_ROOT_KEYS_V2:
+        raise ValueError(f"Invalid progress manifest: {path}")
+    if payload.get("worklist_fingerprint") != expected_fingerprint:
+        return {}
+    if not isinstance(payload.get("entries"), dict):
+        raise ValueError(f"Invalid progress manifest: {path}")
+
+    entries: dict[str, dict[str, Any]] = {}
+    for key, value in payload["entries"].items():
+        if not isinstance(key, str):
+            raise ValueError(f"Invalid progress manifest: {path}")
+        if not isinstance(value, dict):
+            raise ValueError(f"Invalid progress manifest: {path}")
+        if value.get("worklist_fingerprint") != expected_fingerprint:
+            raise ValueError(f"Invalid progress manifest: {path}")
+        if not isinstance(value.get("report"), dict):
+            raise ValueError(f"Invalid progress manifest: {path}")
+        required = {
+            "repository",
+            "github_release_id",
+            "asset_id",
+            "artifact_sha256",
+            "resolved_tag_commit_sha",
+            "audit_context_hash",
+            "completion_status",
+            "worklist_fingerprint",
+        }
+        if required.issubset(value.keys()) is False:
+            raise ValueError(f"Invalid progress manifest: {path}")
+        entries[key] = value
+    return entries
+
+
+def _normalise_non_negative_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    return value
+
+
+def _normalise_positive_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    return value
+
+
+def _normalise_manifest_identity(raw: Mapping[str, Any]) -> dict[str, str]:
+    if not isinstance(raw, Mapping):
+        raise ValueError("Manifest identity must be an object")
+    provided = set(raw.keys())
+    if provided != _SHARD_MANIFEST_IDENTITY_KEYS:
+        extras = ", ".join(sorted(provided - _SHARD_MANIFEST_IDENTITY_KEYS))
+        missing = ", ".join(sorted(_SHARD_MANIFEST_IDENTITY_KEYS - provided))
+        if extras and missing:
+            raise ValueError(f"Unexpected identity keys: {extras}; missing: {missing}")
+        if extras:
+            raise ValueError(f"Unexpected identity keys: {extras}")
+        raise ValueError(f"Missing identity keys: {missing}")
+
+    repository_value = raw["repository"]
+    if not isinstance(repository_value, str) or not repository_value:
+        raise ValueError("repository must be a non-empty string")
+    repository = plugin_release_utils.canonicalize_github_repository_url(
+        repository_value
+    )
+    github_release_id = raw["github_release_id"]
+    if not isinstance(github_release_id, str) or not github_release_id:
+        raise ValueError("github_release_id must be a decimal string")
+    github_release_id = github_release_id.strip()
+    asset_id = raw["asset_id"]
+    if not isinstance(asset_id, str) or not asset_id:
+        raise ValueError("asset_id must be a decimal string")
+    asset_id = asset_id.strip()
+    if not github_release_id.isdigit():
+        raise ValueError("github_release_id must be a decimal string")
+    if not asset_id.isdigit():
+        raise ValueError("asset_id must be a decimal string")
+    return {
+        "repository": repository,
+        "github_release_id": github_release_id,
+        "asset_id": asset_id,
+    }
+
+
+def _normalise_manifest_identities(
+    identities: Any, field_name: str
+) -> list[dict[str, str]]:
+    if not isinstance(identities, list):
+        raise ValueError(f"{field_name} must be a list")
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for entry in identities:
+        normalized_entry = _normalise_manifest_identity(entry)
+        key = (
+            normalized_entry["repository"],
+            normalized_entry["github_release_id"],
+            normalized_entry["asset_id"],
+        )
+        if key in seen:
+            raise ValueError(f"Duplicate identity in {field_name}")
+        seen.add(key)
+        normalized.append(normalized_entry)
+    return sorted(
+        normalized,
+        key=lambda identity: (
+            identity["repository"],
+            identity["github_release_id"],
+            identity["asset_id"],
+        ),
+    )
+
+
+def _shard_index_for_manifest_identity(
+    identity: Mapping[str, str], shard_count: int
+) -> int:
+    repository_key = plugin_release_utils.canonical_repository_key(
+        identity["repository"]
+    )
+    release_id = identity["github_release_id"]
+    digest = hashlib.sha256(f"{repository_key}\0{release_id}".encode("utf-8")).digest()
+    return int.from_bytes(digest, "big") % shard_count
+
+
+def _normalise_shard_manifest(raw: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        raise ValueError("Shard manifest must be an object")
+
+    required = set(_SHARD_MANIFEST_ROOT_KEYS)
+    provided = set(raw.keys())
+    if provided != required:
+        extras = ", ".join(sorted(provided - required))
+        missing = ", ".join(sorted(required - provided))
+        if extras and missing:
+            raise ValueError(
+                f"Unexpected shard manifest keys: {extras}; missing: {missing}"
+            )
+        if extras:
+            raise ValueError(f"Unexpected shard manifest keys: {extras}")
+        raise ValueError(f"Missing shard manifest keys: {missing}")
+
+    schema_version = raw["schema_version"]
+    if not isinstance(schema_version, str) or not schema_version:
+        raise ValueError("Invalid schema_version")
+    if schema_version != _SHARD_MANIFEST_SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported shard manifest schema version: {schema_version!r}"
+        )
+    worklist_fingerprint = _normalise_worklist_fingerprint(
+        raw["worklist_fingerprint"], "worklist_fingerprint"
+    )
+    source_revision = raw["source_revision"]
+    if not isinstance(source_revision, str) or not source_revision:
+        raise ValueError("Invalid source_revision")
+    if not _CANONICAL_GIT_SHA1.fullmatch(source_revision):
+        raise ValueError(f"Invalid source_revision: {source_revision!r}")
+    shard_count = _normalise_positive_int(raw["shard_count"], "shard_count")
+    shard_index = _normalise_non_negative_int(raw["shard_index"], "shard_index")
+    if shard_index >= shard_count:
+        raise ValueError("shard_index must satisfy 0 <= index < shard_count")
+
+    assigned = _normalise_manifest_identities(
+        raw["assigned_identities"], "assigned_identities"
+    )
+    attempted = _normalise_manifest_identities(
+        raw["attempted_identities"], "attempted_identities"
+    )
+    report = _normalise_manifest_identities(
+        raw["report_identities"], "report_identities"
+    )
+
+    assigned_set = {
+        (identity["repository"], identity["github_release_id"], identity["asset_id"])
+        for identity in assigned
+    }
+    attempted_set = {
+        (identity["repository"], identity["github_release_id"], identity["asset_id"])
+        for identity in attempted
+    }
+    report_set = {
+        (identity["repository"], identity["github_release_id"], identity["asset_id"])
+        for identity in report
+    }
+
+    if not attempted_set.issubset(assigned_set):
+        raise ValueError("attempted_identities must be a subset of assigned_identities")
+    if not report_set.issubset(assigned_set):
+        raise ValueError("report_identities must be a subset of assigned_identities")
+    if attempted_set == assigned_set and report_set != assigned_set:
+        raise ValueError(
+            "report_identities must equal attempted_identities when all assigned work is attempted"
+        )
+
+    for identity in assigned:
+        if _shard_index_for_manifest_identity(identity, shard_count) != shard_index:
+            raise ValueError(
+                "assigned_identities include an identity not assigned to this shard"
+            )
+
+    return {
+        "schema_version": schema_version,
+        "worklist_fingerprint": worklist_fingerprint,
+        "source_revision": source_revision,
+        "shard_count": shard_count,
+        "shard_index": shard_index,
+        "assigned_identities": assigned,
+        "attempted_identities": attempted,
+        "report_identities": report,
+    }
+
+
+def _write_shard_manifest(path: str | Path, manifest: Mapping[str, Any]) -> None:
+    normalised = _normalise_shard_manifest(manifest)
+    _atomic_write_text(
+        path,
+        json.dumps(normalised, indent=2, sort_keys=True) + "\n",
+    )
+
+
+def _load_shard_manifest(path: str | Path) -> dict[str, Any]:
+    if not Path(path).is_file():
+        raise ValueError(f"Shard manifest not found: {path}")
+    with open(path, encoding="utf-8") as manifest_file:
+        payload = json.load(manifest_file)
+    return _normalise_shard_manifest(payload)
 
 
 def _verdict_delta_from_reports(
