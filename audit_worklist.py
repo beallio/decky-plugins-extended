@@ -20,6 +20,7 @@ WORKLIST_SELECTION_MODES = {"all", "changed", "repository", "none"}
 
 _CANONICAL_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CANONICAL_GIT_SHA1 = re.compile(r"^[0-9a-f]{40}$")
+_CANONICAL_POSITIVE_DECIMAL = re.compile(r"^[1-9][0-9]*$")
 _CANONICAL_GITHUB_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 _DOC_KEYS = {"schema_version", "fingerprint", "payload"}
@@ -76,6 +77,17 @@ def _normalise_positive_int(value: Any, field_name: str) -> int:
     return value
 
 
+def _normalise_positive_decimal_id(value: Any, field_name: str) -> str:
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    text = str(value)
+    if not _CANONICAL_POSITIVE_DECIMAL.fullmatch(text):
+        raise ValueError(
+            f"{field_name} must be a positive decimal string without leading zero"
+        )
+    return text
+
+
 def _normalise_str(value: Any, field_name: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise ValueError(f"Invalid {field_name}: {value!r}")
@@ -119,12 +131,12 @@ def _normalise_worklist_identity(raw: Mapping[str, Any]) -> dict[str, str]:
     repository = plugin_release_utils.canonicalize_github_repository_url(
         _normalise_str(raw["repository"], "repository")
     )
-    release_id = _normalise_str(raw["github_release_id"], "github_release_id")
-    if not release_id.isdigit():
-        raise ValueError("github_release_id must be a decimal string")
-    asset_id = _normalise_str(raw["asset_id"], "asset_id")
-    if not asset_id.isdigit():
-        raise ValueError("asset_id must be a decimal string")
+    if raw["repository"] != repository:
+        raise ValueError("Repository URL is not canonical")
+    release_id = _normalise_positive_decimal_id(
+        raw["github_release_id"], "github_release_id"
+    )
+    asset_id = _normalise_positive_decimal_id(raw["asset_id"], "asset_id")
     return {
         "repository": repository,
         "github_release_id": release_id,
@@ -744,13 +756,15 @@ def load_expected_worklist_document(
 def worklist_identity(item: Mapping[str, Any]) -> dict[str, str]:
     if not isinstance(item, Mapping):
         raise ValueError("Worklist item must be an object")
+    release_id = item.get("release_id")
+    asset_id = item.get("asset_id")
+    release_id = str(release_id) if isinstance(release_id, int) else release_id
+    asset_id = str(asset_id) if isinstance(asset_id, int) else asset_id
     return _normalise_worklist_identity(
         {
             "repository": _normalise_str(item.get("repository"), "repository"),
-            "github_release_id": str(
-                _normalise_positive_int(item["release_id"], "release_id")
-            ),
-            "asset_id": str(_normalise_positive_int(item["asset_id"], "asset_id")),
+            "github_release_id": release_id,
+            "asset_id": asset_id,
         }
     )
 

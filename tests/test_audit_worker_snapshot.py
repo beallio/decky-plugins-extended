@@ -95,6 +95,128 @@ def _manifest_identity_for_shard(shard_index: int, shard_count: int, repository:
     raise AssertionError("unable to construct identity for requested shard")
 
 
+def _manifest_identity_for_repository_and_shard(
+    shard_index: int,
+    shard_count: int,
+    repository: str,
+    start: int = 1,
+):
+    for release_id in range(start, 20000):
+        candidate = {
+            "repository": repository,
+            "github_release_id": str(release_id),
+            "asset_id": str(release_id + 100),
+        }
+        if ap._shard_index_for_manifest_identity(candidate, shard_count) == shard_index:
+            return candidate
+    raise AssertionError("unable to construct requested repository/shard identity")
+
+
+def _alternate_identity_same_shard(shard_index: int, shard_count: int, excluded: dict):
+    for repository in (
+        "https://github.com/owner/repo",
+        "https://github.com/owner/other",
+    ):
+        for release_id in range(1, 50000):
+            candidate = {
+                "repository": repository,
+                "github_release_id": str(release_id),
+                "asset_id": str(release_id + 100),
+            }
+            if candidate == excluded:
+                continue
+            if (
+                ap._shard_index_for_manifest_identity(candidate, shard_count)
+                == shard_index
+            ):
+                return candidate
+    raise AssertionError("unable to construct alternate same-shard identity")
+
+
+def _expected_assigned_identities(doc: dict, shard_index: int):
+    payload = doc["payload"]
+    return [
+        audit_worklist.worklist_identity(item)
+        for item in audit_worklist.select_worklist_shard(payload, shard_index)
+    ]
+
+
+def _make_shard_manifest(
+    shard_index: int,
+    assigned,
+    attempt,
+    report,
+    *,
+    shard_count: int = 14,
+    fingerprint: str = "f" * 64,
+    source_revision: str = "a" * 40,
+):
+    return {
+        "schema_version": "1",
+        "worklist_fingerprint": fingerprint,
+        "source_revision": source_revision,
+        "shard_count": shard_count,
+        "shard_index": shard_index,
+        "assigned_identities": assigned,
+        "attempted_identities": attempt,
+        "report_identities": report,
+    }
+
+
+def _make_valid_manifest_for_expected_shard(
+    worklist_doc: dict,
+    shard_index: int,
+    *,
+    assigned=None,
+    attempted=None,
+    report=None,
+    source_revision: str | None = None,
+    shard_count: int | None = None,
+    fingerprint: str | None = None,
+):
+    payload = worklist_doc["payload"]
+    if assigned is None:
+        assigned = _expected_assigned_identities(worklist_doc, shard_index)
+    if attempted is None:
+        attempted = assigned
+    if report is None:
+        report = attempted
+    if shard_count is None:
+        shard_count = payload["shard_count"]
+    if fingerprint is None:
+        fingerprint = worklist_doc["fingerprint"]
+    if source_revision is None:
+        source_revision = payload["source_revision"]
+    return {
+        "schema_version": "1",
+        "worklist_fingerprint": fingerprint,
+        "source_revision": source_revision,
+        "shard_count": shard_count,
+        "shard_index": shard_index,
+        "assigned_identities": assigned,
+        "attempted_identities": attempted,
+        "report_identities": report,
+    }
+
+
+def _find_same_shard_release_pair_for_order_probe(
+    shard_index: int, shard_count: int, repository: str
+):
+    candidates = []
+    for release_id in range(1, 5000):
+        candidate = {
+            "repository": repository,
+            "github_release_id": str(release_id),
+            "asset_id": str(release_id + 100),
+        }
+        if ap._shard_index_for_manifest_identity(candidate, shard_count) != shard_index:
+            continue
+        candidates.append(candidate)
+        if len(candidates) == 2:
+            return candidates[0], candidates[1]
+    raise AssertionError("unable to find same-shard identity pair")
+
+
 def _sample_progress_record(report_id: str = "v1@10", *, fingerprint: str = "f" * 64):
     report = ap.AuditReport(
         repository="https://github.com/owner/repo",
@@ -233,6 +355,52 @@ def test_load_progress_manifest_rejects_malformed_v2_payload(tmp_path):
         ap._load_progress_manifest(path, expected_worklist_fingerprint="f" * 64)
 
 
+def test_load_progress_manifest_validates_v2_payload_even_when_fingerprint_mismatched(
+    tmp_path,
+):
+    path = tmp_path / "progress.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "2",
+                "worklist_fingerprint": "f" * 64,
+                "entries": {
+                    "bad-key": {
+                        "repository": "https://github.com/owner/repo",
+                        "github_release_id": "10",
+                        "asset_id": "20",
+                        "artifact_sha256": "a" * 64,
+                        "resolved_tag_commit_sha": "c" * 40,
+                        "audit_context_hash": "ctx",
+                        "completion_status": "completed",
+                        "report": {},
+                        "worklist_fingerprint": "f" * 64,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Invalid progress manifest"):
+        ap._load_progress_manifest(path, expected_worklist_fingerprint="0" * 64)
+
+
+def test_write_progress_manifest_rejects_non_canonical_progress_keys(tmp_path):
+    key, record = _sample_progress_record(fingerprint="f" * 64)
+    path = tmp_path / "progress.json"
+    bad_key = "https://github.com/OWNER/repo\x00" + "\x00".join(key.split("\x00")[1:])
+    bad_record = dict(record)
+    bad_record["repository"] = "https://github.com/OWNER/repo"
+
+    with pytest.raises(
+        ValueError, match="Invalid progress manifest|Repository URL is not canonical"
+    ):
+        ap._write_progress_manifest(
+            path, {bad_key: bad_record}, worklist_fingerprint="f" * 64
+        )
+
+
 def _base_manifest(index: int, shard_count: int = 14, fingerprint: str = "f" * 64):
     identity = _manifest_identity_for_shard(
         index, shard_count, "https://github.com/owner/repo"
@@ -323,6 +491,44 @@ def test_shard_manifest_rejects_invalid_schema_fields(tmp_path):
                 "attempted_identities": [],
                 "report_identities": [],
             },
+        )
+
+
+@pytest.mark.parametrize(
+    ("repository", "release_id", "asset_id"),
+    [
+        ("https://github.com/OWNER/repo", "1", "10"),
+        ("https://github.com/owner/repo", "01", "10"),
+        ("https://github.com/owner/repo", "1", "01"),
+        ("https://github.com/owner/repo", " 1", "10"),
+        ("https://github.com/owner/repo", "1", " 10"),
+        ("https://github.com/owner/repo", "０", "10"),
+        ("https://github.com/owner/repo", "1", "１"),
+    ],
+)
+def test_shard_manifest_rejects_non_canonical_identities(
+    tmp_path, repository, release_id, asset_id
+):
+    identity = {
+        "repository": repository,
+        "github_release_id": release_id,
+        "asset_id": asset_id,
+    }
+
+    with pytest.raises(
+        ValueError, match="Repository URL is not canonical|github_release_id|asset_id"
+    ):
+        ap._normalise_shard_manifest(
+            {
+                "schema_version": "1",
+                "worklist_fingerprint": "a" * 64,
+                "source_revision": "a" * 40,
+                "shard_count": 2,
+                "shard_index": 1,
+                "assigned_identities": [identity],
+                "attempted_identities": [identity],
+                "report_identities": [identity],
+            }
         )
 
 
@@ -439,3 +645,163 @@ def test_shard_manifest_atomic_write_failure_leaves_no_file(tmp_path, monkeypatc
         )
 
     assert not path.exists()
+
+
+def test_shard_manifest_preserves_supplied_identity_order(tmp_path):
+    shard_index = 0
+    path, _fingerprint = _build_worklist(tmp_path)
+    worklist_doc = audit_worklist.load_worklist_document(path)
+    payload = worklist_doc["payload"]
+    one_digit, two_digit = _find_same_shard_release_pair_for_order_probe(
+        shard_index,
+        payload["shard_count"],
+        "https://github.com/owner/repo",
+    )
+    manifest = _make_shard_manifest(
+        shard_index=shard_index,
+        assigned=[one_digit, two_digit],
+        attempt=[one_digit, two_digit],
+        report=[one_digit, two_digit],
+        fingerprint=worklist_doc["fingerprint"],
+        source_revision=payload["source_revision"],
+        shard_count=payload["shard_count"],
+    )
+    path = tmp_path / "ordered.json"
+    ap._write_shard_manifest(path, manifest)
+    loaded = ap._load_shard_manifest(path)
+    assert loaded["assigned_identities"] == [one_digit, two_digit]
+    assert loaded["attempted_identities"] == [one_digit, two_digit]
+    assert loaded["report_identities"] == [one_digit, two_digit]
+
+
+def test_shard_manifest_rejects_partial_report_order_mismatch(tmp_path):
+    shard_count = 14
+    shard_index = 0
+    first = _manifest_identity_for_shard(
+        shard_index, shard_count, "https://github.com/owner/repo"
+    )
+    second = _manifest_identity_for_shard(
+        shard_index, shard_count, "https://github.com/owner/other"
+    )
+    with pytest.raises(
+        ValueError, match="report_identities must equal attempted_identities"
+    ):
+        ap._normalise_shard_manifest(
+            {
+                "schema_version": "1",
+                "worklist_fingerprint": "a" * 64,
+                "source_revision": "a" * 40,
+                "shard_count": shard_count,
+                "shard_index": shard_index,
+                "assigned_identities": [first, second],
+                "attempted_identities": [first, second],
+                "report_identities": [second, first],
+            }
+        )
+
+
+def test_validate_expected_shard_manifest_rejects_all_expected_mismatches(tmp_path):
+    path, _fp = _build_worklist(tmp_path)
+    worklist_doc = audit_worklist.load_worklist_document(path)
+    payload = worklist_doc["payload"]
+    non_empty = None
+    for shard_index in range(payload["shard_count"]):
+        identities = _expected_assigned_identities(worklist_doc, shard_index)
+        if identities:
+            non_empty = shard_index
+            break
+    assert non_empty is not None
+    manifest = _make_valid_manifest_for_expected_shard(
+        worklist_doc,
+        non_empty,
+    )
+    ap._validate_expected_shard_manifest(manifest, worklist_doc, non_empty)
+
+    with pytest.raises(
+        ValueError, match="Invalid shard manifest: source_revision mismatch"
+    ):
+        ap._validate_expected_shard_manifest(
+            _make_valid_manifest_for_expected_shard(
+                worklist_doc, non_empty, source_revision="b" * 40
+            ),
+            worklist_doc,
+            non_empty,
+        )
+
+    with pytest.raises(
+        ValueError, match="Invalid shard manifest: worklist_fingerprint mismatch"
+    ):
+        ap._validate_expected_shard_manifest(
+            _make_valid_manifest_for_expected_shard(
+                worklist_doc, non_empty, fingerprint="b" * 64
+            ),
+            worklist_doc,
+            non_empty,
+        )
+
+    with pytest.raises(
+        ValueError, match="Invalid shard manifest: shard_count mismatch"
+    ):
+        ap._validate_expected_shard_manifest(
+            _make_valid_manifest_for_expected_shard(
+                worklist_doc,
+                non_empty,
+                shard_count=payload["shard_count"] + 1,
+                assigned=[],
+                attempted=[],
+                report=[],
+            ),
+            worklist_doc,
+            non_empty,
+        )
+
+    with pytest.raises(
+        ValueError, match="Invalid shard manifest: shard_index mismatch"
+    ):
+        ap._validate_expected_shard_manifest(
+            _make_valid_manifest_for_expected_shard(
+                worklist_doc,
+                non_empty,
+                shard_count=payload["shard_count"],
+                assigned=[],
+                attempted=[],
+                report=[],
+            )
+            | {"shard_index": (non_empty + 1) % payload["shard_count"]},
+            worklist_doc,
+            non_empty,
+        )
+
+    mismatch_assigned = list(manifest["assigned_identities"])
+    mismatch_assigned[0] = _alternate_identity_same_shard(
+        non_empty, payload["shard_count"], mismatch_assigned[0]
+    )
+    with pytest.raises(
+        ValueError, match="Invalid shard manifest: assigned_identities mismatch"
+    ):
+        ap._validate_expected_shard_manifest(
+            _make_valid_manifest_for_expected_shard(
+                worklist_doc, non_empty, assigned=mismatch_assigned
+            ),
+            worklist_doc,
+            non_empty,
+        )
+
+
+def test_validate_expected_shard_manifest_supports_empty_shards(tmp_path):
+    path, _fp = _build_worklist(tmp_path)
+    worklist_doc = audit_worklist.load_worklist_document(path)
+    payload = worklist_doc["payload"]
+    empty_index = next(
+        i
+        for i in range(payload["shard_count"])
+        if not _expected_assigned_identities(worklist_doc, i)
+    )
+    manifest = _make_valid_manifest_for_expected_shard(
+        worklist_doc,
+        empty_index,
+        assigned=[],
+        attempted=[],
+        report=[],
+    )
+    ap._validate_expected_shard_manifest(manifest, worklist_doc, empty_index)

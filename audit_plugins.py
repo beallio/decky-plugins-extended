@@ -441,6 +441,7 @@ def _deep_merge(base: dict, override: dict) -> None:
 
 _CANONICAL_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CANONICAL_GIT_SHA1 = re.compile(r"^[0-9a-f]{40}$")
+_CANONICAL_POSITIVE_DECIMAL = re.compile(r"^[1-9][0-9]*$")
 _WORKER_PROGRESS_SCHEMA_V2 = "2"
 _WORKER_PROGRESS_ROOT_KEYS_V2 = {
     "schema_version",
@@ -4152,6 +4153,7 @@ _RESUME_IDENTITY_FIELDS = (
     "resolved_tag_commit_sha",
     "audit_context_hash",
     "completion_status",
+    "worklist_fingerprint",
 )
 
 
@@ -5210,6 +5212,99 @@ def _progress_record(
     return record
 
 
+def _normalise_positive_decimal_id(value: Any, field_name: str) -> str:
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    if not value or not _CANONICAL_POSITIVE_DECIMAL.fullmatch(value):
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    return value
+
+
+def _normalise_str(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    return value
+
+
+def _normalise_progress_identity_key(key: str) -> tuple[str, str, str]:
+    if not isinstance(key, str):
+        raise ValueError("Invalid progress manifest")
+    parts = key.split("\0")
+    if len(parts) != 3:
+        raise ValueError("Invalid progress manifest")
+    identity = _normalise_manifest_identity(
+        {
+            "repository": parts[0],
+            "github_release_id": parts[1],
+            "asset_id": parts[2],
+        }
+    )
+    return identity["repository"], identity["github_release_id"], identity["asset_id"]
+
+
+def _normalise_progress_record(
+    identity_key: str, value: Mapping[str, Any], expected_fingerprint: str
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError("Invalid progress manifest")
+    if not isinstance(value.get("report"), dict):
+        raise ValueError("Invalid progress manifest")
+    value_fingerprint = value.get("worklist_fingerprint")
+    if value_fingerprint != expected_fingerprint:
+        raise ValueError("Invalid progress manifest")
+
+    repository, github_release_id, asset_id = _normalise_progress_identity_key(
+        identity_key
+    )
+    required = {
+        "repository",
+        "github_release_id",
+        "asset_id",
+        "artifact_sha256",
+        "resolved_tag_commit_sha",
+        "audit_context_hash",
+        "completion_status",
+        "worklist_fingerprint",
+    }
+    if not required.issubset(value.keys()):
+        raise ValueError("Invalid progress manifest")
+
+    repository_value = _normalise_str(value["repository"], "repository")
+    if repository_value != repository:
+        raise ValueError("Invalid progress manifest")
+
+    if value.get("github_release_id") != github_release_id:
+        raise ValueError("Invalid progress manifest")
+    if value.get("asset_id") != asset_id:
+        raise ValueError("Invalid progress manifest")
+
+    _normalise_positive_decimal_id(value["github_release_id"], "github_release_id")
+    _normalise_positive_decimal_id(value["asset_id"], "asset_id")
+
+    if not isinstance(value.get("artifact_sha256"), str):
+        raise ValueError("Invalid progress manifest")
+    if (
+        not _CANONICAL_SHA256.fullmatch(value["artifact_sha256"])
+        and value["artifact_sha256"]
+    ):
+        raise ValueError("Invalid progress manifest")
+    if not isinstance(value.get("resolved_tag_commit_sha"), str):
+        raise ValueError("Invalid progress manifest")
+    if value.get("audit_context_hash") is None:
+        raise ValueError("Invalid progress manifest")
+
+    completion_status = value.get("completion_status")
+    if completion_status not in {"completed", "incomplete"}:
+        raise ValueError("Invalid progress manifest")
+
+    return {
+        **value,
+        "repository": repository,
+        "github_release_id": github_release_id,
+        "asset_id": asset_id,
+    }
+
+
 def _write_progress_manifest(
     path: str | Path,
     records: dict[str, dict[str, Any]],
@@ -5221,7 +5316,14 @@ def _write_progress_manifest(
         )
         normalized_records = {
             key: {
-                **value,
+                **_normalise_progress_record(
+                    key,
+                    {
+                        **value,
+                        "worklist_fingerprint": normalized_fingerprint,
+                    },
+                    normalized_fingerprint,
+                ),
                 "worklist_fingerprint": normalized_fingerprint,
             }
             for key, value in records.items()
@@ -5279,34 +5381,23 @@ def _load_progress_manifest(
         raise ValueError(f"Invalid progress manifest: {path}")
     if set(payload.keys()) != _WORKER_PROGRESS_ROOT_KEYS_V2:
         raise ValueError(f"Invalid progress manifest: {path}")
-    if payload.get("worklist_fingerprint") != expected_fingerprint:
-        return {}
     if not isinstance(payload.get("entries"), dict):
         raise ValueError(f"Invalid progress manifest: {path}")
 
+    normalized_root_fingerprint = _normalise_worklist_fingerprint(
+        payload["worklist_fingerprint"], "worklist_fingerprint"
+    )
+
     entries: dict[str, dict[str, Any]] = {}
     for key, value in payload["entries"].items():
-        if not isinstance(key, str):
-            raise ValueError(f"Invalid progress manifest: {path}")
-        if not isinstance(value, dict):
-            raise ValueError(f"Invalid progress manifest: {path}")
-        if value.get("worklist_fingerprint") != expected_fingerprint:
-            raise ValueError(f"Invalid progress manifest: {path}")
-        if not isinstance(value.get("report"), dict):
-            raise ValueError(f"Invalid progress manifest: {path}")
-        required = {
-            "repository",
-            "github_release_id",
-            "asset_id",
-            "artifact_sha256",
-            "resolved_tag_commit_sha",
-            "audit_context_hash",
-            "completion_status",
-            "worklist_fingerprint",
-        }
-        if required.issubset(value.keys()) is False:
-            raise ValueError(f"Invalid progress manifest: {path}")
-        entries[key] = value
+        entries[key] = _normalise_progress_record(
+            key,
+            value,
+            normalized_root_fingerprint,
+        )
+
+    if normalized_root_fingerprint != expected_fingerprint:
+        return {}
     return entries
 
 
@@ -5335,24 +5426,15 @@ def _normalise_manifest_identity(raw: Mapping[str, Any]) -> dict[str, str]:
             raise ValueError(f"Unexpected identity keys: {extras}")
         raise ValueError(f"Missing identity keys: {missing}")
 
-    repository_value = raw["repository"]
-    if not isinstance(repository_value, str) or not repository_value:
-        raise ValueError("repository must be a non-empty string")
     repository = plugin_release_utils.canonicalize_github_repository_url(
-        repository_value
+        _normalise_str(raw["repository"], "repository")
     )
-    github_release_id = raw["github_release_id"]
-    if not isinstance(github_release_id, str) or not github_release_id:
-        raise ValueError("github_release_id must be a decimal string")
-    github_release_id = github_release_id.strip()
-    asset_id = raw["asset_id"]
-    if not isinstance(asset_id, str) or not asset_id:
-        raise ValueError("asset_id must be a decimal string")
-    asset_id = asset_id.strip()
-    if not github_release_id.isdigit():
-        raise ValueError("github_release_id must be a decimal string")
-    if not asset_id.isdigit():
-        raise ValueError("asset_id must be a decimal string")
+    if raw["repository"] != repository:
+        raise ValueError("Repository URL is not canonical")
+    github_release_id = _normalise_positive_decimal_id(
+        raw["github_release_id"], "github_release_id"
+    )
+    asset_id = _normalise_positive_decimal_id(raw["asset_id"], "asset_id")
     return {
         "repository": repository,
         "github_release_id": github_release_id,
@@ -5378,14 +5460,7 @@ def _normalise_manifest_identities(
             raise ValueError(f"Duplicate identity in {field_name}")
         seen.add(key)
         normalized.append(normalized_entry)
-    return sorted(
-        normalized,
-        key=lambda identity: (
-            identity["repository"],
-            identity["github_release_id"],
-            identity["asset_id"],
-        ),
-    )
+    return normalized
 
 
 def _shard_index_for_manifest_identity(
@@ -5463,10 +5538,8 @@ def _normalise_shard_manifest(raw: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("attempted_identities must be a subset of assigned_identities")
     if not report_set.issubset(assigned_set):
         raise ValueError("report_identities must be a subset of assigned_identities")
-    if attempted_set == assigned_set and report_set != assigned_set:
-        raise ValueError(
-            "report_identities must equal attempted_identities when all assigned work is attempted"
-        )
+    if report != attempted:
+        raise ValueError("report_identities must equal attempted_identities")
 
     for identity in assigned:
         if _shard_index_for_manifest_identity(identity, shard_count) != shard_index:
@@ -5500,6 +5573,49 @@ def _load_shard_manifest(path: str | Path) -> dict[str, Any]:
     with open(path, encoding="utf-8") as manifest_file:
         payload = json.load(manifest_file)
     return _normalise_shard_manifest(payload)
+
+
+def _validate_expected_shard_manifest(
+    manifest: Mapping[str, Any],
+    worklist: Mapping[str, Any],
+    shard_index: int,
+) -> dict[str, Any]:
+    normalised_manifest = _normalise_shard_manifest(manifest)
+
+    worklist_fingerprint = worklist.get("fingerprint")
+    if worklist_fingerprint is not None:
+        worklist_fingerprint = _normalise_worklist_fingerprint(
+            worklist_fingerprint, "worklist_fingerprint"
+        )
+    else:
+        raise ValueError("Invalid expected worklist")
+
+    payload = worklist.get("payload")
+    if not isinstance(payload, Mapping):
+        raise ValueError("Invalid expected worklist")
+
+    source_revision = _normalise_str(payload["source_revision"], "source_revision")
+    shard_count = _normalise_positive_int(payload["shard_count"], "shard_count")
+    if not isinstance(shard_index, int) or shard_index < 0:
+        raise ValueError("Invalid shard_index")
+
+    expected_assigned = [
+        audit_worklist.worklist_identity(item)
+        for item in audit_worklist.select_worklist_shard(payload, shard_index)
+    ]
+
+    if normalised_manifest["worklist_fingerprint"] != worklist_fingerprint:
+        raise ValueError("Invalid shard manifest: worklist_fingerprint mismatch")
+    if normalised_manifest["source_revision"] != source_revision:
+        raise ValueError("Invalid shard manifest: source_revision mismatch")
+    if normalised_manifest["shard_count"] != shard_count:
+        raise ValueError("Invalid shard manifest: shard_count mismatch")
+    if normalised_manifest["shard_index"] != shard_index:
+        raise ValueError("Invalid shard manifest: shard_index mismatch")
+    if normalised_manifest["assigned_identities"] != expected_assigned:
+        raise ValueError("Invalid shard manifest: assigned_identities mismatch")
+
+    return normalised_manifest
 
 
 def _verdict_delta_from_reports(

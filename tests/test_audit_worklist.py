@@ -703,6 +703,62 @@ def test_worklist_rejects_duplicate_identities_and_non_deterministic_order(tmp_p
         worklist.load_worklist_document_from_bytes(out_file.read_bytes())
 
 
+@pytest.mark.parametrize(
+    ("release_id", "asset_id"),
+    [
+        ("01", "10"),
+        ("1", "010"),
+        ("1 ", "10"),
+        (" 1", "10"),
+        ("1", "01"),
+        ("1", "\u0661"),
+        ("-1", "10"),
+        ("0", "10"),
+        ("+1", "10"),
+    ],
+)
+def test_worklist_identity_rejects_aliasing_and_alias_decimal_forms(
+    release_id, asset_id
+):
+    with pytest.raises(ValueError, match="must be a positive decimal"):
+        worklist.worklist_identity(
+            {
+                "repository": "https://github.com/owner/repo",
+                "release_id": release_id,
+                "asset_id": asset_id,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("release_id", "asset_id"),
+    [
+        ("01", "１０"),
+        ("１", "10"),
+    ],
+)
+def test_worklist_identity_rejects_textual_aliases_of_same_value(release_id, asset_id):
+    with pytest.raises(ValueError, match="must be a positive decimal"):
+        worklist.worklist_identity(
+            {
+                "repository": "https://github.com/owner/repo",
+                "release_id": release_id,
+                "asset_id": asset_id,
+            }
+        )
+
+
+def test_worklist_identity_rejects_non_canonical_repository_alias():
+    with pytest.raises(ValueError, match="Repository URL is not canonical"):
+        worklist.worklist_identity(
+            {
+                "repository": "https://github.com/OWNER/repo",
+                "release_id": "1",
+                "asset_id": "10",
+            }
+        )
+
+
 def test_worklist_prepare_accepts_none_selection(tmp_path):
     output = tmp_path / "empty.json"
     fp, _ = worklist.prepare_audit_worklist(
@@ -1705,6 +1761,7 @@ def test_resume_requires_every_identity_field_and_completed_status():
         "resolved_tag_commit_sha": "commit",
         "audit_context_hash": "context",
         "completion_status": "completed",
+        "worklist_fingerprint": "b" * 64,
     }
 
     assert ap.resume_identity_matches(expected, expected)
@@ -1712,6 +1769,26 @@ def test_resume_requires_every_identity_field_and_completed_status():
         mutated = dict(expected)
         mutated[field] = "different"
         assert not ap.resume_identity_matches(mutated, expected), field
+
+
+def test_resume_identity_allows_v1_missing_fingerprint_but_mismatch_if_worklist_fingerprint_present():
+    legacy_expected = {
+        "repository": "https://github.com/owner/repo",
+        "github_release_id": "1",
+        "asset_id": "10",
+        "artifact_sha256": "a" * 64,
+        "resolved_tag_commit_sha": "commit",
+        "audit_context_hash": "context",
+        "completion_status": "completed",
+    }
+    assert ap.resume_identity_matches(legacy_expected, legacy_expected)
+
+    worklist_expected = dict(legacy_expected)
+    worklist_expected["worklist_fingerprint"] = "f" * 64
+    assert not ap.resume_identity_matches(legacy_expected, worklist_expected)
+    assert not ap.resume_identity_matches(worklist_expected, legacy_expected)
+    worklist_expected["worklist_fingerprint"] = "b" * 64
+    assert ap.resume_identity_matches(worklist_expected, worklist_expected)
 
 
 def test_aggregation_rejects_duplicate_and_conflicting_release_keys(tmp_path):
