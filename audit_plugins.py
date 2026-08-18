@@ -5085,13 +5085,9 @@ def audit_release(
     report.resolved_tag_commit_sha = resolved_tag_commit_sha
     artifact_url = report.artifact_url
 
-    # --- Metadata from exact release tag ---
-    tag_plugin_json = get_repo_file_raw(owner, repo, tag_name, "plugin.json")
-    tag_package_json = get_repo_file_raw(owner, repo, tag_name, "package.json")
-
-    plugin_meta_data = tag_plugin_json
+    plugin_meta_data: Optional[bytes] = None
     plugin_meta_path = f"plugin.json@{tag_name}"
-    package_meta_data = tag_package_json
+    package_meta_data: Optional[bytes] = None
     package_meta_path = f"package.json@{tag_name}"
     report.plugin_name = repo
 
@@ -5279,6 +5275,41 @@ def audit_release(
 
         report.extracted_domains = sorted(all_domains)
 
+        source_snapshot: Optional[audit_source_snapshot.SourceSnapshot] = None
+        source_preparation_error: Optional[str] = None
+        trivy_source_enabled = _scanner_enabled(policy, "trivy")
+        diff_source_enabled = _scanner_enabled(policy, "source-artifact-diff")
+        source_consumers_enabled = trivy_source_enabled or diff_source_enabled
+
+        if zip_stats.safe and os.path.isdir(extract_dir) and source_consumers_enabled:
+            try:
+                source_snapshot = audit_source_snapshot.materialize_source_snapshot(
+                    repo_url,
+                    resolved_tag_commit_sha,
+                    os.path.join(tmp_dir, "source"),
+                    session=_gh_session,
+                    policy=policy,
+                )
+                if source_snapshot.plugin_json is not None:
+                    plugin_meta_data = source_snapshot.plugin_json
+                    plugin_meta_path = "plugin.json@source-snapshot"
+                if source_snapshot.package_json is not None:
+                    package_meta_data = source_snapshot.package_json
+                    package_meta_path = "package.json@source-snapshot"
+            except Exception as exc:
+                source_preparation_error = _redacted_exception_detail(exc)
+                finding = Finding(
+                    rule_id="SOURCE_ARTIFACT_PREPARATION_FAILED",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="",
+                    line=0,
+                    message="Source snapshot could not be prepared from tag commit.",
+                    evidence=source_preparation_error,
+                    scanner="source-artifact-diff",
+                )
+                report.findings.append(finding)
+
         # --- Metadata fallback from ZIP when missing at tag ---
         zip_plugin_json, zip_plugin_rel = _find_metadata_in_extracted(
             extract_dir, "plugin.json"
@@ -5333,8 +5364,16 @@ def audit_release(
             trivy_status, trivy_findings = run_trivy(
                 extract_dir,
                 policy,
-                source_repo=(owner, repo, resolved_tag_commit_sha),
+                source_root=(
+                    source_snapshot.source_root if source_snapshot is not None else None
+                ),
             )
+            if source_preparation_error is not None and trivy_source_enabled:
+                trivy_status = ScannerStatus(
+                    name="trivy",
+                    status="failed",
+                    detail=f"Source scan unavailable: {source_preparation_error}",
+                )
             report.scanner_statuses.append(trivy_status)
             report.findings.extend(trivy_findings)
 
@@ -5348,9 +5387,26 @@ def audit_release(
 
             # Source/artifact comparison
             if _scanner_enabled(policy, "source-artifact-diff"):
-                diff_summary, diff_findings, diff_status = compare_source_and_artifact(
-                    extract_dir, owner, repo, tag_name
-                )
+                if source_preparation_error is None and source_snapshot is not None:
+                    diff_summary, diff_findings, diff_status = (
+                        compare_source_and_artifact_from_snapshot(
+                            extract_dir,
+                            source_snapshot,
+                            tag_name,
+                        )
+                    )
+                else:
+                    diff_summary = {"ref": tag_name, "checked": False}
+                    diff_findings: list[Finding] = []
+                    diff_status = ScannerStatus(
+                        name="source-artifact-diff",
+                        status="failed",
+                        detail=(
+                            f"Source scan unavailable: {source_preparation_error}"
+                            if source_preparation_error is not None
+                            else "Source-artifact snapshot is missing."
+                        ),
+                    )
             else:
                 diff_summary, diff_findings, diff_status = (
                     {"ref": tag_name, "checked": False},

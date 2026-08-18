@@ -218,10 +218,19 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                 patch("audit_plugins.get_releases", return_value=[release_data]),
                 patch(
                     "audit_plugins._resolve_ref_to_commit_and_tree_sha",
-                    return_value=("commit123", "tree123", None),
+                    return_value=("a" * 40, "tree123", None),
                 ),
                 patch("audit_plugins.get_repo_file_raw", return_value=None),
                 patch("audit_plugins.download_zip", side_effect=download),
+                patch.object(
+                    ap.audit_source_snapshot,
+                    "materialize_source_snapshot",
+                    return_value=SimpleNamespace(
+                        source_root="/",
+                        plugin_json=None,
+                        package_json=None,
+                    ),
+                ),
                 patch("audit_plugins.run_trivy", side_effect=trivy),
                 patch(
                     "audit_plugins._scanner_runtime_identities",
@@ -314,14 +323,14 @@ class TestAuditCacheInvalidation(unittest.TestCase):
             release_id="v1.0.0@123",
             artifact_sha256="a" * 64,
             audit_context_hash=context_a,
-            resolved_tag_commit_sha="commit123",
+            resolved_tag_commit_sha="a" * 40,
             final_classification="PASS",
             completion_status="completed",
         )
 
         with tempfile.TemporaryDirectory() as cache_dir:
             ap.save_cached_report(
-                cache_dir, report, report.release_id, context_a, "commit123"
+                cache_dir, report, report.release_id, context_a, "a" * 40
             )
             matching = ap.load_cached_report(
                 cache_dir,
@@ -329,7 +338,7 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                 report.release_id,
                 report.artifact_sha256,
                 context_a,
-                "commit123",
+                "a" * 40,
             )
             changed = ap.load_cached_report(
                 cache_dir,
@@ -337,7 +346,7 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                 report.release_id,
                 report.artifact_sha256,
                 context_b,
-                "commit123",
+                "a" * 40,
             )
 
         self.assertNotEqual(context_a, context_b)
@@ -387,7 +396,7 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                 patch("audit_plugins.get_releases", return_value=[release_data]),
                 patch(
                     "audit_plugins._resolve_ref_to_commit_and_tree_sha",
-                    return_value=("commit123", "tree123", None),
+                    return_value=("a" * 40, "tree123", None),
                 ),
                 patch("audit_plugins.get_repo_file_raw", return_value=None),
                 patch("audit_plugins.download_zip", side_effect=download),
@@ -491,7 +500,7 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                 patch("audit_plugins.get_releases", return_value=[release_data]),
                 patch(
                     "audit_plugins._resolve_ref_to_commit_and_tree_sha",
-                    return_value=("commit123", "tree123", None),
+                    return_value=("a" * 40, "tree123", None),
                 ),
                 patch("audit_plugins.get_repo_file_raw", return_value=None),
                 patch("audit_plugins.download_zip", side_effect=mock_download),
@@ -535,6 +544,444 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                 )
                 self.assertEqual(download_count, 3)
 
+    def test_digest_backed_predownload_hit_skips_artifact_and_source_consumers(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_dir = os.path.join(tmp_dir, ".audit-cache")
+            policy = ap._default_policy()
+            zip_data = _make_zip(
+                [
+                    _regular("plugin.json", '{"name":"cache-test"}'),
+                    _regular("plugin/main.py", "# hello\n"),
+                ]
+            )
+            zip_sha = hashlib.sha256(zip_data).hexdigest()
+            release_data = {
+                "id": 123,
+                "tag_name": "v1.0.0",
+                "assets": [
+                    {
+                        "id": 456,
+                        "name": "plugin.zip",
+                        "browser_download_url": "http://ex.com/p.zip",
+                        "digest": f"sha256:{zip_sha}",
+                    }
+                ],
+            }
+
+            download_count = 0
+            materialize_count = 0
+            trivy_count = 0
+            compare_count = 0
+
+            def download(_url, destination, policy=None):
+                del _url, policy
+                nonlocal download_count
+                download_count += 1
+                with open(destination, "wb") as f:
+                    f.write(zip_data)
+                return zip_sha
+
+            def fake_materialize(_repository, _commit, destination, **_kwargs):
+                nonlocal materialize_count
+                materialize_count += 1
+                return SimpleNamespace(
+                    source_root=destination,
+                    plugin_json=None,
+                    package_json=None,
+                )
+
+            def fake_trivy(*_args, source_root=None, **_kwargs):
+                del source_root
+                nonlocal trivy_count
+                trivy_count += 1
+                return ap.ScannerStatus(name="trivy", status="passed"), []
+
+            def fake_compare(_extract_dir, _snapshot, ref):
+                nonlocal compare_count
+                del ref
+                compare_count += 1
+                return (
+                    {"ref": "v1.0.0", "checked": True},
+                    [],
+                    ap.ScannerStatus(name="source-artifact-diff", status="passed"),
+                )
+
+            with (
+                patch("audit_plugins.get_repo_metadata", return_value={"name": "repo"}),
+                patch(
+                    "audit_plugins.get_releases",
+                    return_value=[release_data],
+                ),
+                patch(
+                    "audit_plugins._resolve_ref_to_commit_and_tree_sha",
+                    return_value=("a" * 40, "tree123", None),
+                ),
+                patch("audit_plugins.get_repo_file_raw", return_value=None),
+                patch("audit_plugins.download_zip", side_effect=download),
+                patch.object(
+                    ap.audit_source_snapshot,
+                    "materialize_source_snapshot",
+                    side_effect=fake_materialize,
+                ),
+                patch(
+                    "audit_plugins.run_clamav",
+                    return_value=(ap.ScannerStatus(name="clamav", status="passed"), []),
+                ),
+                patch("audit_plugins.run_trivy", side_effect=fake_trivy),
+                patch(
+                    "audit_plugins.run_semgrep",
+                    return_value=(
+                        ap.ScannerStatus(name="semgrep", status="skipped"),
+                        [],
+                    ),
+                ),
+                patch(
+                    "audit_plugins.compare_source_and_artifact_from_snapshot",
+                    side_effect=fake_compare,
+                ),
+            ):
+                first = ap.audit_repository(
+                    "https://github.com/owner/repo",
+                    policy,
+                    [],
+                    cache_dir=cache_dir,
+                )
+                second = ap.audit_repository(
+                    "https://github.com/owner/repo",
+                    policy,
+                    [],
+                    cache_dir=cache_dir,
+                )
+
+        self.assertEqual(first.final_classification, "PASS")
+        self.assertEqual(second.final_classification, "PASS")
+        self.assertEqual(download_count, 1)
+        self.assertEqual(materialize_count, 1)
+        self.assertEqual(trivy_count, 1)
+        self.assertEqual(compare_count, 1)
+
+    def test_digestless_cache_hit_streams_once_and_skips_source_consumers(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_dir = os.path.join(tmp_dir, ".audit-cache")
+            policy = {"enforcement": {"mode": "report-only"}, "scanners": {}}
+            exceptions = []
+
+            zip_data = _make_zip([_regular("plugin.json", '{"name":"test"}')])
+            zip_sha = hashlib.sha256(zip_data).hexdigest()
+            release_data = {
+                "tag_name": "v1.0.0",
+                "assets": [
+                    {
+                        "id": 123,
+                        "name": "plugin.zip",
+                        "browser_download_url": "http://ex.com/p.zip",
+                    }
+                ],
+            }
+
+            download_count = 0
+            materialize_count = 0
+            trivy_count = 0
+            compare_count = 0
+
+            def download(_url, dest, policy=None):
+                del _url, policy
+                nonlocal download_count
+                download_count += 1
+                with open(dest, "wb") as f:
+                    f.write(zip_data)
+                return zip_sha
+
+            def fake_materialize(_repository, _commit, destination, **_kwargs):
+                nonlocal materialize_count
+                materialize_count += 1
+                return SimpleNamespace(
+                    source_root=destination,
+                    plugin_json=None,
+                    package_json=None,
+                )
+
+            def fake_trivy(*_args, source_root=None, **_kwargs):
+                del source_root
+                nonlocal trivy_count
+                trivy_count += 1
+                return ap.ScannerStatus(name="trivy", status="passed"), []
+
+            def fake_compare(_extract_dir, _snapshot, ref):
+                nonlocal compare_count
+                del ref
+                compare_count += 1
+                return (
+                    {"ref": "v1.0.0", "checked": True},
+                    [],
+                    ap.ScannerStatus(name="source-artifact-diff", status="passed"),
+                )
+
+            with (
+                patch("audit_plugins.get_repo_metadata", return_value={"name": "repo"}),
+                patch("audit_plugins.get_releases", return_value=[release_data]),
+                patch(
+                    "audit_plugins._resolve_ref_to_commit_and_tree_sha",
+                    return_value=("a" * 40, "tree123", None),
+                ),
+                patch("audit_plugins.get_repo_file_raw", return_value=None),
+                patch("audit_plugins.download_zip", side_effect=download),
+                patch.object(
+                    ap.audit_source_snapshot,
+                    "materialize_source_snapshot",
+                    side_effect=fake_materialize,
+                ),
+                patch(
+                    "audit_plugins.run_clamav",
+                    return_value=(ap.ScannerStatus(name="clamav", status="passed"), []),
+                ),
+                patch("audit_plugins.run_trivy", side_effect=fake_trivy),
+                patch(
+                    "audit_plugins.run_semgrep",
+                    return_value=(
+                        ap.ScannerStatus(name="semgrep", status="skipped"),
+                        [],
+                    ),
+                ),
+                patch(
+                    "audit_plugins.compare_source_and_artifact_from_snapshot",
+                    side_effect=fake_compare,
+                ),
+            ):
+                first = ap.audit_repository(
+                    "https://github.com/owner/repo",
+                    policy,
+                    exceptions,
+                    cache_dir=cache_dir,
+                )
+                second = ap.audit_repository(
+                    "https://github.com/owner/repo",
+                    policy,
+                    exceptions,
+                    cache_dir=cache_dir,
+                )
+
+        self.assertEqual(first.final_classification, "PASS")
+        self.assertEqual(second.final_classification, "PASS")
+        self.assertEqual(download_count, 2)
+        self.assertEqual(materialize_count, 1)
+        self.assertEqual(trivy_count, 1)
+        self.assertEqual(compare_count, 1)
+
+    def test_cache_miss_does_source_materialization(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_dir = os.path.join(tmp_dir, ".audit-cache")
+            release_data = {
+                "tag_name": "v1.0.0",
+                "assets": [
+                    {
+                        "id": 123,
+                        "name": "plugin.zip",
+                        "browser_download_url": "http://ex.com/p.zip",
+                    }
+                ],
+            }
+            policy = {"enforcement": {"mode": "report-only"}, "scanners": {}}
+            exceptions = []
+            zip_data = _make_zip([_regular("plugin.json", '{"name":"test"}')])
+            zip_sha = hashlib.sha256(zip_data).hexdigest()
+
+            download_count = 0
+            materialize_count = 0
+            trivy_count = 0
+            compare_count = 0
+
+            def download(_url, dest, policy=None):
+                del _url, policy
+                nonlocal download_count
+                download_count += 1
+                with open(dest, "wb") as f:
+                    f.write(zip_data)
+                return zip_sha
+
+            def fake_materialize(_repository, _commit, destination, **_kwargs):
+                nonlocal materialize_count
+                materialize_count += 1
+                return SimpleNamespace(
+                    source_root=destination,
+                    plugin_json=None,
+                    package_json=None,
+                )
+
+            def fake_trivy(*_args, source_root=None, **_kwargs):
+                del source_root
+                nonlocal trivy_count
+                trivy_count += 1
+                return ap.ScannerStatus(name="trivy", status="passed"), []
+
+            def fake_compare(_extract_dir, _snapshot, ref):
+                nonlocal compare_count
+                del ref
+                compare_count += 1
+                return (
+                    {"ref": "v1.0.0", "checked": True},
+                    [],
+                    ap.ScannerStatus(name="source-artifact-diff", status="passed"),
+                )
+
+            with (
+                patch("audit_plugins.get_repo_metadata", return_value={"name": "repo"}),
+                patch("audit_plugins.get_releases", return_value=[release_data]),
+                patch(
+                    "audit_plugins._resolve_ref_to_commit_and_tree_sha",
+                    return_value=("a" * 40, "tree123", None),
+                ),
+                patch("audit_plugins.get_repo_file_raw", return_value=None),
+                patch("audit_plugins.download_zip", side_effect=download),
+                patch.object(
+                    ap.audit_source_snapshot,
+                    "materialize_source_snapshot",
+                    side_effect=fake_materialize,
+                ),
+                patch(
+                    "audit_plugins.run_clamav",
+                    return_value=(ap.ScannerStatus(name="clamav", status="passed"), []),
+                ),
+                patch("audit_plugins.run_trivy", side_effect=fake_trivy),
+                patch(
+                    "audit_plugins.run_semgrep",
+                    return_value=(
+                        ap.ScannerStatus(name="semgrep", status="skipped"),
+                        [],
+                    ),
+                ),
+                patch(
+                    "audit_plugins.compare_source_and_artifact_from_snapshot",
+                    side_effect=fake_compare,
+                ),
+            ):
+                report = ap.audit_repository(
+                    "https://github.com/owner/repo",
+                    policy,
+                    exceptions,
+                    cache_dir=cache_dir,
+                )
+
+        self.assertEqual(report.final_classification, "PASS")
+        self.assertEqual(download_count, 1)
+        self.assertEqual(materialize_count, 1)
+        self.assertEqual(trivy_count, 1)
+        self.assertEqual(compare_count, 1)
+
+    def test_skip_cache_forces_fresh_audit(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_dir = os.path.join(tmp_dir, ".audit-cache")
+            release_data = {
+                "tag_name": "v1.0.0",
+                "assets": [
+                    {
+                        "id": 123,
+                        "name": "plugin.zip",
+                        "browser_download_url": "http://ex.com/p.zip",
+                    }
+                ],
+            }
+            policy = {"enforcement": {"mode": "report-only"}, "scanners": {}}
+            exceptions = []
+            zip_data = _make_zip([_regular("plugin.json", '{"name":"test"}')])
+            zip_sha = hashlib.sha256(zip_data).hexdigest()
+
+            download_count = 0
+            materialize_count = 0
+            trivy_count = 0
+            compare_count = 0
+
+            def download(_url, dest, policy=None):
+                del _url, policy
+                nonlocal download_count
+                download_count += 1
+                with open(dest, "wb") as f:
+                    f.write(zip_data)
+                return zip_sha
+
+            def fake_materialize(_repository, _commit, destination, **_kwargs):
+                nonlocal materialize_count
+                materialize_count += 1
+                return SimpleNamespace(
+                    source_root=destination,
+                    plugin_json=None,
+                    package_json=None,
+                )
+
+            def fake_trivy(*_args, source_root=None, **_kwargs):
+                del source_root
+                nonlocal trivy_count
+                trivy_count += 1
+                return ap.ScannerStatus(name="trivy", status="passed"), []
+
+            def fake_compare(_extract_dir, _snapshot, ref):
+                nonlocal compare_count
+                del ref
+                compare_count += 1
+                return (
+                    {"ref": "v1.0.0", "checked": True},
+                    [],
+                    ap.ScannerStatus(name="source-artifact-diff", status="passed"),
+                )
+
+            with (
+                patch("audit_plugins.get_repo_metadata", return_value={"name": "repo"}),
+                patch("audit_plugins.get_releases", return_value=[release_data]),
+                patch(
+                    "audit_plugins._resolve_ref_to_commit_and_tree_sha",
+                    return_value=("a" * 40, "tree123", None),
+                ),
+                patch("audit_plugins.get_repo_file_raw", return_value=None),
+                patch("audit_plugins.download_zip", side_effect=download),
+                patch.object(
+                    ap.audit_source_snapshot,
+                    "materialize_source_snapshot",
+                    side_effect=fake_materialize,
+                ),
+                patch(
+                    "audit_plugins.run_clamav",
+                    return_value=(ap.ScannerStatus(name="clamav", status="passed"), []),
+                ),
+                patch("audit_plugins.run_trivy", side_effect=fake_trivy),
+                patch(
+                    "audit_plugins.run_semgrep",
+                    return_value=(
+                        ap.ScannerStatus(name="semgrep", status="skipped"),
+                        [],
+                    ),
+                ),
+                patch(
+                    "audit_plugins.compare_source_and_artifact_from_snapshot",
+                    side_effect=fake_compare,
+                ),
+            ):
+                _ = ap.audit_repository(
+                    "https://github.com/owner/repo",
+                    policy,
+                    exceptions,
+                    cache_dir=cache_dir,
+                    skip_cache=False,
+                )
+                _ = ap.audit_repository(
+                    "https://github.com/owner/repo",
+                    policy,
+                    exceptions,
+                    cache_dir=cache_dir,
+                    skip_cache=False,
+                )
+                _ = ap.audit_repository(
+                    "https://github.com/owner/repo",
+                    policy,
+                    exceptions,
+                    cache_dir=cache_dir,
+                    skip_cache=True,
+                )
+
+        self.assertEqual(download_count, 3)
+        self.assertEqual(materialize_count, 2)
+        self.assertEqual(trivy_count, 2)
+        self.assertEqual(compare_count, 2)
+
     def test_allowlist_edits_bust_local_cache(self):
         """Verification 4: Editing allowlist invalidates local cache."""
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -576,7 +1023,7 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                 patch("audit_plugins.get_releases", return_value=[release_data]),
                 patch(
                     "audit_plugins._resolve_ref_to_commit_and_tree_sha",
-                    return_value=("commit123", "tree123", None),
+                    return_value=("a" * 40, "tree123", None),
                 ),
                 patch("audit_plugins.get_repo_file_raw", return_value=None),
                 patch("audit_plugins.download_zip", side_effect=mock_download),
@@ -731,7 +1178,7 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                 patch("audit_plugins.get_releases", return_value=[release_data]),
                 patch(
                     "audit_plugins._resolve_ref_to_commit_and_tree_sha",
-                    return_value=("commit123", "tree123", None),
+                    return_value=("a" * 40, "tree123", None),
                 ),
                 patch("audit_plugins.get_repo_file_raw", return_value=None),
                 patch("audit_plugins.download_zip", side_effect=mock_download),

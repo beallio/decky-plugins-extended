@@ -1953,7 +1953,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         self.resolve_patcher = patch.object(
             ap,
             "_resolve_ref_to_commit_and_tree_sha",
-            return_value=("commit123", "tree123", None),
+            return_value=("a" * 40, "tree123", None),
         )
         self.resolve_patcher.start()
 
@@ -2044,22 +2044,22 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 }
             ],
         }
-        tree = [
-            {
-                "path": path,
-                "type": "blob",
-                "sha": ap.git_blob_sha1(content),
-            }
-            for path, content in source_files.items()
-        ]
 
         def fake_download(_url, dest_path, policy=None):
             del policy
             Path(dest_path).write_bytes(zip_data)
             return hashlib.sha256(zip_data).hexdigest()
 
-        def fake_get_repo_file_raw(_owner, _repo, _ref, path):
-            return source_files.get(path)
+        source_snapshot = self._build_source_snapshot(
+            plugin_json=source_files["plugin.json"].encode("utf-8")
+            if isinstance(source_files["plugin.json"], str)
+            else source_files["plugin.json"],
+            package_json=source_files["package.json"].encode("utf-8")
+            if isinstance(source_files["package.json"], str)
+            else source_files["package.json"],
+            commit_sha="commit123",
+            repository="https://github.com/owner/syncthing",
+        )
 
         with (
             patch.object(
@@ -2068,8 +2068,12 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 return_value={"default_branch": "main", "archived": False},
             ),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(ap, "get_repo_file_raw", side_effect=fake_get_repo_file_raw),
             patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(
+                ap.audit_source_snapshot,
+                "materialize_source_snapshot",
+                return_value=source_snapshot,
+            ),
             patch.object(
                 ap,
                 "run_clamav",
@@ -2087,8 +2091,12 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ),
             patch.object(
                 ap,
-                "_gh_get",
-                return_value={"truncated": False, "tree": tree},
+                "compare_source_and_artifact_from_snapshot",
+                return_value=(
+                    {"ref": "v1.0.1-dev.gabc", "checked": True},
+                    [],
+                    ap.ScannerStatus(name="source-artifact-diff", status="passed"),
+                ),
             ),
         ):
             return ap.audit_repository(
@@ -2097,6 +2105,404 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 exceptions=[],
                 skip_cache=True,
             )
+
+    def _build_source_snapshot(
+        self,
+        *,
+        plugin_json: bytes | None,
+        package_json: bytes | None,
+        repository: str = "https://github.com/owner/repo",
+        commit_sha: str = "commit123",
+        source_root: str | None = None,
+    ) -> audit_source_snapshot.SourceSnapshot:
+        snapshot_root = (
+            Path(source_root)
+            if source_root is not None
+            else Path(tempfile.mkdtemp(prefix="audit-source-snapshot-"))
+        )
+        if source_root is None:
+            self.addCleanup(lambda: shutil.rmtree(snapshot_root, ignore_errors=True))
+        return audit_source_snapshot.SourceSnapshot(
+            repository=repository,
+            commit_sha=commit_sha,
+            source_url=f"https://codeload.github.com/owner/repo/tar.gz/{commit_sha}",
+            archive_sha256="0" * 64,
+            archive_size_bytes=0,
+            source_root=str(snapshot_root),
+            inventory=tuple(),
+            plugin_json=plugin_json,
+            package_json=package_json,
+        )
+
+    def test_source_snapshot_is_used_for_trivy_and_diff_without_legacy_calls(self):
+        release = {
+            "tag_name": "v1.0.0",
+            "assets": [
+                {
+                    "name": "plugin.zip",
+                    "id": 1,
+                    "browser_download_url": "https://example.com/my-plugin.zip",
+                }
+            ],
+        }
+        artifact_zip = _make_zip(
+            [
+                _regular(
+                    "my-plugin/plugin.json",
+                    json.dumps({"name": "ZipOnlyPlugin", "flags": []}),
+                ),
+                _regular(
+                    "my-plugin/package.json",
+                    json.dumps({"name": "zip-only-plugin"}),
+                ),
+                _regular("my-plugin/main.py", "# hello\n"),
+            ]
+        )
+        source_file_payloads = {
+            "plugin.json": json.dumps(
+                {"name": "SourcePlugin", "version": "1.0.0", "flags": ["source-bound"]}
+            ).encode(),
+            "package.json": json.dumps({"name": "source-package"}).encode(),
+            "plugin/main.py": b'print("source")\n',
+        }
+        meta = {"default_branch": "main", "archived": False}
+
+        for label, commit_sha in (("lightweight", "a" * 40), ("annotated", "b" * 40)):
+            with self.subTest(commit_type=label):
+                source_top_dir = f"owner-my-plugin-{commit_sha[:8]}"
+                source_archive = io.BytesIO()
+                with tarfile.open(fileobj=source_archive, mode="w:gz") as tf:
+                    for name, payload in source_file_payloads.items():
+                        member_name = f"{source_top_dir}/{name}"
+                        info = tarfile.TarInfo(member_name)
+                        info.size = len(payload)
+                        tf.addfile(info, io.BytesIO(payload))
+                source_archive_bytes = source_archive.getvalue()
+                policy = ap._default_policy()
+
+                observed: dict[str, str] = {}
+                download_calls: list[str] = []
+                codeload_calls: list[tuple[str, dict[str, object]]] = []
+
+                expected_source_url = (
+                    f"https://codeload.github.com/owner/my-plugin/tar.gz/{commit_sha}"
+                )
+
+                class FakeResponse:
+                    def __init__(self, payload: bytes):
+                        self._payload = payload
+                        self.headers = {"Content-Length": str(len(payload))}
+                        self.status_code = 200
+
+                    def raise_for_status(self):
+                        return None
+
+                    def iter_content(self, chunk_size: int = 8192):
+                        for offset in range(0, len(self._payload), chunk_size):
+                            yield self._payload[offset : offset + chunk_size]
+
+                    def close(self):
+                        return None
+
+                class FakeSession:
+                    def __init__(self):
+                        self.headers: dict[str, str] = {}
+                        self.auth = None
+
+                    def get(self, url: str, **kwargs: object) -> FakeResponse:
+                        codeload_calls.append((url, dict(kwargs)))
+                        return FakeResponse(source_archive_bytes)
+
+                fake_session = FakeSession()
+
+                def fake_download(download_url, destination, policy=None):
+                    del policy
+                    download_calls.append(download_url)
+                    Path(destination).write_bytes(artifact_zip)
+                    return hashlib.sha256(artifact_zip).hexdigest()
+
+                def fake_trivy(_artifact_root, _policy, source_root=None):
+                    observed["trivy_root"] = source_root
+                    return ap.ScannerStatus(name="trivy", status="passed"), []
+
+                def fake_compare(extract_root, source_snapshot, ref):
+                    del extract_root
+                    observed["diff_root"] = source_snapshot.source_root
+                    observed["diff_snapshot_id"] = id(source_snapshot)
+                    observed["diff_ref"] = ref
+                    return (
+                        {"ref": ref, "checked": True},
+                        [],
+                        ap.ScannerStatus(name="source-artifact-diff", status="passed"),
+                    )
+
+                with tempfile.TemporaryDirectory() as td:
+                    with (
+                        patch.object(
+                            ap,
+                            "get_repo_file_raw",
+                            side_effect=AssertionError(
+                                "legacy source metadata API used"
+                            ),
+                        ),
+                        patch.object(
+                            ap,
+                            "_gh_get",
+                            side_effect=AssertionError("legacy repository API used"),
+                        ),
+                        patch.object(
+                            ap,
+                            "_resolve_ref_to_tree_sha",
+                            side_effect=AssertionError("legacy tag tree resolver used"),
+                        ),
+                        patch.object(
+                            ap,
+                            "_fetch_source_tree",
+                            side_effect=AssertionError("legacy source tree fetch used"),
+                        ),
+                        patch.object(
+                            ap,
+                            "_download_source_archive",
+                            side_effect=AssertionError(
+                                "legacy source archive downloader used"
+                            ),
+                        ),
+                        patch.object(
+                            ap,
+                            "compare_source_and_artifact",
+                            side_effect=AssertionError("legacy source comparison used"),
+                        ),
+                        patch.object(
+                            ap,
+                            "_resolve_ref_to_commit_and_tree_sha",
+                            return_value=(commit_sha, "tree123", None),
+                        ) as resolve_commit,
+                        patch.object(
+                            ap,
+                            "get_repo_metadata",
+                            return_value=meta,
+                        ),
+                        patch.object(ap, "get_releases", return_value=[release]),
+                        patch.object(ap, "download_zip", side_effect=fake_download),
+                        patch.object(
+                            ap,
+                            "_gh_session",
+                            new=fake_session,
+                        ),
+                        patch.object(
+                            ap,
+                            "run_clamav",
+                            return_value=(
+                                ap.ScannerStatus(name="clamav", status="passed"),
+                                [],
+                            ),
+                        ),
+                        patch.object(ap, "run_trivy", side_effect=fake_trivy),
+                        patch.object(
+                            ap,
+                            "run_semgrep",
+                            return_value=(
+                                ap.ScannerStatus(name="semgrep", status="skipped"),
+                                [],
+                            ),
+                        ),
+                        patch.object(
+                            ap,
+                            "compare_source_and_artifact_from_snapshot",
+                            side_effect=fake_compare,
+                        ),
+                    ):
+                        with patch.object(
+                            ap.audit_source_snapshot,
+                            "_extract_source_archive",
+                            wraps=ap.audit_source_snapshot._extract_source_archive,
+                        ) as extract_archive:
+                            report = ap.audit_repository(
+                                "https://github.com/owner/my-plugin",
+                                policy=policy,
+                                exceptions=[],
+                                cache_dir=os.path.join(td, "cache"),
+                                skip_cache=True,
+                            )
+
+                self.assertEqual(resolve_commit.call_count, 1)
+                self.assertEqual(
+                    download_calls, [release["assets"][0]["browser_download_url"]]
+                )
+                self.assertEqual(len(codeload_calls), 1)
+                self.assertEqual(codeload_calls[0][0], expected_source_url)
+                self.assertEqual(codeload_calls[0][1].get("allow_redirects"), False)
+                self.assertEqual(codeload_calls[0][1].get("stream"), True)
+                self.assertEqual(
+                    codeload_calls[0][1].get("timeout"),
+                    (10, 60),
+                )
+                self.assertEqual(len(extract_archive.call_args_list), 1)
+                self.assertEqual(observed["trivy_root"], observed["diff_root"])
+                self.assertEqual(observed["diff_ref"], "v1.0.0")
+                self.assertIsNotNone(observed["trivy_root"])
+                self.assertEqual(len(download_calls), 1)
+                self.assertEqual(report.final_classification, "PASS")
+                self.assertEqual(report.plugin_name, "SourcePlugin")
+                self.assertEqual(observed["trivy_root"], observed["diff_root"])
+
+    def _source_preparation_failure_report(
+        self,
+        *,
+        trivy_required: bool,
+        source_diff_required: bool,
+    ) -> tuple[ap.AuditReport, dict[str, int]]:
+        zip_data = _make_zip(
+            [
+                _regular(
+                    "my-plugin/plugin.json",
+                    json.dumps({"name": "ZipOnlyPlugin", "flags": []}),
+                ),
+                _regular(
+                    "my-plugin/package.json",
+                    json.dumps({"name": "zip-only-package"}),
+                ),
+                _regular("my-plugin/main.py", "# hello\n"),
+            ]
+        )
+        release = {
+            "tag_name": "v1.0.0",
+            "assets": [
+                {
+                    "name": "plugin.zip",
+                    "id": 1,
+                    "browser_download_url": "https://example.com/my-plugin.zip",
+                }
+            ],
+        }
+        meta = {"default_branch": "main", "archived": False}
+        policy = ap._default_policy()
+        policy["scanners"]["trivy"]["required"] = trivy_required
+        policy["scanners"]["source_artifact_diff"]["required"] = source_diff_required
+
+        counts = {
+            "trivy": 0,
+            "materialize": 0,
+            "compare": 0,
+        }
+
+        def fake_download(url, destination, policy=None):
+            del url, policy
+            Path(destination).write_bytes(zip_data)
+            return hashlib.sha256(zip_data).hexdigest()
+
+        def fake_trivy(_artifact_root, _policy, source_root=None):
+            counts["trivy"] += 1
+            return (
+                ap.ScannerStatus(name="trivy", status="passed"),
+                [],
+            )
+
+        def fake_materialize(*_args, **_kwargs):
+            counts["materialize"] += 1
+            raise RuntimeError("source snapshot failed")
+
+        def fake_compare(_extract_root, _source_snapshot, _ref):
+            counts["compare"] += 1
+            return (
+                {"ref": "v1.0.0", "checked": False},
+                [],
+                ap.ScannerStatus(name="source-artifact-diff", status="failed"),
+            )
+
+        with tempfile.TemporaryDirectory() as td:
+            with (
+                patch.object(ap, "get_repo_metadata", return_value=meta),
+                patch.object(ap, "get_releases", return_value=[release]),
+                patch.object(ap, "download_zip", side_effect=fake_download),
+                patch.object(
+                    ap.audit_source_snapshot,
+                    "materialize_source_snapshot",
+                    side_effect=fake_materialize,
+                ),
+                patch.object(
+                    ap,
+                    "run_clamav",
+                    return_value=(
+                        ap.ScannerStatus(name="clamav", status="passed"),
+                        [],
+                    ),
+                ),
+                patch.object(ap, "run_trivy", side_effect=fake_trivy),
+                patch.object(
+                    ap,
+                    "run_semgrep",
+                    return_value=(
+                        ap.ScannerStatus(name="semgrep", status="skipped"),
+                        [],
+                    ),
+                ),
+                patch.object(
+                    ap,
+                    "compare_source_and_artifact_from_snapshot",
+                    side_effect=fake_compare,
+                ),
+            ):
+                report = ap.audit_repository(
+                    "https://github.com/owner/my-plugin",
+                    policy=policy,
+                    exceptions=[],
+                    cache_dir=os.path.join(td, "cache"),
+                    skip_cache=True,
+                )
+
+        return report, counts
+
+    def test_source_preparation_failure_marks_required_as_audit_error(self):
+        report, counts = self._source_preparation_failure_report(
+            trivy_required=True, source_diff_required=True
+        )
+        self.assertEqual(report.final_classification, "AUDIT_ERROR")
+        self.assertEqual(counts["materialize"], 1)
+        self.assertEqual(counts["trivy"], 1)
+        self.assertEqual(counts["compare"], 0)
+        self.assertEqual(len(report.errors), 0)
+        self.assertEqual(report.plugin_name, "ZipOnlyPlugin")
+        self.assertTrue(
+            any(
+                finding.rule_id == "SOURCE_ARTIFACT_PREPARATION_FAILED"
+                for finding in report.findings
+            )
+        )
+        self.assertTrue(
+            any(
+                status.name == "source-artifact-diff" and status.status == "failed"
+                for status in report.scanner_statuses
+            )
+        )
+
+    def test_source_preparation_failure_marks_optional_as_pass_with_warnings(self):
+        report, counts = self._source_preparation_failure_report(
+            trivy_required=False, source_diff_required=False
+        )
+        self.assertEqual(report.final_classification, "PASS_WITH_WARNINGS")
+        self.assertEqual(counts["materialize"], 1)
+        self.assertEqual(counts["trivy"], 1)
+        self.assertEqual(counts["compare"], 0)
+        self.assertEqual(report.plugin_name, "ZipOnlyPlugin")
+        self.assertTrue(
+            any(
+                finding.rule_id == "SOURCE_ARTIFACT_PREPARATION_FAILED"
+                for finding in report.findings
+            )
+        )
+        self.assertTrue(
+            any(
+                status.name == "source-artifact-diff" and status.status == "failed"
+                for status in report.scanner_statuses
+            )
+        )
+        self.assertTrue(
+            any(
+                finding.rule_id == "SOURCE_ARTIFACT_DIFF_INCOMPLETE"
+                for finding in report.findings
+            )
+        )
 
     def test_scanner_precision_fixture_keeps_only_intended_survivors(self):
         report = self._run_scanner_precision_fixture()
@@ -2170,11 +2576,22 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 sha = hashlib.sha256(zip_data).hexdigest()
                 return sha
 
+            source_snapshot = self._build_source_snapshot(
+                plugin_json=b'{"name":"MyPlugin","flags":[]}',
+                package_json=b'{"name":"my-plugin"}',
+                commit_sha="commit123",
+                repository="https://github.com/owner/my-plugin",
+            )
+
             with (
                 patch.object(ap, "get_repo_metadata", return_value=meta),
                 patch.object(ap, "get_releases", return_value=[release]),
-                patch.object(ap, "get_repo_file_raw", return_value=None),
                 patch.object(ap, "download_zip", side_effect=fake_download),
+                patch.object(
+                    ap.audit_source_snapshot,
+                    "materialize_source_snapshot",
+                    return_value=source_snapshot,
+                ),
                 patch.object(ap, "run_clamav", return_value=_ok_clamav),
                 patch.object(ap, "run_trivy", return_value=_ok_trivy) as mocked_trivy,
                 patch.object(
@@ -2187,9 +2604,9 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 ),
                 patch.object(
                     ap,
-                    "compare_source_and_artifact",
+                    "compare_source_and_artifact_from_snapshot",
                     return_value=(
-                        {},
+                        {"ref": "v1.0.0", "checked": True},
                         [],
                         ap.ScannerStatus(name="source-artifact-diff", status="passed"),
                     ),
@@ -2205,8 +2622,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             self.assertNotEqual(report.final_classification, "AUDIT_ERROR")
             self.assertEqual(report.plugin_name, "MyPlugin")
             self.assertEqual(
-                mocked_trivy.call_args.kwargs["source_repo"],
-                ("owner", "my-plugin", "commit123"),
+                mocked_trivy.call_args.kwargs["source_root"],
+                source_snapshot.source_root,
             )
         finally:
             os.unlink(tf_path)
@@ -2240,6 +2657,13 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             Path(dest_path).write_bytes(zip_data)
             return hashlib.sha256(zip_data).hexdigest()
 
+        source_snapshot = self._build_source_snapshot(
+            plugin_json=b'{"name": "MyPlugin", "flags": []}',
+            package_json=b'{"name": "my-plugin", "private": true}',
+            commit_sha="commit123",
+            repository="https://github.com/owner/my-plugin",
+        )
+
         passed = ap.ScannerStatus(name="fixture", status="passed")
         with (
             patch.object(
@@ -2248,14 +2672,18 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 return_value={"default_branch": "main", "archived": False},
             ),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(ap, "get_repo_file_raw", return_value=None),
             patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(
+                ap.audit_source_snapshot,
+                "materialize_source_snapshot",
+                return_value=source_snapshot,
+            ),
             patch.object(ap, "run_clamav", return_value=(passed, [])),
             patch.object(ap, "run_trivy", return_value=(passed, [])),
             patch.object(ap, "run_semgrep", return_value=(passed, [])),
             patch.object(
                 ap,
-                "compare_source_and_artifact",
+                "compare_source_and_artifact_from_snapshot",
                 return_value=(
                     {},
                     [],
@@ -2384,22 +2812,21 @@ class TestAuditRepositoryMocked(unittest.TestCase):
 
             return hashlib.sha256(zip_data).hexdigest()
 
-        def fake_get_repo_file_raw(owner, repo, ref, path):
-            if ref == "v1.0.0" and path == "plugin.json":
-                return json.dumps({"name": "TaggedPlugin", "flags": []}).encode()
-            if ref == "v1.0.0" and path == "package.json":
-                return json.dumps({"name": "tagged-package"}).encode()
-            if ref == "main" and path == "plugin.json":
-                return json.dumps({"name": "MainBranchPlugin", "flags": []}).encode()
-            return None
+        source_snapshot = self._build_source_snapshot(
+            plugin_json=json.dumps({"name": "TaggedPlugin", "flags": []}).encode(),
+            package_json=json.dumps({"name": "tagged-package"}).encode(),
+            repository="https://github.com/owner/my-plugin",
+        )
 
         with (
             patch.object(ap, "get_repo_metadata", return_value=meta),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(
-                ap, "get_repo_file_raw", side_effect=fake_get_repo_file_raw
-            ) as mocked_raw,
             patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(
+                ap.audit_source_snapshot,
+                "materialize_source_snapshot",
+                return_value=source_snapshot,
+            ),
             patch.object(
                 ap,
                 "run_clamav",
@@ -2417,7 +2844,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ),
             patch.object(
                 ap,
-                "compare_source_and_artifact",
+                "compare_source_and_artifact_from_snapshot",
                 return_value=(
                     {"ref": "v1.0.0", "checked": True},
                     [],
@@ -2432,9 +2859,6 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 skip_cache=True,
             )
         self.assertEqual(report.plugin_name, "TaggedPlugin")
-        self.assertFalse(
-            any(call.args[2] == "main" for call in mocked_raw.call_args_list)
-        )
 
     def test_zip_metadata_used_when_tag_metadata_absent(self):
         zip_data = self._make_zip_with_metadata(
@@ -2463,8 +2887,17 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         with (
             patch.object(ap, "get_repo_metadata", return_value=meta),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(ap, "get_repo_file_raw", return_value=None),
             patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(
+                ap.audit_source_snapshot,
+                "materialize_source_snapshot",
+                return_value=self._build_source_snapshot(
+                    plugin_json=None,
+                    package_json=None,
+                    commit_sha="commit123",
+                    repository="https://github.com/owner/my-plugin",
+                ),
+            ),
             patch.object(
                 ap,
                 "run_clamav",
@@ -2482,7 +2915,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ),
             patch.object(
                 ap,
-                "compare_source_and_artifact",
+                "compare_source_and_artifact_from_snapshot",
                 return_value=(
                     {"ref": "v1.0.0", "checked": True},
                     [],
@@ -2526,8 +2959,17 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         with (
             patch.object(ap, "get_repo_metadata", return_value=meta),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(ap, "get_repo_file_raw", return_value=None),
             patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(
+                ap.audit_source_snapshot,
+                "materialize_source_snapshot",
+                return_value=self._build_source_snapshot(
+                    plugin_json=None,
+                    package_json=None,
+                    commit_sha="commit123",
+                    repository="https://github.com/owner/my-plugin",
+                ),
+            ),
             patch.object(
                 ap,
                 "run_clamav",
@@ -2545,7 +2987,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ),
             patch.object(
                 ap,
-                "compare_source_and_artifact",
+                "compare_source_and_artifact_from_snapshot",
                 return_value=(
                     {"ref": "v1.0.0", "checked": True},
                     [],
@@ -2591,8 +3033,17 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         with (
             patch.object(ap, "get_repo_metadata", return_value=meta),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(ap, "get_repo_file_raw", return_value=None),
             patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(
+                ap.audit_source_snapshot,
+                "materialize_source_snapshot",
+                return_value=self._build_source_snapshot(
+                    plugin_json=None,
+                    package_json=None,
+                    commit_sha="commit123",
+                    repository="https://github.com/owner/my-plugin",
+                ),
+            ),
             patch.object(
                 ap,
                 "run_clamav",
@@ -2610,7 +3061,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ),
             patch.object(
                 ap,
-                "compare_source_and_artifact",
+                "compare_source_and_artifact_from_snapshot",
                 return_value=(
                     {"ref": "v1.0.0", "checked": False},
                     [],
@@ -2658,8 +3109,17 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         with (
             patch.object(ap, "get_repo_metadata", return_value=meta),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(ap, "get_repo_file_raw", return_value=None),
             patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(
+                ap.audit_source_snapshot,
+                "materialize_source_snapshot",
+                return_value=self._build_source_snapshot(
+                    plugin_json=None,
+                    package_json=None,
+                    commit_sha="commit123",
+                    repository="https://github.com/owner/my-plugin",
+                ),
+            ),
             patch.object(
                 ap,
                 "run_clamav",
@@ -2677,7 +3137,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ),
             patch.object(
                 ap,
-                "compare_source_and_artifact",
+                "compare_source_and_artifact_from_snapshot",
                 return_value=(
                     {"ref": "v1.0.0", "checked": False},
                     [],
