@@ -78,14 +78,13 @@ def _normalise_positive_int(value: Any, field_name: str) -> int:
 
 
 def _normalise_positive_decimal_id(value: Any, field_name: str) -> str:
-    if isinstance(value, bool):
+    if not isinstance(value, str):
         raise ValueError(f"Invalid {field_name}: {value!r}")
-    text = str(value)
-    if not _CANONICAL_POSITIVE_DECIMAL.fullmatch(text):
+    if not _CANONICAL_POSITIVE_DECIMAL.fullmatch(value):
         raise ValueError(
             f"{field_name} must be a positive decimal string without leading zero"
         )
-    return text
+    return value
 
 
 def _normalise_str(value: Any, field_name: str) -> str:
@@ -756,15 +755,19 @@ def load_expected_worklist_document(
 def worklist_identity(item: Mapping[str, Any]) -> dict[str, str]:
     if not isinstance(item, Mapping):
         raise ValueError("Worklist item must be an object")
-    release_id = item.get("release_id")
-    asset_id = item.get("asset_id")
-    release_id = str(release_id) if isinstance(release_id, int) else release_id
-    asset_id = str(asset_id) if isinstance(asset_id, int) else asset_id
+
+    def _coerce_decimal_id(value: Any) -> Any:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            return str(value)
+        return value
+
     return _normalise_worklist_identity(
         {
             "repository": _normalise_str(item.get("repository"), "repository"),
-            "github_release_id": release_id,
-            "asset_id": asset_id,
+            "github_release_id": _coerce_decimal_id(item.get("release_id")),
+            "asset_id": _coerce_decimal_id(item.get("asset_id")),
         }
     )
 

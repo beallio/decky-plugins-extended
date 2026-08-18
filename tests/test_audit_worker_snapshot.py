@@ -355,6 +355,26 @@ def test_load_progress_manifest_rejects_malformed_v2_payload(tmp_path):
         ap._load_progress_manifest(path, expected_worklist_fingerprint="f" * 64)
 
 
+def test_load_progress_manifest_rejects_v2_payload_with_extra_record_key(tmp_path):
+    key, record = _sample_progress_record()
+    malformed = dict(record)
+    malformed["unexpected"] = "value"
+    path = tmp_path / "progress.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "2",
+                "worklist_fingerprint": "f" * 64,
+                "entries": {key: malformed},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Invalid progress manifest"):
+        ap._load_progress_manifest(path, expected_worklist_fingerprint="f" * 64)
+
+
 def test_load_progress_manifest_validates_v2_payload_even_when_fingerprint_mismatched(
     tmp_path,
 ):
@@ -386,6 +406,32 @@ def test_load_progress_manifest_validates_v2_payload_even_when_fingerprint_misma
         ap._load_progress_manifest(path, expected_worklist_fingerprint="0" * 64)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("audit_context_hash", None),
+        ("audit_context_hash", ""),
+        ("audit_context_hash", 123),
+        ("audit_context_hash", " "),
+    ],
+)
+def test_load_progress_manifest_rejects_invalid_audit_context_hash(
+    tmp_path, field, value
+):
+    key, record = _sample_progress_record()
+    mutated = dict(record)
+    mutated[field] = value
+
+    with pytest.raises(
+        ValueError, match="Invalid progress manifest|Invalid audit_context_hash"
+    ):
+        ap._normalise_progress_record(
+            key,
+            mutated,
+            expected_fingerprint="f" * 64,
+        )
+
+
 def test_write_progress_manifest_rejects_non_canonical_progress_keys(tmp_path):
     key, record = _sample_progress_record(fingerprint="f" * 64)
     path = tmp_path / "progress.json"
@@ -398,6 +444,37 @@ def test_write_progress_manifest_rejects_non_canonical_progress_keys(tmp_path):
     ):
         ap._write_progress_manifest(
             path, {bad_key: bad_record}, worklist_fingerprint="f" * 64
+        )
+
+
+def test_write_progress_manifest_rejects_v2_payload_with_extra_record_key(tmp_path):
+    key, record = _sample_progress_record(fingerprint="f" * 64)
+    malformed = dict(record)
+    malformed["unexpected"] = "value"
+    path = tmp_path / "progress.json"
+
+    with pytest.raises(ValueError, match="Invalid progress manifest"):
+        ap._write_progress_manifest(
+            path,
+            {key: malformed},
+            worklist_fingerprint="f" * 64,
+        )
+
+
+@pytest.mark.parametrize("value", ["", 123, None, "   "])
+def test_write_progress_manifest_rejects_invalid_audit_context_hash(tmp_path, value):
+    key, record = _sample_progress_record(fingerprint="f" * 64)
+    malformed = dict(record)
+    malformed["audit_context_hash"] = value
+    path = tmp_path / "progress.json"
+
+    with pytest.raises(
+        ValueError, match="Invalid progress manifest|Invalid audit_context_hash"
+    ):
+        ap._write_progress_manifest(
+            path,
+            {key: malformed},
+            worklist_fingerprint="f" * 64,
         )
 
 

@@ -733,6 +733,44 @@ def test_worklist_identity_rejects_aliasing_and_alias_decimal_forms(
 @pytest.mark.parametrize(
     ("release_id", "asset_id"),
     [
+        (1, 10),
+        (True, 10),
+        (1.0, 10),
+        ("1", 10.0),
+        ("1", False),
+        ("1", "１０"),
+    ],
+)
+def test_normalise_worklist_identity_rejects_non_string_release_and_asset_ids(
+    release_id, asset_id
+):
+    with pytest.raises(ValueError):
+        worklist._normalise_worklist_identity(
+            {
+                "repository": "https://github.com/owner/repo",
+                "release_id": release_id,
+                "asset_id": asset_id,
+            }
+        )
+
+
+def test_worklist_identity_adapts_integer_release_and_asset_ids():
+    assert worklist.worklist_identity(
+        {
+            "repository": "https://github.com/owner/repo",
+            "release_id": 1,
+            "asset_id": 10,
+        }
+    ) == {
+        "repository": "https://github.com/owner/repo",
+        "github_release_id": "1",
+        "asset_id": "10",
+    }
+
+
+@pytest.mark.parametrize(
+    ("release_id", "asset_id"),
+    [
         ("01", "１０"),
         ("１", "10"),
     ],

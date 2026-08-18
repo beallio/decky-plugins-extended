@@ -448,6 +448,17 @@ _WORKER_PROGRESS_ROOT_KEYS_V2 = {
     "worklist_fingerprint",
     "entries",
 }
+_WORKER_PROGRESS_RECORD_KEYS_V2 = {
+    "repository",
+    "github_release_id",
+    "asset_id",
+    "artifact_sha256",
+    "resolved_tag_commit_sha",
+    "audit_context_hash",
+    "completion_status",
+    "report",
+    "worklist_fingerprint",
+}
 _SHARD_MANIFEST_SCHEMA_VERSION = "1"
 _SHARD_MANIFEST_ROOT_KEYS = {
     "schema_version",
@@ -5256,17 +5267,7 @@ def _normalise_progress_record(
     repository, github_release_id, asset_id = _normalise_progress_identity_key(
         identity_key
     )
-    required = {
-        "repository",
-        "github_release_id",
-        "asset_id",
-        "artifact_sha256",
-        "resolved_tag_commit_sha",
-        "audit_context_hash",
-        "completion_status",
-        "worklist_fingerprint",
-    }
-    if not required.issubset(value.keys()):
+    if set(value.keys()) != _WORKER_PROGRESS_RECORD_KEYS_V2:
         raise ValueError("Invalid progress manifest")
 
     repository_value = _normalise_str(value["repository"], "repository")
@@ -5290,7 +5291,10 @@ def _normalise_progress_record(
         raise ValueError("Invalid progress manifest")
     if not isinstance(value.get("resolved_tag_commit_sha"), str):
         raise ValueError("Invalid progress manifest")
-    if value.get("audit_context_hash") is None:
+    audit_context_hash = _normalise_str(
+        value["audit_context_hash"], "audit_context_hash"
+    )
+    if not audit_context_hash:
         raise ValueError("Invalid progress manifest")
 
     completion_status = value.get("completion_status")
@@ -5302,6 +5306,7 @@ def _normalise_progress_record(
         "repository": repository,
         "github_release_id": github_release_id,
         "asset_id": asset_id,
+        "audit_context_hash": audit_context_hash,
     }
 
 
