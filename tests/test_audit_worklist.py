@@ -1002,9 +1002,47 @@ def test_prepare_worklist_accepts_missing_asset_digest(tmp_path):
     assert loaded["payload"]["items"][0]["asset_digest"] is None
 
 
-def test_prepare_worklist_rejects_prefixed_asset_digest(tmp_path):
+def test_prepare_worklist_accepts_uppercase_zip_asset_name(tmp_path):
+    output = tmp_path / "uppercase-zip-name.json"
+    uppercase_release = _with_asset_urls(
+        _release(
+            "v1",
+            1,
+            10,
+            "2026-01-01T00:00:00Z",
+            repository_url="https://github.com/owner/repo",
+        ),
+        "https://github.com/owner/repo",
+    )
+    uppercase_release["assets"][0]["name"] = "plugin.ZIP"
+
+    worklist.prepare_audit_worklist(
+        output,
+        source_revision=SOURCE_REVISION,
+        selection_mode="repository",
+        repository_urls=["https://github.com/owner/repo"],
+        shard_count=14,
+        latest_only=False,
+        release_fetcher=lambda *_args: [
+            _with_digest(
+                uppercase_release,
+                "d" * 64,
+            )
+        ],
+        metadata_fetcher=lambda *_args: {"full_name": "owner/repo", "archived": False},
+        tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
+        api_deadline_seconds=7,
+    )
+    loaded = worklist.load_worklist_document(output)
+    assert loaded["payload"]["items"][0]["asset_name"] == "plugin.ZIP"
+
+
+def test_prepare_worklist_normalizes_prefixed_asset_digest(tmp_path):
     output = tmp_path / "prefixed-digest.json"
-    with pytest.raises(ValueError, match="Invalid zip asset digest"):
+    for raw_digest, expected in (
+        (f"sha256:{'d' * 64}", "d" * 64),
+        (f"sha256:{'D' * 64}", "d" * 64),
+    ):
         worklist.prepare_audit_worklist(
             output,
             source_revision=SOURCE_REVISION,
@@ -1023,7 +1061,7 @@ def test_prepare_worklist_rejects_prefixed_asset_digest(tmp_path):
                         ),
                         "https://github.com/owner/repo",
                     ),
-                    "d" * 64,
+                    raw_digest.removeprefix("sha256:"),
                 )
             ],
             metadata_fetcher=lambda *_args: {
@@ -1033,19 +1071,114 @@ def test_prepare_worklist_rejects_prefixed_asset_digest(tmp_path):
             tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
             api_deadline_seconds=7,
         )
+        loaded = worklist.load_worklist_document(output)
+        assert loaded["payload"]["items"][0]["asset_digest"] == expected
+
+
+def test_prepare_worklist_treats_malformed_asset_digest_as_missing(tmp_path):
+    output = tmp_path / "malformed-digest.json"
+    release = _release(
+        "v1",
+        1,
+        10,
+        "2026-01-01T00:00:00Z",
+        repository_url="https://github.com/owner/repo",
+    )
+    release["assets"] = [
+        {
+            "id": 10,
+            "name": "plugin.zip",
+            "browser_download_url": "https://github.com/owner/repo/v1/plugin.zip",
+            "digest": "sha256:not-a-valid-digest",
+        }
+    ]
+    worklist.prepare_audit_worklist(
+        output,
+        source_revision=SOURCE_REVISION,
+        selection_mode="repository",
+        repository_urls=["https://github.com/owner/repo"],
+        shard_count=14,
+        latest_only=False,
+        release_fetcher=lambda *_args: [
+            _with_asset_urls(
+                release,
+                "https://github.com/owner/repo",
+            )
+        ],
+        metadata_fetcher=lambda *_args: {"full_name": "owner/repo", "archived": False},
+        tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
+        api_deadline_seconds=7,
+    )
+    loaded = worklist.load_worklist_document(output)
+    assert loaded["payload"]["items"][0]["asset_digest"] is None
 
 
 def test_resolve_base_ref_to_commit_success():
     expected = "a" * 40
 
     def run(cmd, *args, **kwargs):
-        assert cmd == ["git", "rev-parse", "HEAD~1"]
+        assert cmd == [
+            "git",
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            "HEAD~1^{}",
+        ]
         return subprocess.CompletedProcess(cmd, 0, stdout=f"{expected}\n", stderr="")
 
     assert (
         worklist._resolve_base_ref_to_commit("HEAD~1", run=run, timeout_seconds=5)
         == expected
     )
+
+
+def test_resolve_base_ref_to_commit_rejects_missing_output_newline():
+    def run(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout="a" * 40, stderr="")
+
+    with pytest.raises(ValueError, match="Invalid base commit"):
+        worklist._resolve_base_ref_to_commit("HEAD", run=run, timeout_seconds=5)
+
+
+def test_resolve_base_ref_to_commit_rejects_duplicate_output_lines():
+    def run(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=f"{'a' * 40}\n{'b' * 40}\n", stderr=""
+        )
+
+    with pytest.raises(ValueError, match="Invalid base commit"):
+        worklist._resolve_base_ref_to_commit("HEAD", run=run, timeout_seconds=5)
+
+
+def test_resolve_base_ref_to_commit_rejects_output_with_whitespace():
+    def run(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=f"{'a' * 39} {'a'}\n", stderr=""
+        )
+
+    with pytest.raises(ValueError, match="Invalid base commit"):
+        worklist._resolve_base_ref_to_commit("HEAD", run=run, timeout_seconds=5)
+
+
+def test_resolve_base_ref_to_commit_rejects_blob_ref():
+    def run(cmd, *args, **kwargs):
+        assert cmd == [
+            "git",
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            "HEAD:README.md^{}",
+        ]
+        return subprocess.CompletedProcess(
+            cmd, 2, stdout="", stderr="fatal: bad revision"
+        )
+
+    with pytest.raises(RuntimeError, match="git rev-parse failed"):
+        worklist._resolve_base_ref_to_commit(
+            "HEAD:README.md", run=run, timeout_seconds=5
+        )
 
 
 def test_resolve_base_ref_to_commit_rejects_malformed_output():

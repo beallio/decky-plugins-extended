@@ -107,7 +107,14 @@ def _resolve_base_ref_to_commit(
         )
     try:
         result = run(
-            ["git", "rev-parse", base_ref],
+            [
+                "git",
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                f"{base_ref}^{{}}",
+            ],
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
@@ -130,7 +137,9 @@ def _resolve_base_ref_to_commit(
     output = result.stdout
     if not isinstance(output, str):
         raise ValueError(f"Malformed git rev-parse output for {base_ref!r}")
-    commit = output.strip()
+    if output.count("\n") != 1 or not output.endswith("\n"):
+        raise ValueError(f"Invalid base commit for {base_ref!r}")
+    commit = output[:-1]
     if not _CANONICAL_GIT_SHA1.fullmatch(commit):
         raise ValueError(f"Invalid base commit for {base_ref!r}")
     return commit
@@ -159,17 +168,12 @@ def _parse_asset_from_release(
 ) -> Mapping[str, Any]:
     if not isinstance(release, Mapping):
         raise ValueError(f"Invalid release record for {repository}")
-    assets = release.get("assets")
-    if not isinstance(assets, list):
-        raise ValueError(f"Invalid release asset list for {repository}")
-    zip_assets = [
-        candidate for candidate in assets if candidate.get("name", "").endswith(".zip")
-    ]
-    if len(zip_assets) != 1:
+    asset = plugin_release_utils.get_zip_asset(dict(release))
+    if asset is None:
         raise ValueError(
             f"Each worklist item must have exactly one zip asset for {repository}"
         )
-    return zip_assets[0]
+    return asset
 
 
 def _source_resolution_entry(
@@ -231,16 +235,7 @@ def _normalise_worklist_item(
         )
 
     raw_digest = asset.get("digest")
-    if raw_digest is None:
-        asset_digest = None
-    else:
-        if not isinstance(raw_digest, str) or not _CANONICAL_SHA256.fullmatch(
-            raw_digest
-        ):
-            raise ValueError(
-                f"Invalid zip asset digest for {repository}@{item_release_id}:{tag_name}"
-            )
-        asset_digest = raw_digest
+    asset_digest = plugin_release_utils.normalize_github_sha256_digest(raw_digest)
 
     if _normalise_bool(
         release.get("draft"),
@@ -328,7 +323,7 @@ def _validate_worklist_item(item: Mapping[str, Any]) -> dict[str, Any]:
         f"created_at for {item['repository']}@{item.get('tag_name')}",
     )
     asset_name = _normalise_str(item["asset_name"], "asset name")
-    if not asset_name.endswith(".zip"):
+    if not asset_name.lower().endswith(".zip"):
         raise ValueError(f"Invalid asset name for {canonical_repo}@{release_id}")
     asset_url = _normalise_str(item["asset_url"], "asset URL")
     asset_digest = item["asset_digest"]
