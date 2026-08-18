@@ -62,13 +62,13 @@ def _zip_bytes() -> bytes:
 
 def _with_digest(release: dict, value: str) -> dict:
     release = json.loads(json.dumps(release))
-    release["assets"][0]["digest"] = value
+    release["assets"][0]["digest"] = f"sha256:{value}"
     return release
 
 
-def _with_prefixed_digest(release: dict, value: str) -> dict:
+def _with_bare_digest(release: dict, value: str) -> dict:
     release = json.loads(json.dumps(release))
-    release["assets"][0]["digest"] = f"sha256:{value}"
+    release["assets"][0]["digest"] = value
     return release
 
 
@@ -183,6 +183,13 @@ def test_worklist_prepare_and_load_roundtrip_is_stable(tmp_path):
     loaded_one = worklist.load_worklist_document(output_one)
     loaded_two = worklist.load_worklist_document(output_two)
     assert loaded_one["fingerprint"] == loaded_two["fingerprint"] == first
+    assert all(
+        item["asset_digest"] == str(item["asset_digest"]).lower()
+        for item in loaded_one["payload"]["items"]
+    )
+    assert all(
+        item["asset_digest"] is not None for item in loaded_one["payload"]["items"]
+    )
     assert loaded_one["payload"]["repositories"] == [
         "https://github.com/owner/a",
         "https://github.com/owner/b",
@@ -1051,7 +1058,7 @@ def test_prepare_worklist_normalizes_prefixed_asset_digest(tmp_path):
             shard_count=14,
             latest_only=False,
             release_fetcher=lambda *_args: [
-                _with_prefixed_digest(
+                _with_bare_digest(
                     _with_asset_urls(
                         _release(
                             "v1",
@@ -1061,7 +1068,7 @@ def test_prepare_worklist_normalizes_prefixed_asset_digest(tmp_path):
                         ),
                         "https://github.com/owner/repo",
                     ),
-                    raw_digest.removeprefix("sha256:"),
+                    raw_digest,
                 )
             ],
             metadata_fetcher=lambda *_args: {
@@ -1123,7 +1130,7 @@ def test_resolve_base_ref_to_commit_success():
             "--verify",
             "--quiet",
             "--end-of-options",
-            "HEAD~1^{}",
+            "HEAD~1^{commit}",
         ]
         return subprocess.CompletedProcess(cmd, 0, stdout=f"{expected}\n", stderr="")
 
@@ -1131,6 +1138,33 @@ def test_resolve_base_ref_to_commit_success():
         worklist._resolve_base_ref_to_commit("HEAD~1", run=run, timeout_seconds=5)
         == expected
     )
+
+
+def test_resolve_base_ref_to_commit_verifies_commit_objects_in_repo():
+    def run(cmd, *args, **kwargs):
+        return subprocess.run(cmd, cwd=ROOT, *args, **kwargs)
+
+    expected = worklist._resolve_base_ref_to_commit("HEAD", run=run, timeout_seconds=5)
+    direct = subprocess.check_output(
+        [
+            "git",
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            "HEAD^{commit}",
+        ],
+        cwd=ROOT,
+        text=True,
+    ).strip()
+    assert expected == direct
+
+    with pytest.raises(RuntimeError, match="git rev-parse failed"):
+        worklist._resolve_base_ref_to_commit("HEAD^{tree}", run=run, timeout_seconds=5)
+    with pytest.raises(RuntimeError, match="git rev-parse failed"):
+        worklist._resolve_base_ref_to_commit(
+            "HEAD:README.md", run=run, timeout_seconds=5
+        )
 
 
 def test_resolve_base_ref_to_commit_rejects_missing_output_newline():
@@ -1169,7 +1203,7 @@ def test_resolve_base_ref_to_commit_rejects_blob_ref():
             "--verify",
             "--quiet",
             "--end-of-options",
-            "HEAD:README.md^{}",
+            "HEAD:README.md^{commit}",
         ]
         return subprocess.CompletedProcess(
             cmd, 2, stdout="", stderr="fatal: bad revision"

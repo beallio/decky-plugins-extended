@@ -113,7 +113,7 @@ def _resolve_base_ref_to_commit(
                 "--verify",
                 "--quiet",
                 "--end-of-options",
-                f"{base_ref}^{{}}",
+                f"{base_ref}^{{commit}}",
             ],
             capture_output=True,
             text=True,
