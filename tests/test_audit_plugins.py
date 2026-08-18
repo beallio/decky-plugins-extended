@@ -3012,6 +3012,76 @@ class TestCLI(unittest.TestCase):
                 ]
             )
 
+    def test_prepare_main_changed_empty_is_real_main_path_no_scans(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            worklist_path = str(Path(tmp) / "worklist.json")
+            github_output = Path(tmp) / "github_output"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with (
+                patch.object(sys, "stdout", stdout),
+                patch.object(sys, "stderr", stderr),
+                patch.dict(
+                    os.environ,
+                    {"GITHUB_OUTPUT": str(github_output)},
+                    clear=False,
+                ),
+                patch.object(
+                    ap,
+                    "read_repo_urls",
+                    side_effect=AssertionError("read_repo_urls should not be called"),
+                ) as read_repo_urls,
+                patch.object(
+                    ap,
+                    "get_changed_repos",
+                    return_value=[],
+                ) as get_changed_repos,
+                patch.object(
+                    ap,
+                    "get_repo_metadata",
+                    return_value={"full_name": "owner/repo", "archived": False},
+                ) as get_repo_metadata,
+                patch.object(
+                    ap, "get_releases", return_value=[{"tag_name": "v1"}]
+                ) as get_releases,
+                patch.object(
+                    ap.audit_worklist,
+                    "resolve_repository_tags_via_ls_remote",
+                    return_value={"v1": "a" * 40},
+                ) as resolve_tags,
+                patch.object(
+                    ap.audit_worklist,
+                    "_resolve_base_ref_to_commit",
+                    return_value="d" * 40,
+                ) as resolve_base_ref,
+            ):
+                code = ap.main(
+                    [
+                        "--prepare-worklist",
+                        worklist_path,
+                        "--changed",
+                        "--base-ref",
+                        "HEAD",
+                        "--source-revision",
+                        "a" * 40,
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(Path(worklist_path).read_text(encoding="utf-8"))
+            self.assertEqual(
+                stdout.getvalue(), f"worklist_fingerprint={payload['fingerprint']}\n"
+            )
+            self.assertFalse(stderr.getvalue())
+            self.assertFalse(github_output.exists())
+            resolve_base_ref.assert_called_once_with("HEAD", 300)
+            read_repo_urls.assert_not_called()
+            self.assertEqual(get_changed_repos.call_count, 1)
+            get_changed_repos.assert_called_with("additional_plugins.txt", "HEAD")
+            get_repo_metadata.assert_not_called()
+            get_releases.assert_not_called()
+            resolve_tags.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # find_best_release

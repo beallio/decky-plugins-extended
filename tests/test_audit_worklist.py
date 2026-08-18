@@ -62,6 +62,12 @@ def _zip_bytes() -> bytes:
 
 def _with_digest(release: dict, value: str) -> dict:
     release = json.loads(json.dumps(release))
+    release["assets"][0]["digest"] = value
+    return release
+
+
+def _with_prefixed_digest(release: dict, value: str) -> dict:
+    release = json.loads(json.dumps(release))
     release["assets"][0]["digest"] = f"sha256:{value}"
     return release
 
@@ -315,11 +321,179 @@ def test_worklist_load_rejects_tampered_payload_mutations_and_tracks_fingerprint
     assert recomputed != fp
 
 
+def test_worklist_load_rejects_tampered_non_canonical_payload_fields(tmp_path):
+    output = tmp_path / "noncanonical.json"
+    _, _ = worklist.prepare_audit_worklist(
+        output,
+        source_revision=SOURCE_REVISION,
+        selection_mode="all",
+        repository_urls=[
+            "https://github.com/owner/repo",
+        ],
+        shard_count=14,
+        latest_only=False,
+        release_fetcher=lambda *_args: [
+            _with_digest(
+                _with_asset_urls(
+                    _release(
+                        "v1",
+                        1,
+                        10,
+                        "2026-01-01T00:00:00Z",
+                        repository_url="https://github.com/owner/repo",
+                    ),
+                    "https://github.com/owner/repo",
+                ),
+                "d" * 64,
+            )
+        ],
+        metadata_fetcher=lambda *_args: {"full_name": "owner/repo", "archived": False},
+        tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
+        api_deadline_seconds=7,
+    )
+    base = json.loads(output.read_text(encoding="utf-8"))
+
+    bad_payload_mutations = [
+        (
+            "draft",
+            lambda doc: doc["payload"]["items"][0].update(draft=True),
+            "Worklist item drafts are ineligible",
+        ),
+        (
+            "asset_name",
+            lambda doc: doc["payload"]["items"][0].update(asset_name="plugin.txt"),
+            "Invalid asset name",
+        ),
+        (
+            "created_at",
+            lambda doc: doc["payload"]["items"][0].update(
+                created_at="2026-01-01 00:00:00Z"
+            ),
+            "Invalid created_at",
+        ),
+        (
+            "asset_digest_uppercase",
+            lambda doc: doc["payload"]["items"][0].update(asset_digest="A" * 64),
+            "Invalid asset digest",
+        ),
+        (
+            "asset_digest_prefixed",
+            lambda doc: doc["payload"]["items"][0].update(
+                asset_digest=f"sha256:{'e' * 64}"
+            ),
+            "Invalid asset digest",
+        ),
+        (
+            "source_resolution_commit_uppercase",
+            lambda doc: doc["payload"]["items"][0].update(
+                resolved_source_commit_sha="A" * 40,
+                source_resolution_error=None,
+            ),
+            "Invalid source commit",
+        ),
+        (
+            "source_resolution_error_unknown",
+            lambda doc: doc["payload"]["items"][0].update(
+                resolved_source_commit_sha=None,
+                source_resolution_error="https://github.com/owner/repo:v1:??",
+            ),
+            "Invalid source resolution error",
+        ),
+        (
+            "source_resolution_error_whitespace",
+            lambda doc: doc["payload"]["items"][0].update(
+                resolved_source_commit_sha=None,
+                source_resolution_error="   ",
+            ),
+            "Invalid source_resolution_error",
+        ),
+    ]
+
+    for _label, mutate, expected in bad_payload_mutations:
+        mutated = copy.deepcopy(base)
+        mutate(mutated)
+        mutated["fingerprint"] = worklist.compute_worklist_fingerprint(
+            mutated["payload"]
+        )
+        path = tmp_path / f"noncanonical-{_label}.json"
+        path.write_text(json.dumps(mutated), encoding="utf-8")
+        with pytest.raises(ValueError, match=expected):
+            worklist.load_worklist_document(path)
+
+
+def test_worklist_prepare_rejects_invalid_source_revision_with_preexisting_target(
+    tmp_path,
+):
+    output = tmp_path / "invalid-source-revision.json"
+    output.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="source_revision"):
+        worklist.prepare_audit_worklist(
+            output,
+            source_revision="not-a-sha",
+            selection_mode="changed",
+            repository_urls=[],
+            shard_count=14,
+            latest_only=False,
+            base_ref="HEAD~1",
+            release_fetcher=lambda *_args: [],
+            metadata_fetcher=lambda *_args: {
+                "full_name": "owner/repo",
+                "archived": False,
+            },
+            tag_resolver=lambda *_args, **_kwargs: {},
+            ref_resolver=lambda *_args: "a" * 40,
+            api_deadline_seconds=7,
+        )
+    assert not output.exists()
+
+
+def test_worklist_prepare_rejects_invalid_shard_count_with_preexisting_target(tmp_path):
+    output = tmp_path / "invalid-shard-count.json"
+    output.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="shard_count"):
+        worklist.prepare_audit_worklist(
+            output,
+            source_revision=SOURCE_REVISION,
+            selection_mode="changed",
+            repository_urls=[],
+            shard_count=0,
+            latest_only=False,
+            base_ref="HEAD~1",
+            release_fetcher=lambda *_args: [],
+            metadata_fetcher=lambda *_args: {
+                "full_name": "owner/repo",
+                "archived": False,
+            },
+            tag_resolver=lambda *_args, **_kwargs: {},
+            ref_resolver=lambda *_args: "a" * 40,
+            api_deadline_seconds=7,
+        )
+    assert not output.exists()
+
+
 def test_worklist_prepare_rejects_invalid_source_revision():
     with pytest.raises(ValueError, match="source_revision"):
         worklist.prepare_audit_worklist(
             Path("/tmp/ignored"),
             source_revision="not-a-sha",
+            selection_mode="all",
+            repository_urls=["https://github.com/owner/repo"],
+            shard_count=14,
+            latest_only=False,
+            release_fetcher=lambda *_args: [],
+            metadata_fetcher=lambda *_args: {"full_name": "owner/repo"},
+            tag_resolver=lambda *_args, **_kwargs: {},
+            api_deadline_seconds=7,
+        )
+
+
+def test_worklist_prepare_rejects_uppercase_source_revision():
+    with pytest.raises(ValueError, match="source_revision"):
+        worklist.prepare_audit_worklist(
+            Path("/tmp/ignored"),
+            source_revision="A" * 40,
             selection_mode="all",
             repository_urls=["https://github.com/owner/repo"],
             shard_count=14,
@@ -393,6 +567,77 @@ def test_worklist_validation_rejects_malformed_fields(tmp_path):
     with pytest.raises(ValueError, match="worklist item keys"):
         worklist.load_worklist_document_from_bytes(json.dumps(bad_item).encode("utf-8"))
 
+    invalid_source_error = copy.deepcopy(base)
+    invalid_source_error["payload"]["items"][0]["resolved_source_commit_sha"] = None
+    invalid_source_error["payload"]["items"][0]["source_resolution_error"] = (
+        "https://github.com/owner/repo:v1:unknown-error"
+    )
+    with pytest.raises(ValueError, match="Invalid source resolution error"):
+        worklist.load_worklist_document_from_bytes(
+            json.dumps(invalid_source_error).encode("utf-8")
+        )
+
+    payload = base["payload"]
+    mutated = copy.deepcopy(payload)
+    mutated["source_revision"] = "A" * 40
+    with pytest.raises(ValueError, match="Invalid source_revision"):
+        worklist._validate_worklist_payload(mutated)
+
+
+def test_worklist_validation_rejects_invalid_resolved_source_fields(tmp_path):
+    output = tmp_path / "invalid-source-fields.json"
+    _, _ = worklist.prepare_audit_worklist(
+        output,
+        source_revision=SOURCE_REVISION,
+        selection_mode="all",
+        repository_urls=["https://github.com/owner/repo"],
+        shard_count=14,
+        latest_only=False,
+        release_fetcher=lambda *_args: [
+            _with_digest(
+                _with_asset_urls(
+                    _release(
+                        "v1",
+                        1,
+                        10,
+                        repository_url="https://github.com/owner/repo",
+                    ),
+                    "https://github.com/owner/repo",
+                ),
+                "d" * 64,
+            )
+        ],
+        metadata_fetcher=lambda *_args: {"full_name": "owner/repo", "archived": False},
+        tag_resolver=lambda *_args, **_kwargs: {"v1": "e" * 40},
+        api_deadline_seconds=7,
+    )
+    base = json.loads(output.read_text(encoding="utf-8"))
+
+    invalid_uppercase_commit = copy.deepcopy(base)
+    invalid_uppercase_commit["payload"]["items"][0]["resolved_source_commit_sha"] = (
+        "A" * 40
+    )
+    invalid_uppercase_commit["fingerprint"] = worklist.compute_worklist_fingerprint(
+        invalid_uppercase_commit["payload"]
+    )
+    with pytest.raises(ValueError, match="Invalid source commit"):
+        worklist.load_worklist_document_from_bytes(
+            json.dumps(invalid_uppercase_commit).encode("utf-8")
+        )
+
+    invalid_source_error = copy.deepcopy(base)
+    invalid_source_error["payload"]["items"][0]["resolved_source_commit_sha"] = None
+    invalid_source_error["payload"]["items"][0]["source_resolution_error"] = (
+        "https://github.com/owner/repo :v1:source-resolution-failed"
+    )
+    invalid_source_error["fingerprint"] = worklist.compute_worklist_fingerprint(
+        invalid_source_error["payload"]
+    )
+    with pytest.raises(ValueError, match="Invalid source resolution error"):
+        worklist.load_worklist_document_from_bytes(
+            json.dumps(invalid_source_error).encode("utf-8")
+        )
+
 
 def test_worklist_rejects_duplicate_identities_and_non_deterministic_order(tmp_path):
     output = tmp_path / "worklist.json"
@@ -464,6 +709,7 @@ def test_worklist_prepare_accepts_none_selection(tmp_path):
         release_fetcher=lambda *_args: [],
         metadata_fetcher=lambda *_args: {"full_name": "owner/repo", "archived": False},
         tag_resolver=lambda *_args, **_kwargs: {},
+        ref_resolver=lambda *_args: SOURCE_REVISION,
         api_deadline_seconds=7,
     )
     loaded = worklist.load_worklist_document(output)
@@ -473,8 +719,94 @@ def test_worklist_prepare_accepts_none_selection(tmp_path):
     assert loaded["payload"]["items"] == []
 
 
+def test_worklist_prepare_changed_empty_keeps_resolved_base_commit(tmp_path):
+    output = tmp_path / "changed-empty.json"
+    resolved_base_commit = "d" * 40
+    fp, _ = worklist.prepare_audit_worklist(
+        output,
+        source_revision=SOURCE_REVISION,
+        selection_mode="changed",
+        repository_urls=[],
+        shard_count=14,
+        latest_only=False,
+        base_ref="HEAD~1",
+        release_fetcher=lambda *_args: [],
+        metadata_fetcher=lambda *_args: {"full_name": "owner/repo", "archived": False},
+        tag_resolver=lambda *_args, **_kwargs: {"v1": "e" * 40},
+        ref_resolver=lambda *_args: resolved_base_commit,
+        api_deadline_seconds=7,
+    )
+    loaded = worklist.load_worklist_document(output)
+    assert fp == loaded["fingerprint"]
+    assert loaded["payload"]["selection_mode"] == "none"
+    assert loaded["payload"]["base_commit"] == resolved_base_commit
+    assert loaded["payload"]["repositories"] == []
+    assert loaded["payload"]["items"] == []
+
+
+def test_worklist_prepare_rejects_changed_mode_without_eligible_release(tmp_path):
+    output = tmp_path / "changed-no-eligible.json"
+    with pytest.raises(ValueError, match="No eligible release found"):
+        worklist.prepare_audit_worklist(
+            output,
+            source_revision=SOURCE_REVISION,
+            selection_mode="changed",
+            repository_urls=["https://github.com/owner/repo"],
+            shard_count=14,
+            latest_only=False,
+            base_ref="HEAD",
+            release_fetcher=lambda *_args: [
+                _release(
+                    "v0",
+                    1,
+                    10,
+                    "2026-01-01T00:00:00Z",
+                    zip_count=0,
+                )
+            ],
+            metadata_fetcher=lambda *_args: {
+                "full_name": "owner/repo",
+                "archived": False,
+            },
+            tag_resolver=lambda *_args, **_kwargs: {"v0": "a" * 40},
+            api_deadline_seconds=7,
+            ref_resolver=lambda *_args: "a" * 40,
+        )
+    assert not output.exists()
+
+
+def test_worklist_prepare_rejects_repository_mode_without_eligible_release(tmp_path):
+    output = tmp_path / "repository-no-eligible.json"
+    with pytest.raises(ValueError, match="No eligible release found"):
+        worklist.prepare_audit_worklist(
+            output,
+            source_revision=SOURCE_REVISION,
+            selection_mode="repository",
+            repository_urls=["https://github.com/owner/repo"],
+            shard_count=14,
+            latest_only=False,
+            release_fetcher=lambda *_args: [
+                _release(
+                    "v0",
+                    1,
+                    10,
+                    "2026-01-01T00:00:00Z",
+                    zip_count=0,
+                )
+            ],
+            metadata_fetcher=lambda *_args: {
+                "full_name": "owner/repo",
+                "archived": False,
+            },
+            tag_resolver=lambda *_args, **_kwargs: {"v0": "a" * 40},
+            api_deadline_seconds=7,
+        )
+    assert not output.exists()
+
+
 def test_worklist_prepare_rejects_empty_all_selection(tmp_path):
     output = tmp_path / "all-empty.json"
+    output.write_text("{}", encoding="utf-8")
     with pytest.raises(
         ValueError, match="all selection requires at least one repository"
     ):
@@ -491,6 +823,27 @@ def test_worklist_prepare_rejects_empty_all_selection(tmp_path):
                 "archived": False,
             },
             tag_resolver=lambda *_args, **_kwargs: {},
+            api_deadline_seconds=7,
+        )
+    assert not output.exists()
+
+
+def test_worklist_prepare_rejects_non_canonical_repository():
+    with pytest.raises(ValueError, match="Repository URL is not canonical"):
+        worklist.prepare_audit_worklist(
+            Path("/tmp/noncanonical.json"),
+            source_revision=SOURCE_REVISION,
+            selection_mode="all",
+            repository_urls=["https://github.com/Owner/repo"],
+            shard_count=14,
+            latest_only=False,
+            release_fetcher=lambda *_args: [],
+            metadata_fetcher=lambda *_args: {
+                "full_name": "owner/repo",
+                "archived": False,
+            },
+            tag_resolver=lambda *_args, **_kwargs: {},
+            ref_resolver=lambda *_args: SOURCE_REVISION,
             api_deadline_seconds=7,
         )
 
@@ -647,6 +1000,160 @@ def test_prepare_worklist_accepts_missing_asset_digest(tmp_path):
     )
     loaded = worklist.load_worklist_document(output)
     assert loaded["payload"]["items"][0]["asset_digest"] is None
+
+
+def test_prepare_worklist_rejects_prefixed_asset_digest(tmp_path):
+    output = tmp_path / "prefixed-digest.json"
+    with pytest.raises(ValueError, match="Invalid zip asset digest"):
+        worklist.prepare_audit_worklist(
+            output,
+            source_revision=SOURCE_REVISION,
+            selection_mode="repository",
+            repository_urls=["https://github.com/owner/repo"],
+            shard_count=14,
+            latest_only=False,
+            release_fetcher=lambda *_args: [
+                _with_prefixed_digest(
+                    _with_asset_urls(
+                        _release(
+                            "v1",
+                            1,
+                            10,
+                            repository_url="https://github.com/owner/repo",
+                        ),
+                        "https://github.com/owner/repo",
+                    ),
+                    "d" * 64,
+                )
+            ],
+            metadata_fetcher=lambda *_args: {
+                "full_name": "owner/repo",
+                "archived": False,
+            },
+            tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
+            api_deadline_seconds=7,
+        )
+
+
+def test_resolve_base_ref_to_commit_success():
+    expected = "a" * 40
+
+    def run(cmd, *args, **kwargs):
+        assert cmd == ["git", "rev-parse", "HEAD~1"]
+        return subprocess.CompletedProcess(cmd, 0, stdout=f"{expected}\n", stderr="")
+
+    assert (
+        worklist._resolve_base_ref_to_commit("HEAD~1", run=run, timeout_seconds=5)
+        == expected
+    )
+
+
+def test_resolve_base_ref_to_commit_rejects_malformed_output():
+    def run(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout="not-a-sha\n", stderr="")
+
+    with pytest.raises(ValueError, match="Invalid base commit"):
+        worklist._resolve_base_ref_to_commit("HEAD", run=run, timeout_seconds=5)
+
+
+def test_resolve_base_ref_to_commit_rejects_uppercase_output():
+    def run(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=f"{'A' * 40}\n", stderr="")
+
+    with pytest.raises(ValueError, match="Invalid base commit"):
+        worklist._resolve_base_ref_to_commit("HEAD", run=run, timeout_seconds=5)
+
+
+def test_resolve_base_ref_to_commit_rejects_base_ref_with_whitespace():
+    with pytest.raises(ValueError, match="base_ref must be a canonical git ref"):
+        worklist._resolve_base_ref_to_commit(
+            " HEAD~1",
+            run=lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("run must not be called")
+            ),
+            timeout_seconds=5,
+        )
+
+
+def test_resolve_base_ref_to_commit_rejects_timeout():
+    with pytest.raises(TimeoutError, match="timed out"):
+        worklist._resolve_base_ref_to_commit(
+            "HEAD~1",
+            run=lambda *a, **k: (_ for _ in ()).throw(
+                subprocess.TimeoutExpired(["git", "rev-parse", "HEAD~1"], 1)
+            ),
+            timeout_seconds=5,
+        )
+
+
+def test_resolve_base_ref_to_commit_rejects_nonzero_exit():
+    def run(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(cmd, 2, stdout="", stderr="boom")
+
+    with pytest.raises(RuntimeError, match="git rev-parse failed"):
+        worklist._resolve_base_ref_to_commit("HEAD~1", run=run, timeout_seconds=5)
+
+
+def test_prepare_worklist_rejects_non_eligible_repositories_with_no_items(tmp_path):
+    output = tmp_path / "no-eligible.json"
+    with pytest.raises(ValueError, match="No eligible release found"):
+        worklist.prepare_audit_worklist(
+            output,
+            source_revision=SOURCE_REVISION,
+            selection_mode="all",
+            repository_urls=["https://github.com/owner/repo"],
+            shard_count=14,
+            latest_only=False,
+            release_fetcher=lambda *_args: [
+                _release(
+                    "v0",
+                    1,
+                    10,
+                    "2026-01-01T00:00:00Z",
+                    zip_count=0,
+                )
+            ],
+            metadata_fetcher=lambda *_args: {
+                "full_name": "owner/repo",
+                "archived": False,
+            },
+            tag_resolver=lambda *_args, **_kwargs: {"v0": "a" * 40},
+            api_deadline_seconds=7,
+        )
+    assert not output.exists()
+
+
+def test_resolve_tags_prefers_peeled_commit_regardless_of_order():
+    raw = "\n".join(
+        [
+            f"{'b' * 40}\trefs/tags/v1",
+            f"{'d' * 40}\trefs/tags/v2^{{}}",
+            f"{'c' * 40}\trefs/tags/v2",
+            f"{'e' * 40}\trefs/tags/v3^{{}}",
+        ]
+    )
+
+    def run(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=raw, stderr="")
+
+    resolved = worklist.resolve_repository_tags_via_ls_remote(
+        "owner",
+        "repo",
+        5,
+        run=run,
+    )
+    assert resolved["v2"] == "d" * 40
+    assert resolved["v3"] == "e" * 40
+
+
+def test_resolve_tags_rejects_uppercase_object_id():
+    raw = "\n".join([f"{'A' * 40}\trefs/tags/v1"])
+
+    def run(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=raw, stderr="")
+
+    with pytest.raises(ValueError, match="Malformed ls-remote object id"):
+        worklist.resolve_repository_tags_via_ls_remote("owner", "repo", 5, run=run)
 
 
 def test_prepare_worklist_failure_leaves_no_partial_file(tmp_path):

@@ -20,6 +20,7 @@ WORKLIST_SELECTION_MODES = {"all", "changed", "repository", "none"}
 
 _CANONICAL_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CANONICAL_GIT_SHA1 = re.compile(r"^[0-9a-f]{40}$")
+_CANONICAL_GITHUB_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 _DOC_KEYS = {"schema_version", "fingerprint", "payload"}
 _PAYLOAD_KEYS = {
@@ -28,15 +29,8 @@ _PAYLOAD_KEYS = {
     "repositories",
     "shard_count",
     "items",
-    "base_ref",
+    "base_commit",
     "latest_only",
-}
-_REQUIRED_PAYLOAD_KEYS = {
-    "selection_mode",
-    "source_revision",
-    "repositories",
-    "shard_count",
-    "items",
 }
 _ITEM_KEYS = {
     "repository",
@@ -53,6 +47,11 @@ _ITEM_KEYS = {
     "resolved_source_commit_sha",
     "source_resolution_error",
     "repository_archived",
+}
+
+_SOURCE_RESOLUTION_ERROR_FORMS = {
+    "source-resolution-failed",
+    "source-resolution-invalid-commit",
 }
 
 
@@ -83,14 +82,76 @@ def _normalise_str(value: Any, field_name: str) -> str:
 
 
 def _normalise_timestamp(value: Any, field_name: str) -> str:
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not value or value != value.strip():
         raise ValueError(f"Invalid {field_name}: {value!r}")
     try:
-        timestamp = value.replace("Z", "+00:00")
-        datetime.fromisoformat(timestamp)
+        if not _CANONICAL_GITHUB_TIMESTAMP.fullmatch(value):
+            raise ValueError
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValueError(f"Invalid {field_name}: {value!r}") from exc
     return value
+
+
+def _resolve_base_ref_to_commit(
+    base_ref: str,
+    timeout_seconds: int,
+    *,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> str:
+    if not isinstance(base_ref, str):
+        raise ValueError("base_ref must be a string")
+    if base_ref != base_ref.strip() or not base_ref:
+        raise ValueError(
+            "base_ref must be a canonical git ref without surrounding whitespace"
+        )
+    try:
+        result = run(
+            ["git", "rev-parse", base_ref],
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(
+            f"git rev-parse timed out for base ref {base_ref!r}"
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(
+            f"git rev-parse failed for base ref {base_ref!r}: {exc}"
+        ) from exc
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git rev-parse failed for base ref {base_ref!r}: "
+            f"{getattr(result, 'stderr', '')}"
+        )
+    output = result.stdout
+    if not isinstance(output, str):
+        raise ValueError(f"Malformed git rev-parse output for {base_ref!r}")
+    commit = output.strip()
+    if not _CANONICAL_GIT_SHA1.fullmatch(commit):
+        raise ValueError(f"Invalid base commit for {base_ref!r}")
+    return commit
+
+
+def _normalise_repository_urls(repositories: list[str]) -> list[str]:
+    if not isinstance(repositories, list):
+        raise ValueError("repository_urls must be a list")
+    canonical_repositories: list[str] = []
+    seen: set[str] = set()
+    for repository in repositories:
+        if not isinstance(repository, str):
+            raise ValueError("repository_urls must contain strings")
+        canonical = plugin_release_utils.canonicalize_github_repository_url(repository)
+        if repository != canonical:
+            raise ValueError("Repository URL is not canonical")
+        if canonical in seen:
+            raise ValueError(f"Duplicate repository in worklist: {canonical}")
+        seen.add(canonical)
+        canonical_repositories.append(canonical)
+    return sorted(canonical_repositories)
 
 
 def _parse_asset_from_release(
@@ -102,9 +163,7 @@ def _parse_asset_from_release(
     if not isinstance(assets, list):
         raise ValueError(f"Invalid release asset list for {repository}")
     zip_assets = [
-        candidate
-        for candidate in assets
-        if str(candidate.get("name", "")).lower().endswith(".zip")
+        candidate for candidate in assets if candidate.get("name", "").endswith(".zip")
     ]
     if len(zip_assets) != 1:
         raise ValueError(
@@ -123,7 +182,7 @@ def _source_resolution_entry(
         return None, f"{repository}:{tag_name}:source-resolution-failed"
     if not _CANONICAL_GIT_SHA1.fullmatch(commit_sha):
         return None, f"{repository}:{tag_name}:source-resolution-invalid-commit"
-    return commit_sha.lower(), None
+    return commit_sha, None
 
 
 def _normalise_worklist_item(
@@ -172,14 +231,24 @@ def _normalise_worklist_item(
         )
 
     raw_digest = asset.get("digest")
-    asset_digest = (
-        plugin_release_utils.normalize_github_sha256_digest(raw_digest)
-        if raw_digest is not None
-        else None
-    )
-    if raw_digest is not None and asset_digest is None:
+    if raw_digest is None:
+        asset_digest = None
+    else:
+        if not isinstance(raw_digest, str) or not _CANONICAL_SHA256.fullmatch(
+            raw_digest
+        ):
+            raise ValueError(
+                f"Invalid zip asset digest for {repository}@{item_release_id}:{tag_name}"
+            )
+        asset_digest = raw_digest
+
+    if _normalise_bool(
+        release.get("draft"),
+        f"draft for {repository}@{tag_name}",
+    ):
         raise ValueError(
-            f"Invalid zip asset digest for {repository}@{item_release_id}:{tag_name}"
+            f"Draft releases are not eligible for worklist creation: "
+            f"{repository}@{item_release_id}"
         )
 
     repository_archived = _normalise_bool(
@@ -199,9 +268,7 @@ def _normalise_worklist_item(
         "prerelease": _normalise_bool(
             release.get("prerelease"), f"prerelease for {repository}@{tag_name}"
         ),
-        "draft": _normalise_bool(
-            release.get("draft"), f"draft for {repository}@{tag_name}"
-        ),
+        "draft": False,
         "published_at": published_at,
         "created_at": created_at,
         "asset_id": asset_id,
@@ -244,10 +311,9 @@ def _validate_worklist_item(item: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError(f"Unexpected worklist item keys: {extras}")
         raise ValueError(f"Missing worklist item keys: {missing}")
 
-    canonical_repo = plugin_release_utils.canonicalize_github_repository_url(
-        _normalise_str(item["repository"], "repository")
-    )
-    if item["repository"] != canonical_repo:
+    repository = _normalise_str(item["repository"], "repository")
+    canonical_repo = plugin_release_utils.canonicalize_github_repository_url(repository)
+    if repository != canonical_repo:
         raise ValueError("Repository URL is not canonical")
 
     release_id = _normalise_positive_int(item["release_id"], "release id")
@@ -262,6 +328,8 @@ def _validate_worklist_item(item: Mapping[str, Any]) -> dict[str, Any]:
         f"created_at for {item['repository']}@{item.get('tag_name')}",
     )
     asset_name = _normalise_str(item["asset_name"], "asset name")
+    if not asset_name.endswith(".zip"):
+        raise ValueError(f"Invalid asset name for {canonical_repo}@{release_id}")
     asset_url = _normalise_str(item["asset_url"], "asset URL")
     asset_digest = item["asset_digest"]
     if asset_digest is not None:
@@ -271,6 +339,8 @@ def _validate_worklist_item(item: Mapping[str, Any]) -> dict[str, Any]:
 
     prerelease = _normalise_bool(item["prerelease"], "prerelease")
     draft = _normalise_bool(item["draft"], "draft")
+    if draft:
+        raise ValueError("Worklist item drafts are ineligible")
     repository_archived = _normalise_bool(
         item["repository_archived"], "repository_archived"
     )
@@ -294,13 +364,20 @@ def _validate_worklist_item(item: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError(f"Invalid source commit for {canonical_repo}@{release_id}")
 
     if source_resolution_error is not None:
-        if (
-            not isinstance(source_resolution_error, str)
-            or not source_resolution_error.strip()
-        ):
+        if not isinstance(source_resolution_error, str):
             raise ValueError(
                 f"Invalid source resolution error for {canonical_repo}@{release_id}"
             )
+        canonical = _normalise_str(source_resolution_error, "source_resolution_error")
+        expected_errors = {
+            f"{canonical_repo}:{tag_name}:{suffix}"
+            for suffix in _SOURCE_RESOLUTION_ERROR_FORMS
+        }
+        if canonical not in expected_errors:
+            raise ValueError(
+                f"Invalid source resolution error for {canonical_repo}@{release_id}"
+            )
+        source_resolution_error = canonical
 
     asset_owner_repo = (
         plugin_release_utils.canonicalize_github_release_asset_repository_url(asset_url)
@@ -321,9 +398,7 @@ def _validate_worklist_item(item: Mapping[str, Any]) -> dict[str, Any]:
         "asset_url": asset_url,
         "asset_digest": asset_digest,
         "resolved_source_commit_sha": (
-            None
-            if resolved_source_commit_sha is None
-            else str(resolved_source_commit_sha).lower()
+            None if resolved_source_commit_sha is None else resolved_source_commit_sha
         ),
         "source_resolution_error": source_resolution_error,
         "repository_archived": repository_archived,
@@ -337,7 +412,6 @@ def _normalise_tag_map(tag_map: Mapping[str, str]) -> dict[str, str]:
             raise ValueError("Invalid tag name in source-resolution map")
         if not isinstance(commit_sha, str):
             raise ValueError(f"Invalid commit for tag {tag_name!r}")
-        commit_sha = commit_sha.lower()
         if not _CANONICAL_GIT_SHA1.fullmatch(commit_sha):
             raise ValueError(f"Invalid commit for tag {tag_name!r}")
         if tag_name in normalized:
@@ -353,7 +427,7 @@ def parse_ls_remote_tags(output: str, repository: str) -> dict[str, str]:
     if not isinstance(output, str):
         raise ValueError(f"Malformed ls-remote output from {repository}")
 
-    tag_commits: dict[str, str] = {}
+    lightweight_commits: dict[str, str] = {}
     peeled_commits: dict[str, str] = {}
     for line_no, raw_line in enumerate(output.splitlines(), start=1):
         if not raw_line.strip():
@@ -364,7 +438,6 @@ def parse_ls_remote_tags(output: str, repository: str) -> dict[str, str]:
                 f"Malformed ls-remote output from {repository}: {raw_line!r}"
             )
         object_id, ref = parts
-        object_id = object_id.lower()
         if not _CANONICAL_GIT_SHA1.fullmatch(object_id):
             raise ValueError(
                 f"Malformed ls-remote object id from {repository}: {object_id!r}"
@@ -380,23 +453,20 @@ def parse_ls_remote_tags(output: str, repository: str) -> dict[str, str]:
             tag_name = tag_name[:-3]
             if not tag_name:
                 raise ValueError(f"Invalid tagged ref from {repository}: {ref!r}")
-            existing = peeled_commits.get(tag_name)
-            if existing is not None:
+            if tag_name in peeled_commits:
                 raise ValueError(
                     f"Conflicting tag refs for {tag_name!r} in {repository}"
                 )
-            peeled_commits[tag_name] = object_id.lower()
+            peeled_commits[tag_name] = object_id
             continue
 
-        if tag_name in tag_commits:
+        if tag_name in lightweight_commits:
             raise ValueError(f"Conflicting tag refs for {tag_name!r} in {repository}")
-        if tag_name in peeled_commits:
-            raise ValueError(f"Conflicting tag refs for {tag_name!r} in {repository}")
-        tag_commits[tag_name] = object_id
+        lightweight_commits[tag_name] = object_id
 
-    for tag_name, commit_sha in peeled_commits.items():
-        tag_commits[tag_name] = commit_sha
-    return tag_commits
+    merged = dict(lightweight_commits)
+    merged.update(peeled_commits)
+    return merged
 
 
 def resolve_repository_tags_via_ls_remote(
@@ -442,11 +512,15 @@ def _validate_worklist_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("worklist payload must be an object")
 
     provided = set(payload.keys())
-    if not _REQUIRED_PAYLOAD_KEYS.issubset(provided):
-        missing = ", ".join(sorted(_REQUIRED_PAYLOAD_KEYS - provided))
-        raise ValueError(f"Missing worklist payload fields: {missing}")
-    if provided - _PAYLOAD_KEYS:
+    if provided != _PAYLOAD_KEYS:
+        missing = ", ".join(sorted(_PAYLOAD_KEYS - provided))
         extras = ", ".join(sorted(provided - _PAYLOAD_KEYS))
+        if missing and extras:
+            raise ValueError(
+                f"Missing worklist payload fields: {missing}; extra worklist payload fields: {extras}"
+            )
+        if missing:
+            raise ValueError(f"Missing worklist payload fields: {missing}")
         raise ValueError(f"Unexpected worklist payload fields: {extras}")
 
     selection_mode = _normalise_str(payload["selection_mode"], "selection_mode")
@@ -465,17 +539,21 @@ def _validate_worklist_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     normalized_repositories: list[str] = []
     seen: set[str] = set()
     for repository in repositories:
-        canonical = plugin_release_utils.canonicalize_github_repository_url(repository)
-        if canonical in seen:
+        canonical = plugin_release_utils.canonicalize_github_repository_url(
+            _normalise_str(repository, "repository")
+        )
+        if repository != canonical:
+            raise ValueError("Repository URL is not canonical")
+        if repository in seen:
             raise ValueError(f"Duplicate repository in worklist: {canonical}")
-        seen.add(canonical)
-        normalized_repositories.append(canonical)
+        seen.add(repository)
+        normalized_repositories.append(repository)
     if normalized_repositories != sorted(normalized_repositories):
         raise ValueError("Worklist repositories are not canonical order")
 
-    latest_only = _normalise_bool(payload.get("latest_only", False), "latest_only")
+    latest_only = _normalise_bool(payload["latest_only"], "latest_only")
+    base_commit = payload["base_commit"]
 
-    base_ref = payload.get("base_ref")
     if selection_mode == "repository":
         if len(repositories) != 1:
             raise ValueError("repository selection requires one repository URL")
@@ -483,16 +561,25 @@ def _validate_worklist_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         if not repositories:
             raise ValueError("all selection requires at least one repository")
     elif selection_mode == "changed":
-        base_ref = _normalise_str(base_ref, "base_ref")
-        if not base_ref:
-            raise ValueError("changed selection requires non-empty base_ref")
+        base_commit = _normalise_str(base_commit, "base_commit")
+        if not _CANONICAL_GIT_SHA1.fullmatch(base_commit):
+            raise ValueError("Invalid base_commit; expected 40-hex commit")
         if latest_only:
             raise ValueError("latest_only is only valid with repository mode")
     elif selection_mode == "none":
+        if base_commit is not None:
+            base_commit = _normalise_str(base_commit, "base_commit")
+            if not _CANONICAL_GIT_SHA1.fullmatch(base_commit):
+                raise ValueError("Invalid base_commit; expected 40-hex commit")
         if repositories:
             raise ValueError("none selection requires no repositories")
-    elif base_ref is not None:
-        raise ValueError("base_ref is only valid for changed mode")
+
+    if (
+        selection_mode != "changed"
+        and base_commit is not None
+        and selection_mode != "none"
+    ):
+        raise ValueError("base_commit is only valid for changed mode")
 
     if latest_only and selection_mode != "repository":
         raise ValueError("latest_only is only valid with repository mode")
@@ -544,7 +631,7 @@ def _validate_worklist_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         "repositories": normalized_repositories,
         "shard_count": shard_count,
         "items": normalized_items,
-        "base_ref": base_ref if selection_mode == "changed" else None,
+        "base_commit": base_commit if selection_mode in {"changed", "none"} else None,
         "latest_only": _normalise_bool(latest_only, "latest_only"),
     }
 
@@ -644,12 +731,19 @@ def prepare_audit_worklist(
     metadata_fetcher: Optional[Callable[[str, str], dict[str, Any]]] = None,
     tag_resolver: Optional[Callable[[str, str, int], dict[str, str]]] = None,
     api_deadline_seconds: int = 300,
+    ref_resolver: Optional[Callable[[str, int], str]] = None,
 ) -> tuple[str, dict[str, Any]]:
     if not isinstance(output_path, (str, os.PathLike)):
         raise ValueError("output_path must be a path")
+
+    output_file = Path(output_path)
+    if output_file.exists():
+        if output_file.is_dir():
+            raise ValueError("output_path must be a file path")
+        output_file.unlink()
+
     if not isinstance(source_revision, str):
         raise ValueError("source_revision must be a non-empty string")
-    source_revision = source_revision.strip()
     if not source_revision or not _CANONICAL_GIT_SHA1.fullmatch(source_revision):
         raise ValueError("source_revision must be a 40-character hex commit")
     if selection_mode not in WORKLIST_SELECTION_MODES:
@@ -657,7 +751,7 @@ def prepare_audit_worklist(
     if latest_only and selection_mode != "repository":
         raise ValueError("latest_only is only valid with repository mode")
     if selection_mode == "changed" and (
-        not isinstance(base_ref, str) or not base_ref.strip()
+        not isinstance(base_ref, str) or not base_ref or base_ref != base_ref.strip()
     ):
         raise ValueError("changed selection requires --base-ref")
     shard_count = _normalise_positive_int(shard_count, "shard_count")
@@ -668,8 +762,15 @@ def prepare_audit_worklist(
     if api_deadline_seconds <= 0:
         raise ValueError("api_deadline_seconds must be greater than zero")
 
+    ref_resolver = ref_resolver or _resolve_base_ref_to_commit
     original_selection_mode = selection_mode
-    repositories = plugin_release_utils.sort_repository_urls(repository_urls)
+
+    if selection_mode == "changed":
+        base_commit = ref_resolver(base_ref, api_deadline_seconds)
+    else:
+        base_commit = None
+
+    repositories = _normalise_repository_urls(repository_urls)
     if selection_mode == "changed" and not repositories:
         selection_mode = "none"
 
@@ -684,11 +785,8 @@ def prepare_audit_worklist(
         raise ValueError("none selection requires no repositories")
     if original_selection_mode != "changed" and base_ref is not None:
         raise ValueError("base_ref is only valid for changed mode")
-    if original_selection_mode == "all":
-        base_ref = None
 
     items: list[dict[str, Any]] = []
-    output_file = Path(output_path)
     try:
         if selection_mode != "none":
             for repository in repositories:
@@ -710,6 +808,10 @@ def prepare_audit_worklist(
                 )
                 if latest_only:
                     eligible = eligible[:1]
+                if not eligible:
+                    raise ValueError(
+                        f"No eligible release found for repository {repository}"
+                    )
                 for release in eligible:
                     items.append(
                         _normalise_worklist_item(repository, release, tag_map, metadata)
@@ -721,7 +823,7 @@ def prepare_audit_worklist(
             "repositories": repositories,
             "shard_count": shard_count,
             "items": items,
-            "base_ref": base_ref if selection_mode == "changed" else None,
+            "base_commit": base_commit,
             "latest_only": latest_only,
         }
         payload = _validate_worklist_payload(prepared_payload)
