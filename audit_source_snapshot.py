@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import errno
 import hashlib
 import os
@@ -25,6 +26,8 @@ _DEFAULT_MAX_REDIRECTS = 3
 _ALLOWED_REDIRECTS_PER_WORKER = range(0, 4)
 _SOURCE_STREAM_CHUNK_SIZE = 1_048_576
 _SOURCE_METADATA_BYTE_LIMIT = 1_048_576
+_AT_FDCWD = -100
+_RENAME_NOREPLACE = getattr(os, "RENAME_NOREPLACE", 1)
 
 _DEFAULT_ARCHIVE_LIMITS = {
     "max_files": 10_000,
@@ -353,36 +356,28 @@ def _preflight_source_archive(
     regular_file_count = 0
     file_count = 0
     total_uncompressed = 0
+    file_count_for_prefix: dict[str, int] = {}
+    prefix_first_member: dict[str, str] = {}
 
     def _check_ambiguous_paths(candidate: str, kind: str) -> None:
-        for existing_path, existing_kind in path_types.items():
-            if existing_path == candidate:
+        if candidate in path_types:
+            raise SourceSnapshotError(
+                f"ambiguous archive path {candidate!r}: duplicate with {candidate!r}"
+            )
+
+        parts = candidate.split("/")
+        for depth in range(1, len(parts)):
+            ancestor = "/".join(parts[:depth])
+            if path_types.get(ancestor) in {"file", "symlink"}:
                 raise SourceSnapshotError(
-                    f"ambiguous archive path {candidate!r}: duplicate with {existing_kind}"
+                    f"ambiguous archive path {candidate!r} conflicts with {ancestor!r}"
                 )
-            if existing_kind == "dir" and kind == "dir":
-                continue
-            if existing_kind == "dir" and kind in {"file", "symlink"}:
-                if existing_path.startswith(candidate + "/"):
-                    raise SourceSnapshotError(
-                        f"ambiguous archive path {candidate!r} conflicts with {existing_path!r}"
-                    )
-                if candidate.startswith(existing_path + "/"):
-                    continue
-            if kind == "dir" and existing_kind in {"file", "symlink"}:
-                if existing_path.startswith(candidate + "/") or candidate.startswith(
-                    existing_path + "/"
-                ):
-                    raise SourceSnapshotError(
-                        f"ambiguous archive path {candidate!r} conflicts with {existing_path!r}"
-                    )
-                continue
-            if existing_path.startswith(candidate + "/") or candidate.startswith(
-                existing_path + "/"
-            ):
-                raise SourceSnapshotError(
-                    f"ambiguous archive path {candidate!r} conflicts with {existing_path!r}"
-                )
+
+        if kind in {"file", "symlink"} and file_count_for_prefix.get(candidate, 0) > 0:
+            sample = prefix_first_member.get(candidate, "<unknown>")
+            raise SourceSnapshotError(
+                f"ambiguous archive path {candidate!r} conflicts with {sample!r}"
+            )
 
     try:
         with tarfile.open(archive_path, "r:*") as archive:
@@ -396,10 +391,21 @@ def _preflight_source_archive(
 
                 top_dirs.add(path.parts[0])
                 normalized_key = path.as_posix()
+                file_count += 1
+                if file_count > limits["max_files"]:
+                    raise SourceSnapshotError("source archive exceeds max file count")
+
                 if member.isdir():
                     _check_ambiguous_paths(normalized_key, "dir")
                     path_types[normalized_key] = "dir"
+                    for depth in range(1, len(path.parts)):
+                        prefix = "/".join(path.parts[:depth])
+                        file_count_for_prefix[prefix] = (
+                            file_count_for_prefix.get(prefix, 0) + 1
+                        )
+                        prefix_first_member.setdefault(prefix, normalized_key)
                     continue
+
                 _check_ambiguous_paths(normalized_key, "file")
                 path_types[normalized_key] = "file"
 
@@ -440,16 +446,19 @@ def _preflight_source_archive(
                     raise SourceSnapshotError(
                         f"archive member too large: {member.name!r}"
                     )
-                file_count += 1
                 total_uncompressed += size
-                if file_count > limits["max_files"]:
-                    raise SourceSnapshotError("source archive exceeds max file count")
                 if total_uncompressed > limits["max_uncompressed_bytes"]:
                     raise SourceSnapshotError(
                         "source archive exceeds max uncompressed size"
                     )
 
                 target = link_target if kind == "symlink" else None
+                for depth in range(1, len(path.parts)):
+                    prefix = "/".join(path.parts[:depth])
+                    file_count_for_prefix[prefix] = (
+                        file_count_for_prefix.get(prefix, 0) + 1
+                    )
+                    prefix_first_member.setdefault(prefix, normalized_key)
                 planned.append((member, normalized, kind, target))
     except tarfile.TarError as exc:
         raise SourceSnapshotError("source archive is malformed or unreadable") from exc
@@ -609,16 +618,53 @@ def _extract_source_archive(
 
 
 def _promote_snapshot(extracted_path: Path, destination_path: Path) -> None:
+    _rename_without_replace(extracted_path, destination_path)
+
+
+def _rename_without_replace(source_path: Path, destination_path: Path) -> None:
     try:
-        os.rename(extracted_path, destination_path)
+        libc = ctypes.CDLL(None, use_errno=True)
     except OSError as exc:
-        if exc.errno in (errno.EEXIST, errno.ENOTEMPTY, errno.EISDIR, errno.ENOTDIR):
+        raise SourceSnapshotError(
+            "platform does not support atomic rename with RENAME_NOREPLACE"
+        ) from exc
+
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise SourceSnapshotError(
+            "platform does not support renameat2 (no-clobber promotion unavailable)"
+        )
+
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+
+    source_bytes = os.fsencode(str(source_path))
+    destination_bytes = os.fsencode(str(destination_path))
+    ctypes.set_errno(0)
+    result = renameat2(
+        _AT_FDCWD,
+        ctypes.c_char_p(source_bytes),
+        _AT_FDCWD,
+        ctypes.c_char_p(destination_bytes),
+        _RENAME_NOREPLACE,
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        if error in (errno.EEXIST, errno.ENOTEMPTY, errno.EISDIR, errno.ENOTDIR):
+            raise SourceSnapshotError(f"destination already exists: {destination_path}")
+        if error == errno.EINVAL:
             raise SourceSnapshotError(
-                f"destination already exists: {destination_path}"
-            ) from exc
+                "platform does not support atomic no-clobber rename with RENAME_NOREPLACE"
+            )
         raise SourceSnapshotError(
             f"failed to publish source snapshot to {destination_path}"
-        ) from exc
+        ) from OSError(error, os.strerror(error) if error else "renameat2 failed")
 
 
 def materialize_source_snapshot(
@@ -635,6 +681,13 @@ def materialize_source_snapshot(
     source_url = _snapshot_source_url(canonical_repo, canonical_commit)
 
     destination_path = Path(destination)
+    try:
+        destination_path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise SourceSnapshotError(f"destination already exists: {destination_path}")
+
     destination_path.parent.mkdir(parents=True, exist_ok=True)
 
     archive_limits = _validate_archive_limits(policy)

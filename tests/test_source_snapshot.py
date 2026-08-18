@@ -821,6 +821,32 @@ def test_archive_safety_allows_explicit_directory_ancestors(tmp_path):
     )
 
 
+def test_archive_safety_allows_directory_headers_after_child_entries(tmp_path):
+    payload = _build_tar(
+        [
+            (f"{TOP_DIR}/sub/file", b"{}", 0o644, "file", None),
+            (f"{TOP_DIR}", b"", 0o755, "dir", None),
+            (f"{TOP_DIR}/sub", b"", 0o755, "dir", None),
+        ]
+    )
+    snapshot = ss.materialize_source_snapshot(
+        REPOSITORY,
+        COMMIT,
+        tmp_path / "explicit-dir-after-child",
+        session=FakeSession([FakeResponse(chunks=[payload])]),
+        policy=_policy(),
+    )
+    assert snapshot.inventory == (
+        ss.SourceInventoryEntry(
+            path="sub/file",
+            kind="file",
+            size_bytes=2,
+            git_blob_sha1=_git_blob_sha1(b"{}"),
+            mode="100644",
+        ),
+    )
+
+
 def test_archive_safety_rejects_no_regular_files(tmp_path):
     payload = _build_tar(
         [
@@ -910,6 +936,31 @@ def test_archive_limits_are_enforced(tmp_path):
             policy=_policy(max_uncompressed_bytes=3),
         )
 
+    payload = _build_tar(
+        [
+            (f"{TOP_DIR}", b"", 0o755, "dir", None),
+            (f"{TOP_DIR}/dir-a", b"", 0o755, "dir", None),
+            (f"{TOP_DIR}/dir-b", b"", 0o755, "dir", None),
+            (f"{TOP_DIR}/file", b"{}", 0o644, "file", None),
+        ]
+    )
+    snapshot = ss.materialize_source_snapshot(
+        REPOSITORY,
+        COMMIT,
+        tmp_path / "max-count-includes-dirs",
+        session=FakeSession([FakeResponse(chunks=[payload])]),
+        policy=_policy(max_files=4),
+    )
+    assert any(item.path == "file" for item in snapshot.inventory)
+    with pytest.raises(ss.SourceSnapshotError, match="file count"):
+        ss.materialize_source_snapshot(
+            REPOSITORY,
+            COMMIT,
+            tmp_path / "max-count-includes-dirs-over",
+            session=FakeSession([FakeResponse(chunks=[payload])]),
+            policy=_policy(max_files=3),
+        )
+
 
 def test_repeatable_inventory_and_hashes(tmp_path):
     payload = _valid_payload()
@@ -946,7 +997,10 @@ def test_no_partial_snapshot_on_failure(tmp_path):
             COMMIT,
             destination,
             session=FakeSession([FakeResponse(chunks=[payload])]),
-            policy=_policy(),
+            policy=_policy(
+                max_single_file_bytes=ss._SOURCE_METADATA_BYTE_LIMIT + 2,
+                max_uncompressed_bytes=(ss._SOURCE_METADATA_BYTE_LIMIT + 2) * 2,
+            ),
         )
 
     assert not destination.exists()
@@ -954,9 +1008,23 @@ def test_no_partial_snapshot_on_failure(tmp_path):
 
 
 def test_destination_survives_promotion_race_and_cleanup_staging(tmp_path, monkeypatch):
+    destination = tmp_path / "snapshot"
+    destination.mkdir()
+    with pytest.raises(ss.SourceSnapshotError, match="destination already exists"):
+        ss.materialize_source_snapshot(
+            REPOSITORY,
+            COMMIT,
+            destination,
+            session=FakeSession([FakeResponse(chunks=[_valid_payload()])]),
+            policy=_policy(),
+        )
+    _assert_no_source_snapshot_staging(tmp_path)
+
+
+def test_destination_survives_promotion_race_and_cleanup(tmp_path, monkeypatch):
     payload = _valid_payload()
     destination = tmp_path / "snapshot"
-    original_rename = ss.os.rename
+    original_rename = ss._rename_without_replace
     destination_inodes: list[int] = []
 
     def raced_rename(src: Path, dst: Path) -> None:
@@ -967,19 +1035,114 @@ def test_destination_survives_promotion_race_and_cleanup_staging(tmp_path, monke
         destination_inodes.append(dst.stat().st_ino)
         return original_rename(src, dst)
 
-    monkeypatch.setattr(ss.os, "rename", raced_rename)
+    monkeypatch.setattr(ss, "_rename_without_replace", raced_rename)
     with pytest.raises(ss.SourceSnapshotError, match="destination already exists"):
         ss.materialize_source_snapshot(
             REPOSITORY,
             COMMIT,
             destination,
             session=FakeSession([FakeResponse(chunks=[payload])]),
-            policy=_policy(),
+            policy=_policy(
+                max_single_file_bytes=ss._SOURCE_METADATA_BYTE_LIMIT + 2,
+                max_uncompressed_bytes=(ss._SOURCE_METADATA_BYTE_LIMIT + 2) * 2,
+            ),
         )
 
     assert destination.exists()
     assert destination_inodes == [destination.stat().st_ino]
     assert (destination / "sentinel").read_text() == "preserve"
+    _assert_no_source_snapshot_staging(tmp_path)
+
+
+def test_file_and_symlink_ancestry_rejections_keep_extraction_on_preflight_seam(
+    tmp_path, monkeypatch
+):
+    bad_payloads = [
+        _build_tar(
+            [
+                (f"{TOP_DIR}/node", b"{}", 0o644, "file", None),
+                (f"{TOP_DIR}/node/child", b"{}", 0o644, "file", None),
+            ]
+        ),
+        _build_tar(
+            [
+                (f"{TOP_DIR}/node/child", b"{}", 0o644, "file", None),
+                (f"{TOP_DIR}/node", b"{}", 0o644, "file", None),
+            ]
+        ),
+        _build_tar(
+            [
+                (f"{TOP_DIR}/link", b"{}", 0o644, "symlink", "../outside"),
+                (f"{TOP_DIR}/link/child", b"{}", 0o644, "file", None),
+            ]
+        ),
+        _build_tar(
+            [
+                (f"{TOP_DIR}/link/child", b"{}", 0o644, "file", None),
+                (f"{TOP_DIR}/link", b"{}", 0o644, "symlink", "../outside"),
+            ]
+        ),
+    ]
+
+    called = False
+
+    def blocked_extract_source_archive(
+        archive_path: Path,
+        destination: Path,
+        planned: list[tuple[tarfile.TarInfo, str, str, str | None]],
+    ) -> None:
+        nonlocal called
+        called = True
+        raise AssertionError("extraction seam should not run after ambiguous paths")
+
+    monkeypatch.setattr(ss, "_extract_source_archive", blocked_extract_source_archive)
+    for index, payload in enumerate(bad_payloads):
+        called = False
+        with pytest.raises(ss.SourceSnapshotError, match="ambiguous archive path"):
+            ss.materialize_source_snapshot(
+                REPOSITORY,
+                COMMIT,
+                tmp_path / f"ancestry-{index}",
+                session=FakeSession([FakeResponse(chunks=[payload])]),
+                policy=_policy(),
+            )
+        assert not called
+        _assert_no_source_snapshot_staging(tmp_path)
+
+
+def test_root_metadata_capture_limit_is_enforced_in_full_materializer_path(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ss, "_SOURCE_STREAM_CHUNK_SIZE", 4)
+    payload = _build_tar(
+        [
+            (
+                f"{TOP_DIR}/plugin.json",
+                b"y" * (ss._SOURCE_METADATA_BYTE_LIMIT + 1),
+                0o644,
+                "file",
+                None,
+            ),
+            (f"{TOP_DIR}/package.json", b"{}", 0o644, "file", None),
+            (f"{TOP_DIR}/bin/run.sh", b"{}", 0o755, "file", None),
+        ]
+    )
+    destination = tmp_path / "metadata-limit"
+    with pytest.raises(
+        ss.SourceSnapshotError,
+        match="metadata file too large for bounded capture",
+    ):
+        ss.materialize_source_snapshot(
+            REPOSITORY,
+            COMMIT,
+            destination,
+            session=FakeSession([FakeResponse(chunks=[payload])]),
+            policy=_policy(
+                max_single_file_bytes=ss._SOURCE_METADATA_BYTE_LIMIT + 2,
+                max_uncompressed_bytes=(ss._SOURCE_METADATA_BYTE_LIMIT + 2) * 2,
+            ),
+        )
+    assert not destination.exists()
     _assert_no_source_snapshot_staging(tmp_path)
 
 
