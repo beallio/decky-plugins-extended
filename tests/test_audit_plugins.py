@@ -4020,6 +4020,192 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
         self.assertEqual(findings, [])
         self.assertIn("metadata file too large", status.detail or "")
 
+    def test_snapshot_metadata_rejects_non_canonical_path_without_filesystem_probe(
+        self,
+    ):
+        source_root = Path(tempfile.mkdtemp(prefix="audit-snapshot-root-"))
+        self.addCleanup(lambda: shutil.rmtree(source_root, ignore_errors=True))
+        entry = audit_source_snapshot.SourceInventoryEntry(
+            path="plugin/../plugin.json",
+            kind="file",
+            size_bytes=2,
+            git_blob_sha1="0" * 40,
+            mode="100644",
+        )
+        with patch.object(
+            os, "open", side_effect=AssertionError("filesystem open called")
+        ):
+            with self.assertRaises(ValueError):
+                ap._read_snapshot_metadata_file(entry, str(source_root))
+
+    def test_snapshot_metadata_rejects_final_path_symlink_swap(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td)
+            target_file = source_root / "plugin.source.json"
+            target_file.write_text('{"name":"expected"}')
+            symlink_path = source_root / "plugin.json"
+            os.symlink(str(target_file), symlink_path)
+
+            payload = target_file.read_bytes()
+            entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin.json",
+                kind="file",
+                size_bytes=len(payload),
+                git_blob_sha1=ap.git_blob_sha1(payload),
+                mode="100644",
+            )
+
+            original_lstat = os.lstat
+
+            def lstat_allow_symlink(path):
+                if os.path.samefile(path, str(symlink_path)):
+                    return original_lstat(str(target_file))
+                return original_lstat(path)
+
+            with patch.object(os, "lstat", side_effect=lstat_allow_symlink):
+                with self.assertRaises(ValueError) as exc:
+                    ap._read_snapshot_metadata_file(entry, str(source_root))
+            self.assertIn("Could not read source snapshot metadata", str(exc.exception))
+
+    def test_snapshot_metadata_rejects_root_symlink_or_replacement(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td) / "real"
+            source_root.mkdir()
+            payload = b'{"name":"expected"}'
+            (source_root / "plugin.json").write_bytes(payload)
+
+            link_root = Path(td) / "alias"
+            os.symlink(str(source_root), link_root)
+
+            entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin.json",
+                kind="file",
+                size_bytes=len(payload),
+                git_blob_sha1=ap.git_blob_sha1(payload),
+                mode="100644",
+            )
+
+            original_lstat = os.lstat
+
+            def lstat_allow_symlink(path):
+                if os.path.samefile(path, str(link_root)):
+                    return original_lstat(str(source_root))
+                return original_lstat(path)
+
+            with patch.object(os, "lstat", side_effect=lstat_allow_symlink):
+                with self.assertRaises(ValueError) as exc:
+                    ap._read_snapshot_metadata_file(entry, str(link_root))
+            self.assertIn("Could not read source snapshot metadata", str(exc.exception))
+
+    def test_snapshot_metadata_rejects_special_final_node_without_block(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td)
+            fifo_path = source_root / "plugin.json"
+            os.mkfifo(fifo_path)
+            entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin.json",
+                kind="file",
+                size_bytes=0,
+                git_blob_sha1="0" * 40,
+                mode="100644",
+            )
+            with self.assertRaises(ValueError) as exc:
+                ap._read_snapshot_metadata_file(entry, str(source_root))
+            self.assertIn("non-regular", str(exc.exception))
+
+    def test_snapshot_adapter_rejects_local_fallback_metadata_size_hash_mismatch(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td)
+            source_bytes = b'{"name":"expected"}'
+            (source_root / "plugin.json").write_bytes(source_bytes)
+            entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin.json",
+                kind="file",
+                size_bytes=len(source_bytes),
+                git_blob_sha1=ap.git_blob_sha1(source_bytes),
+                mode="100644",
+            )
+            snapshot = audit_source_snapshot.SourceSnapshot(
+                repository="https://github.com/o/r",
+                commit_sha="a" * 40,
+                source_url="https://codeload.github.com/o/r/tar.gz/" + ("a" * 40),
+                archive_sha256="0" * 64,
+                archive_size_bytes=0,
+                source_root=str(source_root),
+                inventory=(entry,),
+                plugin_json=None,
+                package_json=None,
+            )
+            corrupted = audit_source_snapshot.SourceSnapshot(
+                repository=snapshot.repository,
+                commit_sha=snapshot.commit_sha,
+                source_url=snapshot.source_url,
+                archive_sha256=snapshot.archive_sha256,
+                archive_size_bytes=snapshot.archive_size_bytes,
+                source_root=snapshot.source_root,
+                inventory=(
+                    audit_source_snapshot.SourceInventoryEntry(
+                        path=entry.path,
+                        kind=entry.kind,
+                        size_bytes=entry.size_bytes + 1,
+                        git_blob_sha1="0" * 40,
+                        mode=entry.mode,
+                    ),
+                ),
+                plugin_json=None,
+                package_json=None,
+            )
+
+            summary, findings, status = self._snapshot_compare(
+                {"plugin.json": source_bytes},
+                corrupted,
+                ref="v1.0.1-dev.gabc",
+            )
+            self.assertEqual(status.status, "failed")
+            self.assertEqual(findings, [])
+            self.assertTrue(
+                "metadata snapshot size mismatch" in (status.detail or "")
+                or "metadata snapshot hash mismatch" in (status.detail or ""),
+                status.detail,
+            )
+
+    def test_snapshot_adapter_rejects_captured_root_metadata_size_hash_mismatch(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td)
+            source_bytes = b'{"name":"expected","version":"1.0.0"}'
+            (source_root / "plugin.json").write_bytes(source_bytes)
+            good_entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin.json",
+                kind="file",
+                size_bytes=len(source_bytes),
+                git_blob_sha1=ap.git_blob_sha1(source_bytes),
+                mode="100644",
+            )
+            snapshot = audit_source_snapshot.SourceSnapshot(
+                repository="https://github.com/o/r",
+                commit_sha="a" * 40,
+                source_url="https://codeload.github.com/o/r/tar.gz/" + ("a" * 40),
+                archive_sha256="0" * 64,
+                archive_size_bytes=0,
+                source_root=str(source_root),
+                inventory=(good_entry,),
+                plugin_json=b'{"name":"captured","version":"1.0.0"}',
+                package_json=None,
+            )
+
+            summary, findings, status = self._snapshot_compare(
+                {"plugin.json": source_bytes},
+                snapshot,
+                ref="v1.0.0",
+            )
+            self.assertEqual(status.status, "failed")
+            self.assertEqual(findings, [])
+            self.assertTrue(
+                "metadata snapshot size mismatch" in (status.detail or "")
+                or "metadata snapshot hash mismatch" in (status.detail or ""),
+                status.detail,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Shared release-selection (plugin_release_utils)
