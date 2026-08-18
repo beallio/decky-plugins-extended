@@ -2846,6 +2846,172 @@ class TestCLI(unittest.TestCase):
             )
         self.assertEqual(code, 0)
 
+    def test_prepare_main_valid_selector_shapes(self):
+        source_revision = "b" * 40
+        expected_fp = "f" * 64
+        valid_cases = (
+            (
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--all",
+                    "--source-revision",
+                    source_revision,
+                ],
+                "--all",
+            ),
+            (
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--changed",
+                    "--base-ref",
+                    "HEAD~1",
+                    "--source-revision",
+                    source_revision,
+                ],
+                "--changed",
+            ),
+            (
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--repository",
+                    "https://github.com/owner/repo",
+                    "--source-revision",
+                    source_revision,
+                ],
+                "--repository",
+            ),
+            (
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--repository",
+                    "https://github.com/owner/repo",
+                    "--latest-only",
+                    "--source-revision",
+                    source_revision,
+                ],
+                "--repository",
+            ),
+        )
+        for args_template, mode in valid_cases:
+            with tempfile.TemporaryDirectory() as tmp:
+                worklist_path = str(Path(tmp) / "worklist.json")
+                github_output = Path(tmp) / "github_output"
+                args = [
+                    arg if arg != "worklist.json" else worklist_path
+                    for arg in args_template
+                ]
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with (
+                    patch.object(sys, "stdout", stdout),
+                    patch.object(sys, "stderr", stderr),
+                    patch.dict(
+                        os.environ,
+                        {"GITHUB_OUTPUT": str(github_output)},
+                        clear=False,
+                    ),
+                    patch.object(
+                        ap,
+                        "read_repo_urls",
+                        return_value=["https://github.com/owner/repo"],
+                    ) as read_repo_urls,
+                    patch.object(
+                        ap,
+                        "get_changed_repos",
+                        return_value=["https://github.com/owner/repo"],
+                    ) as get_changed_repos,
+                    patch.object(
+                        ap.audit_worklist,
+                        "prepare_audit_worklist",
+                        return_value=(expected_fp, {}),
+                    ) as prepare_audit_worklist,
+                ):
+                    code = ap.main(args)
+
+                self.assertEqual(code, 0)
+                self.assertEqual(
+                    stdout.getvalue(), f"worklist_fingerprint={expected_fp}\n"
+                )
+                self.assertFalse(stderr.getvalue())
+                self.assertFalse(github_output.exists())
+                self.assertEqual(prepare_audit_worklist.call_count, 1)
+
+                if mode == "--all":
+                    read_repo_urls.assert_called_once_with("additional_plugins.txt")
+                    get_changed_repos.assert_not_called()
+                elif mode == "--changed":
+                    read_repo_urls.assert_not_called()
+                    get_changed_repos.assert_called_once_with(
+                        "additional_plugins.txt", "HEAD~1"
+                    )
+                else:
+                    read_repo_urls.assert_not_called()
+                    get_changed_repos.assert_not_called()
+
+    def test_prepare_main_rejects_missing_selector(self):
+        with self.assertRaises(SystemExit):
+            ap.main(
+                ["--prepare-worklist", "worklist.json", "--source-revision", "a" * 40]
+            )
+
+    def test_prepare_main_rejects_changed_without_base_ref(self):
+        with self.assertRaises(SystemExit):
+            ap.main(
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--changed",
+                    "--source-revision",
+                    "a" * 40,
+                ]
+            )
+
+    def test_prepare_main_rejects_latest_only_without_repository(self):
+        with self.assertRaises(SystemExit):
+            ap.main(
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--all",
+                    "--latest-only",
+                    "--source-revision",
+                    "a" * 40,
+                ]
+            )
+
+    def test_prepare_main_rejects_invalid_base_ref_combo(self):
+        with self.assertRaises(SystemExit):
+            ap.main(
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--repository",
+                    "https://github.com/owner/repo",
+                    "--base-ref",
+                    "HEAD~1",
+                    "--source-revision",
+                    "a" * 40,
+                ]
+            )
+
+    def test_prepare_main_rejects_prepare_with_other_modes(self):
+        with self.assertRaises(SystemExit):
+            ap.main(
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--all",
+                    "--aggregate-reports",
+                    "report.json",
+                    "--source-revision",
+                    "a" * 40,
+                ]
+            )
+
 
 # ---------------------------------------------------------------------------
 # find_best_release

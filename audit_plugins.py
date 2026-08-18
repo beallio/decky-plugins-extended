@@ -75,14 +75,6 @@ SEMGREP_RULES_FILE = str(Path(__file__).with_name("semgrep-rules.yml"))
 log = logging.getLogger("audit_plugins")
 
 
-def _write_worklist_fingerprint_to_github_output(fingerprint: str) -> None:
-    output_path = os.environ.get("GITHUB_OUTPUT")
-    if not output_path:
-        return
-    with open(output_path, "a", encoding="utf-8") as output_file:
-        output_file.write(f"worklist_fingerprint={fingerprint}\n")
-
-
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
@@ -5354,7 +5346,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         metavar="DELTA",
         help="Validate and atomically merge one verdict delta into the tracked store",
     )
-    mode_group.add_argument(
+    parser.add_argument(
         "--prepare-worklist",
         metavar="WORKLIST",
         help="Prepare immutable worklist JSON at the given path",
@@ -5403,7 +5395,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument(
         "--base-ref",
-        default="HEAD~1",
         help="Git ref to diff against for --changed mode (default: HEAD~1)",
     )
     parser.add_argument(
@@ -5439,22 +5430,48 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     args = parser.parse_args(argv)
 
-    if args.latest_only and not args.repository:
-        parser.error("--latest-only is valid only with --repository")
-    if args.prepare_worklist and not (args.all or args.changed or args.repository):
+    if args.all:
+        selected_mode = "all"
+    elif args.changed:
+        selected_mode = "changed"
+    elif args.repository:
+        selected_mode = "repository"
+    elif args.aggregate_reports:
+        selected_mode = "aggregate-reports"
+    elif args.merge_verdict_delta:
+        selected_mode = "merge-verdict-delta"
+    else:
         parser.error(
-            "--prepare-worklist requires one of --all, --changed, or --repository"
+            "one of --all, --changed, --repository, "
+            "--aggregate-reports, or --merge-verdict-delta must be specified"
         )
-    if args.prepare_worklist and not args.source_revision:
-        parser.error("--source-revision is required with --prepare-worklist")
-    if args.prepare_worklist and args.changed and not args.base_ref:
-        parser.error("--prepare-worklist with --changed requires --base-ref")
-    if args.prepare_worklist and args.api_deadline_seconds <= 0:
-        parser.error("--api-deadline-seconds must be greater than zero")
-    try:
-        select_audit_shard([], args.shard_count, args.shard_index)
-    except ValueError as exc:
-        parser.error(str(exc))
+
+    prepare_mode = args.prepare_worklist is not None
+    if args.latest_only and selected_mode != "repository":
+        parser.error("--latest-only is valid only with --repository")
+
+    if prepare_mode:
+        if selected_mode not in {"all", "changed", "repository"}:
+            parser.error(
+                "--prepare-worklist requires one of --all, --changed, or --repository"
+            )
+        if selected_mode == "changed" and not (args.base_ref and args.base_ref.strip()):
+            parser.error("--prepare-worklist with --changed requires --base-ref")
+        if selected_mode != "changed" and args.base_ref:
+            parser.error("base_ref is valid only with --changed")
+        if args.api_deadline_seconds <= 0:
+            parser.error("--api-deadline-seconds must be greater than zero")
+        if not args.source_revision:
+            parser.error("--source-revision is required with --prepare-worklist")
+    else:
+        if args.changed and not args.base_ref:
+            args.base_ref = "HEAD~1"
+        if args.base_ref and selected_mode != "changed":
+            parser.error("base_ref is valid only with --changed")
+        try:
+            select_audit_shard([], args.shard_count, args.shard_index)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -5493,7 +5510,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 api_deadline_seconds=args.api_deadline_seconds,
             )
             print(f"worklist_fingerprint={fingerprint}")
-            _write_worklist_fingerprint_to_github_output(fingerprint)
             return 0
         except Exception as exc:
             log.error("Failed to prepare audit worklist: %s", exc)

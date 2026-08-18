@@ -13,6 +13,7 @@ import audit_plugins as ap
 import audit_worklist as worklist
 
 ROOT = Path(__file__).resolve().parents[1]
+SOURCE_REVISION = "a" * 40
 
 
 def _release(
@@ -142,7 +143,7 @@ def test_worklist_prepare_and_load_roundtrip_is_stable(tmp_path):
 
     first, _ = worklist.prepare_audit_worklist(
         output_one,
-        source_revision="source-revision",
+        source_revision=SOURCE_REVISION,
         selection_mode="all",
         repository_urls=[
             "https://github.com/owner/b",
@@ -158,7 +159,7 @@ def test_worklist_prepare_and_load_roundtrip_is_stable(tmp_path):
 
     second, _ = worklist.prepare_audit_worklist(
         output_two,
-        source_revision="source-revision",
+        source_revision=SOURCE_REVISION,
         selection_mode="all",
         repository_urls=[
             "https://github.com/owner/a",
@@ -187,7 +188,7 @@ def test_worklist_load_rejects_tampered_fingerprint(tmp_path):
     output = tmp_path / "worklist.json"
     fp, _ = worklist.prepare_audit_worklist(
         output,
-        source_revision="source-revision",
+        source_revision=SOURCE_REVISION,
         selection_mode="all",
         repository_urls=["https://github.com/owner/repo"],
         shard_count=14,
@@ -219,11 +220,122 @@ def test_worklist_load_rejects_tampered_fingerprint(tmp_path):
         worklist.load_worklist_document(output)
 
 
+def test_worklist_load_rejects_tampered_payload_mutations_and_tracks_fingerprint(
+    tmp_path,
+):
+    output = tmp_path / "worklist.json"
+    fp, _ = worklist.prepare_audit_worklist(
+        output,
+        source_revision=SOURCE_REVISION,
+        selection_mode="all",
+        repository_urls=[
+            "https://github.com/owner/repo",
+            "https://github.com/owner/other",
+        ],
+        shard_count=14,
+        latest_only=False,
+        release_fetcher=lambda owner, repo: {
+            (
+                "owner",
+                "repo",
+            ): [
+                _with_digest(
+                    _with_asset_urls(
+                        _release(
+                            "v1",
+                            1,
+                            10,
+                            "2026-01-01T00:00:00Z",
+                            repository_url=f"https://github.com/{owner}/{repo}",
+                        ),
+                        "https://github.com/owner/repo",
+                    ),
+                    "a" * 64,
+                )
+            ],
+            (
+                "owner",
+                "other",
+            ): [
+                _with_digest(
+                    _with_asset_urls(
+                        _release(
+                            "v2",
+                            2,
+                            20,
+                            "2026-02-01T00:00:00Z",
+                            repository_url=f"https://github.com/{owner}/{repo}",
+                        ),
+                        "https://github.com/owner/other",
+                    ),
+                    "b" * 64,
+                )
+            ],
+        }[(owner, repo)],
+        metadata_fetcher=lambda owner, repo: {
+            "full_name": f"{owner}/{repo}",
+            "archived": False,
+        },
+        tag_resolver=lambda *_args, **_kwargs: {
+            "v1": "a" * 40,
+            "v2": "b" * 40,
+        },
+        api_deadline_seconds=7,
+    )
+    base = json.loads(output.read_text(encoding="utf-8"))
+    deltas = [
+        (
+            "metadata.source_revision",
+            lambda doc: doc["payload"].update(source_revision="f" * 40),
+        ),
+        ("metadata.shard_count", lambda doc: doc["payload"].update(shard_count=15)),
+        (
+            "item.release_id",
+            lambda doc: doc["payload"]["items"][0].update(release_id=10),
+        ),
+        (
+            "item.tag_name",
+            lambda doc: doc["payload"]["items"][1].update(tag_name="v2-mod"),
+        ),
+    ]
+    for _label, mutate in deltas:
+        mutated = copy.deepcopy(base)
+        mutate(mutated)
+        path = tmp_path / f"mutated-{_label.replace('.', '-')}.json"
+        path.write_text(json.dumps(mutated), encoding="utf-8")
+        with pytest.raises(ValueError, match="fingerprint"):
+            worklist.load_worklist_document(path)
+
+    canonical = worklist._load_worklist_bytes(json.dumps(base))
+    mutated_payload = canonical["payload"]
+    mutated_payload = copy.deepcopy(mutated_payload)
+    mutated_payload["source_revision"] = "f" * 40
+    mutated_payload["items"][0]["release_id"] = 10
+    recomputed = worklist.compute_worklist_fingerprint(mutated_payload)
+    assert recomputed != fp
+
+
+def test_worklist_prepare_rejects_invalid_source_revision():
+    with pytest.raises(ValueError, match="source_revision"):
+        worklist.prepare_audit_worklist(
+            Path("/tmp/ignored"),
+            source_revision="not-a-sha",
+            selection_mode="all",
+            repository_urls=["https://github.com/owner/repo"],
+            shard_count=14,
+            latest_only=False,
+            release_fetcher=lambda *_args: [],
+            metadata_fetcher=lambda *_args: {"full_name": "owner/repo"},
+            tag_resolver=lambda *_args, **_kwargs: {},
+            api_deadline_seconds=7,
+        )
+
+
 def test_worklist_validation_rejects_malformed_fields(tmp_path):
     output = tmp_path / "worklist.json"
     _, _ = worklist.prepare_audit_worklist(
         output,
-        source_revision="source-revision",
+        source_revision=SOURCE_REVISION,
         selection_mode="all",
         repository_urls=["https://github.com/owner/repo"],
         shard_count=14,
@@ -286,7 +398,7 @@ def test_worklist_rejects_duplicate_identities_and_non_deterministic_order(tmp_p
     output = tmp_path / "worklist.json"
     _, _ = worklist.prepare_audit_worklist(
         output,
-        source_revision="source-revision",
+        source_revision=SOURCE_REVISION,
         selection_mode="all",
         repository_urls=["https://github.com/owner/repo"],
         shard_count=14,
@@ -323,7 +435,9 @@ def test_worklist_rejects_duplicate_identities_and_non_deterministic_order(tmp_p
     )
     loaded = worklist.load_worklist_document(output)
     duplicated = copy.deepcopy(loaded)
-    duplicated["payload"]["items"].append(duplicated["payload"]["items"][0])
+    duplicated["payload"]["items"].insert(
+        1, copy.deepcopy(duplicated["payload"]["items"][0])
+    )
     dup_file = tmp_path / "dup.json"
     dup_file.write_text(json.dumps(duplicated), encoding="utf-8")
     with pytest.raises(ValueError, match="Duplicate worklist identity"):
@@ -337,15 +451,60 @@ def test_worklist_rejects_duplicate_identities_and_non_deterministic_order(tmp_p
         worklist.load_worklist_document_from_bytes(out_file.read_bytes())
 
 
-def test_worklist_prepare_accepts_empty_selection(tmp_path):
+def test_worklist_prepare_accepts_none_selection(tmp_path):
     output = tmp_path / "empty.json"
     fp, _ = worklist.prepare_audit_worklist(
         output,
-        source_revision="source-revision",
-        selection_mode="all",
+        source_revision=SOURCE_REVISION,
+        selection_mode="changed",
         repository_urls=[],
         shard_count=14,
         latest_only=False,
+        base_ref="HEAD~1",
+        release_fetcher=lambda *_args: [],
+        metadata_fetcher=lambda *_args: {"full_name": "owner/repo", "archived": False},
+        tag_resolver=lambda *_args, **_kwargs: {},
+        api_deadline_seconds=7,
+    )
+    loaded = worklist.load_worklist_document(output)
+    assert fp == loaded["fingerprint"]
+    assert loaded["payload"]["selection_mode"] == "none"
+    assert loaded["payload"]["repositories"] == []
+    assert loaded["payload"]["items"] == []
+
+
+def test_worklist_prepare_rejects_empty_all_selection(tmp_path):
+    output = tmp_path / "all-empty.json"
+    with pytest.raises(
+        ValueError, match="all selection requires at least one repository"
+    ):
+        worklist.prepare_audit_worklist(
+            output,
+            source_revision=SOURCE_REVISION,
+            selection_mode="all",
+            repository_urls=[],
+            shard_count=14,
+            latest_only=False,
+            release_fetcher=lambda *_args: [],
+            metadata_fetcher=lambda *_args: {
+                "full_name": "owner/repo",
+                "archived": False,
+            },
+            tag_resolver=lambda *_args, **_kwargs: {},
+            api_deadline_seconds=7,
+        )
+
+
+def test_worklist_prepare_accepts_explicit_none_selection(tmp_path):
+    output = tmp_path / "none.json"
+    fp, _ = worklist.prepare_audit_worklist(
+        output,
+        source_revision=SOURCE_REVISION,
+        selection_mode="none",
+        repository_urls=[],
+        shard_count=14,
+        latest_only=False,
+        base_ref=None,
         release_fetcher=lambda *_args: [],
         metadata_fetcher=lambda *_args: {"full_name": "owner/repo", "archived": False},
         tag_resolver=lambda *_args, **_kwargs: {},
@@ -353,15 +512,86 @@ def test_worklist_prepare_accepts_empty_selection(tmp_path):
     )
     loaded = worklist.load_worklist_document(output)
     assert loaded["fingerprint"] == fp
-    assert loaded["payload"]["items"] == []
+    assert loaded["payload"]["selection_mode"] == "none"
     assert loaded["payload"]["repositories"] == []
+    assert loaded["payload"]["items"] == []
+
+
+def test_worklist_prepare_rejects_repository_mode_with_multiple_repos(tmp_path):
+    with pytest.raises(
+        ValueError, match="repository selection requires exactly one repository URL"
+    ):
+        worklist.prepare_audit_worklist(
+            tmp_path / "too-many.json",
+            source_revision=SOURCE_REVISION,
+            selection_mode="repository",
+            repository_urls=[
+                "https://github.com/owner/repo",
+                "https://github.com/owner/other",
+            ],
+            shard_count=14,
+            latest_only=False,
+            release_fetcher=lambda *_args: [],
+            metadata_fetcher=lambda *_args: {"full_name": "owner/repo"},
+            tag_resolver=lambda *_args, **_kwargs: {},
+            api_deadline_seconds=7,
+        )
+
+
+def test_worklist_prepare_rejects_changed_mode_without_base_ref(tmp_path):
+    with pytest.raises(ValueError, match="changed selection requires --base-ref"):
+        worklist.prepare_audit_worklist(
+            tmp_path / "changed.json",
+            source_revision=SOURCE_REVISION,
+            selection_mode="changed",
+            repository_urls=[],
+            shard_count=14,
+            latest_only=False,
+            base_ref=None,
+            release_fetcher=lambda *_args: [],
+            metadata_fetcher=lambda *_args: {"full_name": "owner/repo"},
+            tag_resolver=lambda *_args, **_kwargs: {},
+            api_deadline_seconds=7,
+        )
+
+
+def test_worklist_prepare_rejects_metadata_identity_mismatch(tmp_path):
+    with pytest.raises(ValueError, match="Repository metadata mismatch"):
+        worklist.prepare_audit_worklist(
+            tmp_path / "metadata.json",
+            source_revision=SOURCE_REVISION,
+            selection_mode="repository",
+            repository_urls=["https://github.com/owner/repo"],
+            shard_count=14,
+            latest_only=False,
+            release_fetcher=lambda *_args: [
+                _with_digest(
+                    _with_asset_urls(
+                        _release(
+                            "v1",
+                            1,
+                            10,
+                            repository_url="https://github.com/owner/repo",
+                        ),
+                        "https://github.com/owner/repo",
+                    ),
+                    "a" * 64,
+                )
+            ],
+            metadata_fetcher=lambda *_args: {
+                "full_name": "owner/other",
+                "archived": False,
+            },
+            tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
+            api_deadline_seconds=7,
+        )
 
 
 def test_prepare_marks_unresolved_source_tag_as_error(tmp_path):
     output = tmp_path / "unresolved.json"
     worklist.prepare_audit_worklist(
         output,
-        source_revision="source-revision",
+        source_revision=SOURCE_REVISION,
         selection_mode="repository",
         repository_urls=["https://github.com/owner/repo"],
         shard_count=14,
@@ -390,12 +620,41 @@ def test_prepare_marks_unresolved_source_tag_as_error(tmp_path):
     assert item["source_resolution_error"] is not None
 
 
+def test_prepare_worklist_accepts_missing_asset_digest(tmp_path):
+    output = tmp_path / "nodigest.json"
+    worklist.prepare_audit_worklist(
+        output,
+        source_revision=SOURCE_REVISION,
+        selection_mode="repository",
+        repository_urls=["https://github.com/owner/repo"],
+        shard_count=14,
+        latest_only=False,
+        release_fetcher=lambda *_args: [
+            _with_asset_urls(
+                _release(
+                    "v1",
+                    1,
+                    10,
+                    "2026-01-01T00:00:00Z",
+                    repository_url="https://github.com/owner/repo",
+                ),
+                "https://github.com/owner/repo",
+            )
+        ],
+        metadata_fetcher=lambda *_args: {"full_name": "owner/repo", "archived": False},
+        tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
+        api_deadline_seconds=7,
+    )
+    loaded = worklist.load_worklist_document(output)
+    assert loaded["payload"]["items"][0]["asset_digest"] is None
+
+
 def test_prepare_worklist_failure_leaves_no_partial_file(tmp_path):
     output = tmp_path / "partial.json"
     with pytest.raises(RuntimeError):
         worklist.prepare_audit_worklist(
             output,
-            source_revision="source-revision",
+            source_revision=SOURCE_REVISION,
             selection_mode="all",
             repository_urls=["https://github.com/owner/repo"],
             shard_count=14,
@@ -424,6 +683,63 @@ def test_prepare_worklist_failure_leaves_no_partial_file(tmp_path):
             api_deadline_seconds=7,
         )
     assert not output.exists()
+
+
+def test_prepare_worklist_failure_removes_pre_existing_target(tmp_path):
+    output = tmp_path / "partial.json"
+    output.write_text("{}", encoding="utf-8")
+
+    release_calls: list[tuple[str, str]] = []
+    metadata_calls: list[tuple[str, str]] = []
+    tag_calls: list[tuple[str, str]] = []
+
+    def release_fetcher(owner: str, repo: str) -> list[dict[str, object]]:
+        release_calls.append((owner, repo))
+        if (owner, repo) == ("owner", "repo"):
+            return "not-a-list"  # type: ignore[return-value]
+        return [
+            _with_digest(
+                _with_asset_urls(
+                    _release(
+                        "v1",
+                        1,
+                        10,
+                        repository_url="https://github.com/owner/other",
+                    ),
+                    "https://github.com/owner/other",
+                ),
+                "a" * 64,
+            )
+        ]
+
+    def metadata_fetcher(owner: str, repo: str) -> dict[str, object]:
+        metadata_calls.append((owner, repo))
+        return {"full_name": f"{owner}/{repo}", "archived": False}
+
+    def tag_resolver(owner: str, repo: str, *_args) -> dict[str, str]:
+        tag_calls.append((owner, repo))
+        return {"v1": "b" * 40}
+
+    with pytest.raises(ValueError):
+        worklist.prepare_audit_worklist(
+            output,
+            source_revision=SOURCE_REVISION,
+            selection_mode="all",
+            repository_urls=[
+                "https://github.com/owner/other",
+                "https://github.com/owner/repo",
+            ],
+            shard_count=14,
+            latest_only=False,
+            release_fetcher=release_fetcher,
+            metadata_fetcher=metadata_fetcher,
+            tag_resolver=tag_resolver,
+            api_deadline_seconds=7,
+        )
+    assert not output.exists()
+    assert release_calls == [("owner", "other"), ("owner", "repo")]
+    assert metadata_calls == [("owner", "other"), ("owner", "repo")]
+    assert tag_calls == [("owner", "other"), ("owner", "repo")]
 
 
 def test_resolve_tags_prefers_annotated_peeled_commits():
@@ -475,6 +791,70 @@ def test_resolve_tags_rejects_malformed_output_and_duplicate_conflicts():
         worklist.resolve_repository_tags_via_ls_remote(
             "owner", "repo", 5, run=run_duplicate
         )
+
+
+def test_resolve_tags_rejects_duplicate_identical_refs():
+    raw = "\n".join(
+        [
+            f"{'a' * 40}\trefs/tags/v1",
+            f"{'a' * 40}\trefs/tags/v1",
+        ]
+    )
+
+    def run_duplicate(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=raw, stderr="")
+
+    with pytest.raises(ValueError, match="Conflicting tag refs"):
+        worklist.resolve_repository_tags_via_ls_remote(
+            "owner", "repo", 5, run=run_duplicate
+        )
+
+
+def test_resolve_tags_rejects_timeout_and_oserror():
+    with pytest.raises(TimeoutError, match="timed out"):
+        worklist.resolve_repository_tags_via_ls_remote(
+            "owner",
+            "repo",
+            5,
+            run=lambda *a, **k: (_ for _ in ()).throw(subprocess.TimeoutExpired("", 1)),
+        )
+
+    with pytest.raises(RuntimeError, match="git ls-remote failed"):
+        worklist.resolve_repository_tags_via_ls_remote(
+            "owner",
+            "repo",
+            5,
+            run=lambda *a, **k: (_ for _ in ()).throw(OSError("broken pipe")),
+        )
+
+
+def test_resolve_tags_rejects_nonzero_exit():
+    def run(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(cmd, 2, stdout="", stderr="boom")
+
+    with pytest.raises(RuntimeError, match="git ls-remote failed"):
+        worklist.resolve_repository_tags_via_ls_remote("owner", "repo", 5, run=run)
+
+
+def test_resolve_tags_uses_expected_git_arguments():
+    calls = []
+
+    def run(cmd, *args, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    worklist.resolve_repository_tags_via_ls_remote("owner", "repo", 1, run=run)
+    assert calls == [
+        (
+            ["git", "ls-remote", "--tags", "https://github.com/owner/repo.git"],
+            {
+                "capture_output": True,
+                "text": True,
+                "timeout": 1,
+                "check": False,
+            },
+        )
+    ]
 
 
 def _write_shard_report(path: Path, report: ap.AuditReport) -> None:
