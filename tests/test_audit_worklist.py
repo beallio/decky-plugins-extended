@@ -1022,7 +1022,11 @@ def test_worklist_prepare_records_metadata_identity_mismatch_without_adopting_re
     output = tmp_path / "metadata-mismatch.json"
 
     def release_fetcher(owner: str, repo: str) -> list[dict]:
-        repository = f"https://github.com/{owner}/{repo}"
+        repository = (
+            redirect_target
+            if (owner, repo) == ("danielcopper", "decky-romm-sync")
+            else f"https://github.com/{owner}/{repo}"
+        )
         return [
             _with_digest(
                 _with_asset_urls(
