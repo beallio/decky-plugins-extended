@@ -2464,6 +2464,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             "trivy": 0,
             "materialize": 0,
             "compare": 0,
+            "clamav": 0,
+            "semgrep": 0,
         }
 
         def fake_download(url, destination, policy=None):
@@ -2490,6 +2492,16 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 ap.ScannerStatus(name="source-artifact-diff", status="failed"),
             )
 
+        def fake_clamav(*_args, **_kwargs):
+            counts["clamav"] += 1
+            del _args, _kwargs
+            return clamav_status, clamav_findings
+
+        def fake_semgrep(*_args, **_kwargs):
+            counts["semgrep"] += 1
+            del _args, _kwargs
+            return semgrep_status, semgrep_findings
+
         with tempfile.TemporaryDirectory() as td:
             with (
                 patch.object(ap, "get_repo_metadata", return_value=meta),
@@ -2500,23 +2512,9 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                     "materialize_source_snapshot",
                     side_effect=fake_materialize,
                 ),
-                patch.object(
-                    ap,
-                    "run_clamav",
-                    return_value=(
-                        clamav_status,
-                        clamav_findings,
-                    ),
-                ),
+                patch.object(ap, "run_clamav", side_effect=fake_clamav),
                 patch.object(ap, "run_trivy", side_effect=fake_trivy),
-                patch.object(
-                    ap,
-                    "run_semgrep",
-                    return_value=(
-                        semgrep_status,
-                        semgrep_findings,
-                    ),
-                ),
+                patch.object(ap, "run_semgrep", side_effect=fake_semgrep),
                 patch.object(
                     ap,
                     "compare_source_and_artifact_from_snapshot",
@@ -2765,6 +2763,125 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         self.assertTrue(
             any(finding.rule_id == "SEMIGREP_FINDING" for finding in report.findings)
         )
+
+    def test_source_preparation_failure_preserves_trivy_and_source_context_with_bound(
+        self,
+    ):
+        long_secret = 'token="ghp_' + "a" * 40 + '"'
+        long_artifact_detail = (
+            "artifact-trivy-non-secret-marker="
+            + ("x" * 420)
+            + "|nonsecret-context=true"
+        )
+        report, counts = self._source_preparation_failure_report(
+            trivy_required=False,
+            source_diff_required=False,
+            trivy_enabled=True,
+            source_diff_enabled=True,
+            materialize_failure=f"source snapshot materialization failed: {long_secret}",
+            trivy_status=ap.ScannerStatus(
+                name="trivy",
+                status="failed",
+                detail=long_artifact_detail,
+            ),
+            trivy_findings=[
+                ap.Finding(
+                    rule_id="TRIVY_FINDING",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="artifact:plugin/main.py",
+                    line=1,
+                    message="artifact-only trivy finding",
+                    evidence="",
+                    scanner="trivy",
+                )
+            ],
+            clamav_findings=[
+                ap.Finding(
+                    rule_id="CLAMAV_FINDING",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="artifact:plugin/main.py",
+                    line=2,
+                    message="clamav finding",
+                    evidence="",
+                    scanner="clamav",
+                )
+            ],
+            semgrep_findings=[
+                ap.Finding(
+                    rule_id="SEMIGREP_FINDING",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="artifact:plugin/main.py",
+                    line=3,
+                    message="semgrep finding",
+                    evidence="",
+                    scanner="semgrep",
+                )
+            ],
+        )
+
+        trivy_status = next(
+            (status for status in report.scanner_statuses if status.name == "trivy"),
+            None,
+        )
+        self.assertIsNotNone(trivy_status)
+        self.assertIsNotNone(trivy_status.detail)
+        self.assertIn("artifact-trivy-non-secret-marker", trivy_status.detail or "")
+        self.assertIn("source snapshot preparation failed", trivy_status.detail or "")
+        self.assertLessEqual(len(trivy_status.detail or ""), ap.EVIDENCE_MAX_LEN)
+        self.assertNotIn("aaaaaaaa", trivy_status.detail or "")
+
+        source_diff_status = next(
+            (
+                status
+                for status in report.scanner_statuses
+                if status.name == "source-artifact-diff"
+            ),
+            None,
+        )
+        self.assertIsNotNone(source_diff_status)
+        self.assertIsNotNone(source_diff_status.detail)
+        self.assertLessEqual(len(source_diff_status.detail or ""), ap.EVIDENCE_MAX_LEN)
+        self.assertNotIn("aaaaaaaa", source_diff_status.detail or "")
+
+        relevant_findings = [
+            finding
+            for finding in report.findings
+            if finding.rule_id
+            in {"SOURCE_ARTIFACT_PREPARATION_FAILED", "SOURCE_ARTIFACT_DIFF_INCOMPLETE"}
+        ]
+        self.assertTrue(
+            any(
+                f.rule_id == "SOURCE_ARTIFACT_PREPARATION_FAILED"
+                for f in relevant_findings
+            )
+        )
+        self.assertTrue(
+            any(
+                f.rule_id == "SOURCE_ARTIFACT_DIFF_INCOMPLETE"
+                for f in relevant_findings
+            )
+        )
+        for finding in relevant_findings:
+            self.assertLessEqual(len(finding.evidence), ap.EVIDENCE_MAX_LEN)
+            self.assertLessEqual(len(finding.message), ap.EVIDENCE_MAX_LEN)
+            self.assertNotIn("aaaaaaaa", finding.evidence)
+            self.assertNotIn("aaaaaaaa", finding.message)
+
+        self.assertTrue(
+            any(finding.rule_id == "TRIVY_FINDING" for finding in report.findings)
+        )
+        self.assertTrue(
+            any(finding.rule_id == "CLAMAV_FINDING" for finding in report.findings)
+        )
+        self.assertTrue(
+            any(finding.rule_id == "SEMIGREP_FINDING" for finding in report.findings)
+        )
+        self.assertEqual(counts["trivy"], 1)
+        self.assertEqual(counts["clamav"], 1)
+        self.assertEqual(counts["semgrep"], 1)
 
     def test_source_preparation_failure_with_blocking_archive_findings_remains_block(
         self,

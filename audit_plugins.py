@@ -1759,6 +1759,19 @@ def _truncate(text: str, max_len: int) -> str:
     return text
 
 
+def _truncate_with_ellipsis(text: str, max_len: int) -> str:
+    text = str(text)
+    if max_len <= 0:
+        return ""
+    if len(text) > max_len:
+        return text[: max_len - 1] + "…"
+    return text
+
+
+def _compose_component_detail(detail: str, max_len: int) -> str:
+    return _truncate_with_ellipsis(redact_secrets(detail), max_len)
+
+
 def _get_rules_for_extension(ext: str) -> list[tuple[str, str, str, str, re.Pattern]]:
     ext = ext.lower()
     if ext in (".py",):
@@ -4984,16 +4997,53 @@ def _combine_scanner_detail(
     base_detail: Optional[str], source_preparation_error: Optional[str]
 ) -> Optional[str]:
     """Build a bounded, redacted scanner detail that preserves original context."""
-    detail_parts: list[str] = []
-    if base_detail:
-        detail_parts.append(base_detail)
-    if source_preparation_error:
-        detail_parts.append(
-            f"source snapshot preparation failed: {source_preparation_error}"
-        )
-    if not detail_parts:
+    if not base_detail and not source_preparation_error:
         return None
-    return redact_secrets(_truncate("; ".join(detail_parts), EVIDENCE_MAX_LEN))
+
+    artifact_part = _compose_component_detail(str(base_detail or ""), EVIDENCE_MAX_LEN)
+    source_part = _compose_component_detail(
+        f"source snapshot preparation failed: {source_preparation_error}"
+        if source_preparation_error
+        else "",
+        EVIDENCE_MAX_LEN,
+    )
+
+    if base_detail and source_preparation_error:
+        separator = "; "
+        available_budget = EVIDENCE_MAX_LEN - len(separator)
+        artifact_budget = min(len(artifact_part), available_budget // 2)
+        source_budget = min(len(source_part), available_budget - artifact_budget)
+
+        if artifact_budget < len(artifact_part) and source_budget < len(source_part):
+            return (
+                _compose_component_detail(str(base_detail), artifact_budget)
+                + separator
+                + _compose_component_detail(
+                    f"source snapshot preparation failed: {source_preparation_error}",
+                    source_budget,
+                )
+            )
+
+        if artifact_budget < len(artifact_part) and source_budget == len(source_part):
+            artifact_budget = min(len(artifact_part), available_budget - source_budget)
+        elif source_budget < len(source_part) and artifact_budget == len(artifact_part):
+            source_budget = min(len(source_part), available_budget - artifact_budget)
+
+        return (
+            _compose_component_detail(str(base_detail), artifact_budget)
+            + separator
+            + _compose_component_detail(
+                f"source snapshot preparation failed: {source_preparation_error}",
+                source_budget,
+            )
+        )
+
+    if base_detail:
+        return _compose_component_detail(str(base_detail), EVIDENCE_MAX_LEN)
+    return _compose_component_detail(
+        f"source snapshot preparation failed: {source_preparation_error}",
+        EVIDENCE_MAX_LEN,
+    )
 
 
 def _record_release_local_error(

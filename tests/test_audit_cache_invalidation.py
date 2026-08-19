@@ -668,6 +668,14 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                     )
                     _cache_hit_sentinels.enter_context(
                         patch(
+                            "audit_plugins._resolve_ref_to_tree_sha",
+                            side_effect=AssertionError(
+                                "_resolve_ref_to_tree_sha should not run after cache hit"
+                            ),
+                        )
+                    )
+                    _cache_hit_sentinels.enter_context(
+                        patch(
                             "audit_plugins._fetch_source_tree",
                             side_effect=AssertionError(
                                 "legacy source-tree REST path used"
@@ -861,6 +869,14 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                             "audit_plugins._gh_get",
                             side_effect=AssertionError(
                                 "legacy REST call used after cache hit"
+                            ),
+                        )
+                    )
+                    source_cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins._resolve_ref_to_tree_sha",
+                            side_effect=AssertionError(
+                                "_resolve_ref_to_tree_sha should not run after cache hit"
                             ),
                         )
                     )
