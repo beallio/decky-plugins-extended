@@ -4990,7 +4990,7 @@ _SCOPED_ARCHIVE_INSPECTION_EXCEPTIONS = (
 
 def _redacted_exception_detail(exc: BaseException) -> str:
     """Return a bounded diagnostic safe for public audit outputs."""
-    return redact_secrets(_truncate(str(exc), EVIDENCE_MAX_LEN))
+    return _compose_component_detail(str(exc), EVIDENCE_MAX_LEN)
 
 
 def _combine_scanner_detail(

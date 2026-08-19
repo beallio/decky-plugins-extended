@@ -2767,7 +2767,14 @@ class TestAuditRepositoryMocked(unittest.TestCase):
     def test_source_preparation_failure_preserves_trivy_and_source_context_with_bound(
         self,
     ):
-        long_secret = 'token="ghp_' + "a" * 40 + '"'
+        long_secret = "ghp_" + "a" * 36
+        long_exception_detail = (
+            "source snapshot materialization failed while reading tag payload "
+            + ("x" * 250)
+            + f"{long_secret}; "
+            + ("x" * 220)
+            + ("secret-tail " * 10)
+        )
         long_artifact_detail = (
             "artifact-trivy-non-secret-marker="
             + ("x" * 420)
@@ -2778,7 +2785,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             source_diff_required=False,
             trivy_enabled=True,
             source_diff_enabled=True,
-            materialize_failure=f"source snapshot materialization failed: {long_secret}",
+            materialize_failure=long_exception_detail,
             trivy_status=ap.ScannerStatus(
                 name="trivy",
                 status="failed",
@@ -2832,6 +2839,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         self.assertIn("source snapshot preparation failed", trivy_status.detail or "")
         self.assertLessEqual(len(trivy_status.detail or ""), ap.EVIDENCE_MAX_LEN)
         self.assertNotIn("aaaaaaaa", trivy_status.detail or "")
+        self.assertNotIn(long_secret, trivy_status.detail or "")
+        self.assertNotRegex(trivy_status.detail or "", r"ghp_[A-Za-z0-9]{20,}")
 
         source_diff_status = next(
             (
@@ -2845,6 +2854,13 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         self.assertIsNotNone(source_diff_status.detail)
         self.assertLessEqual(len(source_diff_status.detail or ""), ap.EVIDENCE_MAX_LEN)
         self.assertNotIn("aaaaaaaa", source_diff_status.detail or "")
+        self.assertIn(
+            "source snapshot preparation failed", source_diff_status.detail or ""
+        )
+        self.assertNotIn("ghp_", source_diff_status.detail or "")
+        self.assertNotIn("aaaa", source_diff_status.detail or "")
+        self.assertNotIn(long_secret, source_diff_status.detail or "")
+        self.assertNotRegex(source_diff_status.detail or "", r"ghp_[A-Za-z0-9]{20,}")
 
         relevant_findings = [
             finding
@@ -2867,8 +2883,39 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         for finding in relevant_findings:
             self.assertLessEqual(len(finding.evidence), ap.EVIDENCE_MAX_LEN)
             self.assertLessEqual(len(finding.message), ap.EVIDENCE_MAX_LEN)
-            self.assertNotIn("aaaaaaaa", finding.evidence)
-            self.assertNotIn("aaaaaaaa", finding.message)
+            self.assertNotIn("ghp_", finding.evidence)
+            self.assertNotIn(long_secret, finding.evidence)
+            self.assertNotIn("ghp_", finding.message)
+            self.assertNotIn(long_secret, finding.message)
+
+        source_preparation_finding = next(
+            f
+            for f in relevant_findings
+            if f.rule_id == "SOURCE_ARTIFACT_PREPARATION_FAILED"
+        )
+        self.assertIn(
+            "Source snapshot could not be prepared from tag commit.",
+            source_preparation_finding.message,
+        )
+
+        source_diff_incomplete_finding = next(
+            f
+            for f in relevant_findings
+            if f.rule_id == "SOURCE_ARTIFACT_DIFF_INCOMPLETE"
+        )
+        self.assertIn(
+            "source snapshot preparation failed",
+            source_diff_incomplete_finding.message,
+        )
+        self.assertNotIn("ghp_", source_diff_incomplete_finding.message)
+        self.assertNotIn(long_secret, source_diff_incomplete_finding.message)
+        self.assertNotRegex(
+            source_diff_incomplete_finding.message, r"ghp_[A-Za-z0-9]{20,}"
+        )
+
+        self.assertNotIn("ghp_", trivy_status.detail or "")
+        self.assertNotIn(long_secret, trivy_status.detail or "")
+        self.assertIn("source snapshot preparation failed", trivy_status.detail or "")
 
         self.assertTrue(
             any(finding.rule_id == "TRIVY_FINDING" for finding in report.findings)
