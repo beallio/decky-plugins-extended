@@ -127,6 +127,9 @@ TRIVY_KEY_FINGERPRINT="825AD9036F7C850E6A6FED4935B8ACA44FD9CA9F"
 TRIVY_KEYRING_PATH="${TRIVY_KEYRING_PATH:-/usr/share/keyrings/trivy.gpg}"
 TRIVY_SOURCE_LIST_PATH="${TRIVY_SOURCE_LIST_PATH:-/etc/apt/sources.list.d/trivy.list}"
 CLAMAV_DB_GLOB="${CLAMAV_DB_GLOB:-/var/lib/clamav/*.c?d}"
+# This workspace-local directory is deliberately separate from APT's system
+# archive directory so workflows can cache only the scanner bootstrap inputs.
+BASE_APT_ARCHIVE_DIR="${BASE_APT_ARCHIVE_DIR:-$PWD/.scanner-package-cache/apt-archives}"
 
 tmp_dir="$(mktemp -d)"
 trivy_key="$tmp_dir/trivy-public.key"
@@ -135,6 +138,24 @@ trivy_keyring="$tmp_dir/trivy.gpg"
 cleanup() { rm -rf -- "$tmp_dir"; }
 trap cleanup EXIT
 bootstrap_started_seconds="$SECONDS"
+
+prepare_base_apt_archive_dir() {
+  local requested_dir="$BASE_APT_ARCHIVE_DIR"
+
+  if mkdir -p "$requested_dir/partial" 2>/dev/null &&
+    [[ -r "$requested_dir" && -w "$requested_dir" && -x "$requested_dir" ]] &&
+    [[ -r "$requested_dir/partial" && -w "$requested_dir/partial" && -x "$requested_dir/partial" ]]; then
+    return 0
+  fi
+
+  # A corrupt cache restore can leave an unusable directory behind. Do not
+  # delete it: use an isolated empty cache for this run and let APT perform a
+  # normal cold install instead.
+  printf 'base package cache unavailable at %s; using an isolated cold cache\n' \
+    "$requested_dir" >&2
+  BASE_APT_ARCHIVE_DIR="$tmp_dir/apt-archives"
+  mkdir -p "$BASE_APT_ARCHIVE_DIR/partial"
+}
 
 remaining_bootstrap_seconds() {
   printf '%s\n' "$((
@@ -389,6 +410,8 @@ for package in "${base_packages[@]}"; do
   fi
 done
 
+prepare_base_apt_archive_dir
+
 require_retry_apt_phase \
   "wait-dpkg-before-base-index" "refresh-base-package-index" "refresh base package index" \
   sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 update
@@ -399,8 +422,46 @@ else
   require_retry_apt_phase \
     "wait-dpkg-before-base" "install-base-packages" "install base packages" \
     bash -o pipefail -c '
-      sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 install -y --no-install-recommends "$@"
-    ' -- "${missing_base_packages[@]}"
+      archive_dir="$1"
+      apt_output="$2"
+      shift 2
+
+      run_apt_install() {
+        LC_ALL=C sudo -n apt-get \
+          -o Acquire::Retries=1 \
+          -o Acquire::http::Timeout=20 \
+          -o Dir::Cache::archives="$archive_dir" \
+          "$@" install -y --no-install-recommends "${missing_packages[@]}"
+      }
+
+      missing_packages=("$@")
+      if compgen -G "$archive_dir"/*.deb > /dev/null; then
+        set +e
+        run_apt_install --no-download 2>&1 | tee "$apt_output"
+        warm_status=${PIPESTATUS[0]}
+        set -e
+        if (( warm_status == 0 )); then
+          printf "phase=install base packages cache=warm downloaded=false archive-dir=%s\n" \
+            "$archive_dir"
+          exit 0
+        fi
+        if grep -Fq "Hash Sum mismatch" "$apt_output"; then
+          # A cached archive with bytes that do not match the signed package
+          # index is untrusted input. Never turn that into a mirror fallback.
+          exit "$warm_status"
+        fi
+        printf "base package cache was incomplete; falling back to a cold install\n" >&2
+      fi
+
+      run_apt_install 2>&1 | tee "$apt_output"
+      apt_status=${PIPESTATUS[0]}
+      if (( apt_status != 0 )); then
+        exit "$apt_status"
+      fi
+      printf "phase=install base packages cache=cold downloaded=true archive-dir=%s\n" \
+        "$archive_dir"
+    ' -- "$BASE_APT_ARCHIVE_DIR" "$tmp_dir/base-apt-install.log" \
+    "${missing_base_packages[@]}"
 fi
 
 require_retry_phase "download-trivy-signing-key" "download Trivy signing key" \

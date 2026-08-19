@@ -58,12 +58,20 @@ Before each retryable APT attempt it separately logs a bounded wait for the
 dpkg frontend lock, then uses a longer APT retry backoff. It refreshes the
 configured package indexes even when local package state allows the
 base-package install to be skipped, and restricts the post-configuration Trivy
-index refresh to the Trivy source list. This redistributes the fixed budget and
-reduces repeat mirror exposure; it does not make an unavailable or sufficiently
-slow mirror reliable. It verifies Trivy's signing-key fingerprint, retries only safe
-  APT/key-fetch work, and fails closed for ClamAV, Trivy, or exact Semgrep
-  `1.132.0` setup failures. A shard that cannot install its scanners blocks
-  publication.
+index refresh to the Trivy source list. Base-package archives are cached at
+`.scanner-package-cache/apt-archives` (or the `BASE_APT_ARCHIVE_DIR` override).
+The cache key binds the hosted runner image identifier, the exact base-package
+set, and the bootstrap script SHA-256. A restored archive is untrusted input:
+APT still verifies it against the signed package index before installation, and
+the bootstrap never uses `dpkg -i` for cached archives. A valid warm cache logs
+that no package was downloaded; a checksum mismatch fails the named install
+phase rather than silently using the mirror. This removes repeated package
+downloads on the common path, but does not make scanner setup guaranteed: a
+cold or unusable cache still relies on the mirror and fails closed if scanner
+installation cannot complete. It verifies Trivy's signing-key fingerprint,
+retries only safe APT/key-fetch work, and fails closed for ClamAV, Trivy, or
+exact Semgrep `1.132.0` setup failures. A shard that cannot install its scanners
+blocks publication.
 - CI selects changed repositories only for a plugin-list-only diff. Security
   pipeline, policy, verdict, dependency, quality-gate, test, or audit-workflow
   changes select the fourteen-shard corpus. Local and CI gates use Ruff, pytest,

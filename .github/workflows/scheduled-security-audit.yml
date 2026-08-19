@@ -118,9 +118,36 @@ jobs:
           restore-keys: |
             ${{ steps.cache-key.outputs.restore_key }}
 
+      - name: Compute scanner package cache key
+        id: scanner-package-cache-key
+        run: |
+          runner_image="${ImageOS:?}-${ImageVersion:?}"
+          base_packages="wget apt-transport-https gnupg lsb-release clamav"
+          package_set_hash="$(printf '%s' "$base_packages" | sha256sum | cut -d' ' -f1)"
+          bootstrap_hash="$(sha256sum scripts/install-security-scanners | cut -d' ' -f1)"
+          echo "key=scanner-package-cache-v1-${runner_image}-${package_set_hash}-${bootstrap_hash}" >> "$GITHUB_OUTPUT"
+          echo "restore_key=scanner-package-cache-v1-${runner_image}-" >> "$GITHUB_OUTPUT"
+
+      - name: Restore scanner package cache
+        continue-on-error: true
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: .scanner-package-cache/apt-archives
+          key: ${{ steps.scanner-package-cache-key.outputs.key }}
+          restore-keys: |
+            ${{ steps.scanner-package-cache-key.outputs.restore_key }}
+
       - name: Install required security scanners
         run: scripts/install-security-scanners
         timeout-minutes: 12
+
+      - name: Save scanner package cache
+        if: success() && matrix.shard_index == 0
+        continue-on-error: true
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: .scanner-package-cache/apt-archives
+          key: ${{ steps.scanner-package-cache-key.outputs.key }}
 
       - name: Run audit on all configured repositories
         id: audit

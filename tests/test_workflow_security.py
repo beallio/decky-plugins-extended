@@ -114,6 +114,81 @@ class WorkflowSecurityTests(unittest.TestCase):
             (plugin_workflow + scheduled_workflow).count("timeout-minutes: 12"),
         )
 
+    def test_scanner_package_cache_is_restored_before_each_bootstrap(self):
+        expected_jobs = (
+            ("plugin-security-audit.yml", "audit-shards"),
+            ("plugin-security-audit.yml", "smoke-audit"),
+            ("scheduled-security-audit.yml", "scheduled-audit"),
+        )
+        for workflow_name, job_name in expected_jobs:
+            workflow = (WORKFLOWS / workflow_name).read_text()
+            job = self._job_body(workflow, job_name)
+
+            self.assertIn("name: Compute scanner package cache key", job)
+            self.assertIn("name: Restore scanner package cache", job)
+            self.assertIn("path: .scanner-package-cache/apt-archives", job)
+            self.assertIn(
+                "key: ${{ steps.scanner-package-cache-key.outputs.key }}", job
+            )
+            self.assertIn(
+                "${{ steps.scanner-package-cache-key.outputs.restore_key }}", job
+            )
+            self.assertIn("continue-on-error: true", job)
+            self.assertLess(
+                job.index("name: Restore scanner package cache"),
+                job.index("name: Install required security scanners"),
+            )
+
+    def test_scanner_package_cache_key_covers_runner_image_packages_and_bootstrap(self):
+        expected_jobs = (
+            ("plugin-security-audit.yml", "audit-shards"),
+            ("plugin-security-audit.yml", "smoke-audit"),
+            ("scheduled-security-audit.yml", "scheduled-audit"),
+        )
+        base_packages = "wget apt-transport-https gnupg lsb-release clamav"
+        for workflow_name, job_name in expected_jobs:
+            workflow = (WORKFLOWS / workflow_name).read_text()
+            job = self._job_body(workflow, job_name)
+
+            self.assertIn('runner_image="${ImageOS:?}-${ImageVersion:?}"', job)
+            self.assertIn(f'base_packages="{base_packages}"', job)
+            self.assertIn("sha256sum scripts/install-security-scanners", job)
+            self.assertIn("printf '%s' \"$base_packages\" | sha256sum", job)
+            self.assertIn(
+                "key=scanner-package-cache-v1-${runner_image}-${package_set_hash}-${bootstrap_hash}",
+                job,
+            )
+            self.assertIn("restore_key=scanner-package-cache-v1-${runner_image}-", job)
+
+    def test_scanner_package_cache_save_is_best_effort_and_not_per_shard(self):
+        plugin_workflow = (WORKFLOWS / "plugin-security-audit.yml").read_text()
+        scheduled_workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
+
+        for workflow, job_name in (
+            (plugin_workflow, "audit-shards"),
+            (plugin_workflow, "smoke-audit"),
+            (scheduled_workflow, "scheduled-audit"),
+        ):
+            job = self._job_body(workflow, job_name)
+            self.assertIn("name: Save scanner package cache", job)
+            self.assertIn(
+                "actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684", job
+            )
+            self.assertIn("continue-on-error: true", job)
+            self.assertLess(
+                job.index("name: Install required security scanners"),
+                job.index("name: Save scanner package cache"),
+            )
+
+        self.assertIn(
+            "if: success() && matrix.shard_index == 0",
+            self._job_body(plugin_workflow, "audit-shards"),
+        )
+        self.assertIn(
+            "if: success() && matrix.shard_index == 0",
+            self._job_body(scheduled_workflow, "scheduled-audit"),
+        )
+
     def test_scheduled_audit_publishes_only_changed_verdict_store(self):
         workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
         scheduled_job = workflow.split("  scheduled-audit:\n", maxsplit=1)[1]
