@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 import audit_plugins as ap
+import audit_worklist
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -507,3 +508,566 @@ def test_pull_request_audit_still_fails_on_enforcement_exit_codes():
         '4) echo "::error::Audit has publishable release-local incompleteness."; exit 4'
         in text
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 5 -- aggregate coverage must be proven against the prepared worklist
+# ---------------------------------------------------------------------------
+
+COVERAGE_SOURCE_REVISION = "a" * 40
+
+
+def _coverage_release(tag: str, release_id: int, asset_id: int, owner: str, repo: str):
+    return {
+        "id": release_id,
+        "tag_name": tag,
+        "published_at": "2026-01-01T00:00:00Z",
+        "created_at": "2026-01-01T00:00:00Z",
+        "prerelease": False,
+        "draft": False,
+        "assets": [
+            {
+                "id": asset_id,
+                "name": f"plugin-{tag}.zip",
+                "browser_download_url": (
+                    f"https://github.com/{owner}/{repo}"
+                    f"/releases/download/{tag}/plugin-{tag}.zip"
+                ),
+                "digest": f"sha256:{'a' * 64}",
+            }
+        ],
+    }
+
+
+def _prepare_coverage_worklist(tmp_path: Path, *, empty: bool = False):
+    """Prepare one real multi-repository (or empty) worklist document."""
+    releases = {
+        ("owner", "repo"): [
+            _coverage_release("v2", 2, 20, "owner", "repo"),
+            _coverage_release("v1", 1, 10, "owner", "repo"),
+        ],
+        ("owner", "other"): [_coverage_release("v1", 3, 30, "owner", "other")],
+    }
+    worklist_path = tmp_path / "worklist.json"
+    fingerprint, _document = audit_worklist.prepare_audit_worklist(
+        worklist_path,
+        source_revision=COVERAGE_SOURCE_REVISION,
+        selection_mode="none" if empty else "all",
+        repository_urls=[]
+        if empty
+        else [
+            "https://github.com/owner/other",
+            "https://github.com/owner/repo",
+        ],
+        shard_count=PRODUCTION_SHARD_COUNT,
+        latest_only=False,
+        release_fetcher=lambda owner, repo: releases[(owner, repo)],
+        metadata_fetcher=lambda owner, repo: {
+            "full_name": f"{owner}/{repo}",
+            "archived": False,
+        },
+        tag_resolver=lambda owner, repo, *_args: {"v1": "f" * 40, "v2": "e" * 40},
+        api_deadline_seconds=8,
+    )
+    return worklist_path, fingerprint
+
+
+def _coverage_report(
+    item,
+    *,
+    classification: str = "PASS",
+    completion_status: str = "completed",
+):
+    identity = audit_worklist.worklist_identity(item)
+    return ap.AuditReport(
+        audit_timestamp="2026-08-18T00:00:00Z",
+        repository=identity["repository"],
+        release=item["tag_name"],
+        release_id=f"{item['tag_name']}@{identity['asset_id']}",
+        github_release_id=identity["github_release_id"],
+        asset_id=identity["asset_id"],
+        artifact_sha256="b" * 64,
+        artifact_url=item["asset_url"],
+        identity_status="CURRENT",
+        resolved_tag_commit_sha=item["resolved_source_commit_sha"],
+        audit_context_hash="c" * 64,
+        final_classification=classification,
+        completion_status=completion_status,
+    )
+
+
+def _coverage_shard_plan(worklist_path: Path):
+    """Describe the fourteen shard artifacts a compliant run would upload."""
+    document = audit_worklist.load_worklist_document(worklist_path)
+    payload = document["payload"]
+    plan = []
+    for index in range(payload["shard_count"]):
+        items = audit_worklist.select_worklist_shard(payload, index)
+        plan.append(
+            {
+                "directory": f"shard-{index}",
+                "shard_index": index,
+                "shard_count": payload["shard_count"],
+                "worklist_fingerprint": document["fingerprint"],
+                "source_revision": payload["source_revision"],
+                "reports": [_coverage_report(item) for item in items],
+                "assigned": [audit_worklist.worklist_identity(item) for item in items],
+            }
+        )
+    return document, plan
+
+
+def _write_coverage_shards(tmp_path: Path, plan):
+    """Materialize each shard's report, delta, and byte-bound manifest."""
+    artifacts = {"reports": [], "deltas": [], "manifests": []}
+    for shard in plan:
+        directory = tmp_path / "shard-artifacts" / shard["directory"]
+        directory.mkdir(parents=True, exist_ok=True)
+        report_json = directory / "security-report.json"
+        report_markdown = directory / "security-report.md"
+        verdict_delta = directory / "security-verdict-delta.json"
+        progress = directory / "progress.json"
+
+        reports = shard["reports"]
+        report_json.write_text(
+            json.dumps(
+                {
+                    "schema_version": ap.AUDIT_SCHEMA_VERSION,
+                    "policy_version": ap.POLICY_VERSION,
+                    "generated_at": "2026-08-18T00:00:00Z",
+                    "report_count": len(reports),
+                    "reports": [ap._report_to_dict(report) for report in reports],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        report_markdown.write_text("# shard\n", encoding="utf-8")
+        verdict_delta.write_text(
+            json.dumps(
+                shard.get("delta", ap._verdict_delta_from_reports(reports)),
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        progress.write_text("{}\n", encoding="utf-8")
+
+        report_identities = shard.get(
+            "report_identities",
+            [ap._report_manifest_identity(report) for report in reports],
+        )
+        manifest = {
+            "schema_version": ap._SHARD_MANIFEST_SCHEMA_VERSION,
+            "worklist_fingerprint": shard["worklist_fingerprint"],
+            "source_revision": shard["source_revision"],
+            "shard_count": shard["shard_count"],
+            "shard_index": shard["shard_index"],
+            "assigned_identities": shard["assigned"],
+            "attempted_identities": shard.get("attempted", report_identities),
+            "report_identities": report_identities,
+            "artifacts": ap._worker_artifact_bindings(
+                {
+                    "progress": progress,
+                    "report_json": report_json,
+                    "report_markdown": report_markdown,
+                    "verdict_delta": verdict_delta,
+                }
+            ),
+        }
+        manifest_path = directory / "shard-manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+        artifacts["reports"].append(str(report_json))
+        artifacts["deltas"].append(str(verdict_delta))
+        artifacts["manifests"].append(str(manifest_path))
+    return artifacts
+
+
+def _coverage_argv(
+    worklist_path,
+    artifacts,
+    output_dir: Path,
+    *,
+    include_worklist: bool = True,
+    include_manifests: bool = True,
+):
+    argv = [
+        "--aggregate-reports",
+        *artifacts["reports"],
+        "--aggregate-verdict-deltas",
+        *artifacts["deltas"],
+    ]
+    if include_manifests:
+        argv += ["--aggregate-shard-manifests", *artifacts["manifests"]]
+    if include_worklist:
+        argv += ["--expected-worklist", str(worklist_path)]
+    argv += [
+        "--output-dir",
+        str(output_dir),
+        "--verdict-delta",
+        str(output_dir / "security-verdict-delta.json"),
+    ]
+    return argv
+
+
+def _aggregate_coverage(tmp_path: Path, plan, worklist_path, **kwargs):
+    artifacts = _write_coverage_shards(tmp_path, plan)
+    output_dir = tmp_path / "security-reports"
+    exit_code = ap.main(_coverage_argv(worklist_path, artifacts, output_dir, **kwargs))
+    return exit_code, output_dir, artifacts
+
+
+def test_aggregate_accepts_exact_worklist_coverage(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    _document, plan = _coverage_shard_plan(worklist_path)
+
+    exit_code, output_dir, _artifacts = _aggregate_coverage(
+        tmp_path, plan, worklist_path
+    )
+
+    assert exit_code == 0
+    aggregate = json.loads(
+        (output_dir / "security-report.json").read_text(encoding="utf-8")
+    )
+    assert aggregate["report_count"] == 3
+    assert sorted(item["release_id"] for item in aggregate["reports"]) == [
+        "v1@10",
+        "v1@30",
+        "v2@20",
+    ]
+    delta = json.loads(
+        (output_dir / "security-verdict-delta.json").read_text(encoding="utf-8")
+    )
+    assert sorted(delta) == [
+        "https://github.com/owner/other",
+        "https://github.com/owner/repo",
+    ]
+
+
+def test_aggregate_accepts_a_valid_empty_worklist(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path, empty=True)
+    document, plan = _coverage_shard_plan(worklist_path)
+
+    assert document["payload"]["items"] == []
+    assert all(shard["assigned"] == [] for shard in plan)
+
+    exit_code, output_dir, _artifacts = _aggregate_coverage(
+        tmp_path, plan, worklist_path
+    )
+
+    assert exit_code == 0
+    aggregate = json.loads(
+        (output_dir / "security-report.json").read_text(encoding="utf-8")
+    )
+    assert aggregate["report_count"] == 0
+    assert (output_dir / "security-verdict-delta.json").read_text(
+        encoding="utf-8"
+    ) == "{}\n"
+
+
+def test_aggregate_counts_release_local_incomplete_reports_as_covered(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    document, plan = _coverage_shard_plan(worklist_path)
+    payload = document["payload"]
+    failed = payload["items"][0]
+    failed_index = audit_worklist.shard_index_for_worklist_item(
+        failed, payload["shard_count"]
+    )
+    plan[failed_index]["reports"] = [
+        _coverage_report(
+            failed,
+            classification="AUDIT_ERROR",
+            completion_status="incomplete",
+        )
+    ]
+
+    exit_code, output_dir, _artifacts = _aggregate_coverage(
+        tmp_path, plan, worklist_path
+    )
+
+    assert exit_code == 4
+    aggregate = json.loads(
+        (output_dir / "security-report.json").read_text(encoding="utf-8")
+    )
+    assert aggregate["report_count"] == 3
+
+
+def test_aggregate_rejects_fourteen_artifacts_missing_one_expected_identity(tmp_path):
+    """The gap the artifact-count guard cannot see: complete shards, absent work."""
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    document, plan = _coverage_shard_plan(worklist_path)
+    payload = document["payload"]
+    dropped = payload["items"][0]
+    dropped_index = audit_worklist.shard_index_for_worklist_item(
+        dropped, payload["shard_count"]
+    )
+    dropped_identity = audit_worklist.worklist_identity(dropped)
+    shard = plan[dropped_index]
+    shard["reports"] = [
+        report
+        for report in shard["reports"]
+        if ap._report_manifest_identity(report) != dropped_identity
+    ]
+
+    exit_code, output_dir, artifacts = _aggregate_coverage(
+        tmp_path, plan, worklist_path
+    )
+
+    assert exit_code == 1
+    assert len(artifacts["reports"]) == PRODUCTION_SHARD_COUNT
+    assert len(artifacts["manifests"]) == PRODUCTION_SHARD_COUNT
+    assert not output_dir.exists()
+
+
+def test_aggregate_rejects_an_identity_absent_from_the_worklist(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    document, plan = _coverage_shard_plan(worklist_path)
+    payload = document["payload"]
+    extra_item = dict(payload["items"][0])
+    extra_item["release_id"] = "9001"
+    extra_item["asset_id"] = "9002"
+    extra_index = audit_worklist.shard_index_for_worklist_item(
+        extra_item, payload["shard_count"]
+    )
+    shard = plan[extra_index]
+    shard["reports"] = [*shard["reports"], _coverage_report(extra_item)]
+    shard["assigned"] = [
+        *shard["assigned"],
+        audit_worklist.worklist_identity(extra_item),
+    ]
+
+    exit_code, output_dir, _artifacts = _aggregate_coverage(
+        tmp_path, plan, worklist_path
+    )
+
+    assert exit_code == 1
+    assert not output_dir.exists()
+
+
+def test_aggregate_rejects_a_manifest_claiming_an_identity_absent_from_its_report(
+    tmp_path,
+):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    document, plan = _coverage_shard_plan(worklist_path)
+    payload = document["payload"]
+    item = payload["items"][0]
+    index = audit_worklist.shard_index_for_worklist_item(item, payload["shard_count"])
+    shard = plan[index]
+    shard["report_identities"] = [
+        ap._report_manifest_identity(r) for r in shard["reports"]
+    ]
+    shard["reports"] = []
+
+    exit_code, output_dir, _artifacts = _aggregate_coverage(
+        tmp_path, plan, worklist_path
+    )
+
+    assert exit_code == 1
+    assert not output_dir.exists()
+
+
+def test_aggregate_rejects_a_report_identity_absent_from_its_manifest(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    document, plan = _coverage_shard_plan(worklist_path)
+    payload = document["payload"]
+    item = payload["items"][0]
+    index = audit_worklist.shard_index_for_worklist_item(item, payload["shard_count"])
+    shard = plan[index]
+    shard["report_identities"] = []
+    shard["attempted"] = []
+
+    exit_code, output_dir, _artifacts = _aggregate_coverage(
+        tmp_path, plan, worklist_path
+    )
+
+    assert exit_code == 1
+    assert not output_dir.exists()
+
+
+def test_aggregate_rejects_a_duplicated_shard_index(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    _document, plan = _coverage_shard_plan(worklist_path)
+    plan[13] = {**plan[0], "directory": "shard-13"}
+
+    exit_code, output_dir, _artifacts = _aggregate_coverage(
+        tmp_path, plan, worklist_path
+    )
+
+    assert exit_code == 1
+    assert not output_dir.exists()
+
+
+def test_aggregate_rejects_a_manifest_holding_another_shards_assignment(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    document, plan = _coverage_shard_plan(worklist_path)
+    payload = document["payload"]
+    item = payload["items"][0]
+    populated = audit_worklist.shard_index_for_worklist_item(
+        item, payload["shard_count"]
+    )
+    empty = next(index for index, shard in enumerate(plan) if not shard["assigned"])
+    plan[empty]["assigned"] = list(plan[populated]["assigned"])
+
+    exit_code, output_dir, _artifacts = _aggregate_coverage(
+        tmp_path, plan, worklist_path
+    )
+
+    assert exit_code == 1
+    assert not output_dir.exists()
+
+
+def test_aggregate_rejects_a_shard_count_below_the_worklist(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    _document, plan = _coverage_shard_plan(worklist_path)
+
+    exit_code, output_dir, _artifacts = _aggregate_coverage(
+        tmp_path, plan[:-1], worklist_path
+    )
+
+    assert exit_code == 1
+    assert not output_dir.exists()
+
+
+def test_aggregate_rejects_a_mismatched_worklist_fingerprint(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    _document, plan = _coverage_shard_plan(worklist_path)
+    plan[7]["worklist_fingerprint"] = "d" * 64
+
+    exit_code, output_dir, _artifacts = _aggregate_coverage(
+        tmp_path, plan, worklist_path
+    )
+
+    assert exit_code == 1
+    assert not output_dir.exists()
+
+
+def test_aggregate_rejects_a_mismatched_source_revision(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    _document, plan = _coverage_shard_plan(worklist_path)
+    plan[7]["source_revision"] = "c" * 40
+
+    exit_code, output_dir, _artifacts = _aggregate_coverage(
+        tmp_path, plan, worklist_path
+    )
+
+    assert exit_code == 1
+    assert not output_dir.exists()
+
+
+def test_aggregate_rejects_a_tampered_worklist_payload(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    _document, plan = _coverage_shard_plan(worklist_path)
+    tampered = json.loads(worklist_path.read_text(encoding="utf-8"))
+    tampered["payload"]["items"][0]["release_id"] = 424242
+    worklist_path.write_text(
+        json.dumps(tampered, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    exit_code, output_dir, _artifacts = _aggregate_coverage(
+        tmp_path, plan, worklist_path
+    )
+
+    assert exit_code == 1
+    assert not output_dir.exists()
+
+
+def test_aggregate_rejects_a_missing_producer_artifact(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    _document, plan = _coverage_shard_plan(worklist_path)
+    worklist_path.unlink()
+
+    exit_code, output_dir, _artifacts = _aggregate_coverage(
+        tmp_path, plan, worklist_path
+    )
+
+    assert exit_code == 1
+    assert not output_dir.exists()
+
+
+def test_aggregate_rejects_a_missing_shard_manifest(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    _document, plan = _coverage_shard_plan(worklist_path)
+    artifacts = _write_coverage_shards(tmp_path, plan)
+    Path(artifacts["manifests"][11]).unlink()
+    output_dir = tmp_path / "security-reports"
+
+    exit_code = ap.main(_coverage_argv(worklist_path, artifacts, output_dir))
+
+    assert exit_code == 1
+    assert not output_dir.exists()
+
+
+def test_aggregate_rejects_report_bytes_not_bound_to_their_manifest(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    _document, plan = _coverage_shard_plan(worklist_path)
+    artifacts = _write_coverage_shards(tmp_path, plan)
+    tampered = Path(artifacts["reports"][0])
+    tampered.write_text(
+        tampered.read_text(encoding="utf-8").replace(
+            '"report_count"', '"report_count" '
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "security-reports"
+
+    exit_code = ap.main(_coverage_argv(worklist_path, artifacts, output_dir))
+
+    assert exit_code == 1
+    assert not output_dir.exists()
+
+
+def test_aggregate_coverage_arguments_are_required_together(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    _document, plan = _coverage_shard_plan(worklist_path)
+    artifacts = _write_coverage_shards(tmp_path, plan)
+    output_dir = tmp_path / "security-reports"
+
+    with pytest.raises(SystemExit):
+        ap.main(
+            _coverage_argv(
+                worklist_path, artifacts, output_dir, include_manifests=False
+            )
+        )
+    with pytest.raises(SystemExit):
+        ap.main(
+            _coverage_argv(worklist_path, artifacts, output_dir, include_worklist=False)
+        )
+    assert not output_dir.exists()
+
+
+def test_aggregate_coverage_arguments_are_rejected_outside_aggregate_mode(tmp_path):
+    worklist_path, fingerprint = _prepare_coverage_worklist(tmp_path)
+
+    with pytest.raises(SystemExit):
+        ap.main(
+            [
+                "--all",
+                "--expected-worklist",
+                str(worklist_path),
+                "--output-dir",
+                str(tmp_path / "out"),
+            ]
+        )
+    with pytest.raises(SystemExit):
+        ap.main(
+            [
+                "--worklist",
+                str(worklist_path),
+                "--expected-worklist-fingerprint",
+                fingerprint,
+                "--shard-count",
+                str(PRODUCTION_SHARD_COUNT),
+                "--shard-index",
+                "0",
+                "--aggregate-shard-manifests",
+                str(tmp_path / "shard-manifest.json"),
+                "--output-dir",
+                str(tmp_path / "out"),
+            ]
+        )

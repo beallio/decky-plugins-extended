@@ -6124,6 +6124,111 @@ def _worker_shard_manifest(
     }
 
 
+def _manifest_identity_key(identity: Mapping[str, str]) -> tuple[str, str, str]:
+    return (
+        identity["repository"],
+        identity["github_release_id"],
+        identity["asset_id"],
+    )
+
+
+def validate_aggregate_worklist_coverage(
+    worklist_path: str | Path,
+    report_paths: list[str],
+    delta_paths: list[str],
+    manifest_paths: list[str],
+) -> dict[str, Any]:
+    """Prove the supplied shard evidence exactly covers the prepared worklist.
+
+    Counting fourteen artifacts cannot detect a shard that uploaded a
+    structurally valid but incomplete report.  Every manifest is bound to the
+    producer's fingerprint and source revision, to its own deterministic
+    assignment, and to the exact bytes of the report and delta it accompanies;
+    the union of shard report identities must then equal the worklist identity
+    set exactly, so unattempted and unexpected work both fail closed.
+    """
+    document = audit_worklist.load_worklist_document(worklist_path)
+    payload = document["payload"]
+    shard_count = payload["shard_count"]
+
+    for label, supplied in (
+        ("report", len(report_paths)),
+        ("verdict delta", len(delta_paths)),
+        ("shard manifest", len(manifest_paths)),
+    ):
+        if supplied != shard_count:
+            raise ValueError(
+                f"Aggregation requires exactly {shard_count} shard {label} "
+                f"artifacts; got {supplied}"
+            )
+
+    expected_identities = {
+        _manifest_identity_key(audit_worklist.worklist_identity(item))
+        for item in payload["items"]
+    }
+
+    covered: set[tuple[str, str, str]] = set()
+    seen_indices: set[int] = set()
+    for report_path, delta_path, manifest_path in zip(
+        report_paths, delta_paths, manifest_paths
+    ):
+        manifest = _load_shard_manifest(manifest_path)
+        shard_index = manifest["shard_index"]
+        if shard_index in seen_indices:
+            raise ValueError(f"Duplicate shard manifest index: {shard_index}")
+        seen_indices.add(shard_index)
+
+        _validate_expected_shard_manifest(manifest, document, shard_index)
+        _verify_shard_manifest_artifact(manifest, "report_json", report_path)
+        _verify_shard_manifest_artifact(manifest, "verdict_delta", delta_path)
+
+        reported = [
+            _manifest_identity_key(_report_manifest_identity(report))
+            for report in _load_aggregate_shard_reports(report_path)
+        ]
+        report_identities = set(reported)
+        if len(reported) != len(report_identities):
+            raise ValueError(
+                f"Duplicate release identity in shard {shard_index} report"
+            )
+        claimed = {
+            _manifest_identity_key(identity)
+            for identity in manifest["report_identities"]
+        }
+        if report_identities != claimed:
+            raise ValueError(
+                f"Shard {shard_index} manifest and report identities disagree"
+            )
+
+        overlap = covered & report_identities
+        if overlap:
+            raise ValueError(f"Overlapping shard coverage: {sorted(overlap)[0]}")
+        covered |= report_identities
+
+    missing_indices = sorted(set(range(shard_count)) - seen_indices)
+    if missing_indices:
+        raise ValueError(
+            "Missing shard manifest index/indices: "
+            + ", ".join(str(index) for index in missing_indices)
+        )
+
+    if covered != expected_identities:
+        unattempted = sorted(expected_identities - covered)
+        unexpected = sorted(covered - expected_identities)
+        raise ValueError(
+            "Aggregate coverage does not match the prepared worklist: "
+            f"{len(unattempted)} unattempted, {len(unexpected)} unexpected "
+            f"(first unattempted {unattempted[:1]}, "
+            f"first unexpected {unexpected[:1]})"
+        )
+
+    return {
+        "worklist_fingerprint": document["fingerprint"],
+        "shard_count": shard_count,
+        "identity_count": len(expected_identities),
+    }
+
+
 def _verdict_delta_from_reports(
     reports: list[AuditReport],
 ) -> dict[str, dict[str, dict[str, Any]]]:
@@ -6286,6 +6391,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Verdict delta JSON files to aggregate with shard reports",
     )
     parser.add_argument(
+        "--expected-worklist",
+        metavar="PATH",
+        help="Prepared worklist that aggregated shard evidence must cover exactly",
+    )
+    parser.add_argument(
+        "--aggregate-shard-manifests",
+        nargs="*",
+        default=None,
+        metavar="MANIFEST",
+        help="Shard manifests proving exact worklist coverage",
+    )
+    parser.add_argument(
         "--latest-only",
         action="store_true",
         help="Audit one latest eligible release; valid only with --repository",
@@ -6363,11 +6480,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         args.expected_worklist_fingerprint is not None
     )
     aggregate_verdict_deltas_was_supplied = args.aggregate_verdict_deltas is not None
+    expected_worklist_was_supplied = args.expected_worklist is not None
+    aggregate_shard_manifests_was_supplied = args.aggregate_shard_manifests is not None
     args.plugins_file = args.plugins_file or PLUGINS_FILE
     args.api_deadline_seconds = (
         args.api_deadline_seconds if args.api_deadline_seconds is not None else 300
     )
     args.aggregate_verdict_deltas = args.aggregate_verdict_deltas or []
+    args.aggregate_shard_manifests = args.aggregate_shard_manifests or []
 
     if args.all:
         selected_mode = "all"
@@ -6393,6 +6513,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         parser.error("--latest-only is valid only with --repository")
     if expected_worklist_fingerprint_was_supplied and not worklist_mode:
         parser.error("--expected-worklist-fingerprint is valid only with --worklist")
+    if (
+        expected_worklist_was_supplied or aggregate_shard_manifests_was_supplied
+    ) and selected_mode != "aggregate-reports":
+        parser.error(
+            "--expected-worklist and --aggregate-shard-manifests are valid only "
+            "with --aggregate-reports"
+        )
+    if expected_worklist_was_supplied != aggregate_shard_manifests_was_supplied:
+        parser.error(
+            "--expected-worklist and --aggregate-shard-manifests must be "
+            "supplied together"
+        )
+    if expected_worklist_was_supplied and not args.expected_worklist.strip():
+        parser.error("--expected-worklist must not be empty")
 
     if worklist_mode:
         if (
@@ -6533,6 +6667,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             if len(args.aggregate_reports) != len(aggregate_delta_paths):
                 raise ValueError(
                     "Each aggregated shard report requires a corresponding verdict delta shard artifact"
+                )
+            if args.expected_worklist is not None:
+                validate_aggregate_worklist_coverage(
+                    args.expected_worklist,
+                    args.aggregate_reports,
+                    aggregate_delta_paths,
+                    args.aggregate_shard_manifests,
                 )
             for report_path, delta_path in zip(
                 args.aggregate_reports, aggregate_delta_paths
