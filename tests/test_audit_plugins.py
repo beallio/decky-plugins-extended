@@ -146,6 +146,28 @@ def test_producer_api_budget_is_shared_by_metadata_rest_calls():
     assert response.closed
 
 
+def test_worker_download_session_retries_transient_http_failures():
+    """Worker artifact/codeload downloads retain the established retry policy."""
+    retry = ap._make_github_session().get_adapter("https://example.invalid").max_retries
+
+    assert retry.total == ap.MAX_RETRIES
+    assert set(retry.status_forcelist) == {429, 500, 502, 503, 504}
+    assert retry.respect_retry_after_header
+
+
+def test_producer_api_session_has_no_transport_retry_delay():
+    """Only the explicit ApiRequestBudget controls producer retry timing."""
+    with ap._producer_api_budget_scope(5):
+        retry = ap._active_github_session().get_adapter(
+            "https://api.github.com"
+        ).max_retries
+
+        assert retry.total == 0
+        assert retry.connect == 0
+        assert retry.read == 0
+        assert retry.status == 0
+
+
 # ---------------------------------------------------------------------------
 # Repository list parsing
 # ---------------------------------------------------------------------------

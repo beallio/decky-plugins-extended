@@ -2,7 +2,9 @@ import hashlib
 import io
 import json
 import os
+import threading
 import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -63,6 +65,48 @@ class FakeSession:
     def get(self, url, **kwargs):
         self.calls.append((url, kwargs))
         return self.response
+
+
+def test_worker_download_retries_a_transient_server_error(monkeypatch, tmp_path):
+    """The worker's real download transport retries a transient HTTP 5xx."""
+    payload = _release_zip_bytes()
+
+    class Handler(BaseHTTPRequestHandler):
+        calls = 0
+
+        def do_GET(self):
+            type(self).calls += 1
+            if type(self).calls == 1:
+                self.send_response(502)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, _format, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    destination = tmp_path / "release.zip"
+    monkeypatch.setattr(ap, "_gh_session", ap._make_github_session())
+    try:
+        digest = ap.download_zip(
+            f"http://127.0.0.1:{server.server_port}/plugin.zip",
+            str(destination),
+            policy=_download_policy("release-audit", len(payload)),
+        )
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+    assert Handler.calls == 2
+    assert digest == hashlib.sha256(payload).hexdigest()
+    assert destination.read_bytes() == payload
 
 
 def _release():

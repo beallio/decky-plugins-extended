@@ -810,16 +810,31 @@ def apply_rule_classification_overrides(
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 
 
-def _make_github_session() -> requests.Session:
+def _make_github_session(*, producer_budgeted: bool = False) -> requests.Session:
+    """Create a GitHub transport for either worker or budgeted producer use.
+
+    Workers rely on urllib3's established transient-failure retries for their
+    artifact and codeload downloads.  Worklist preparation instead uses an
+    explicit ``ApiRequestBudget`` for all retry timing, so its isolated session
+    must not let urllib3 sleep or retry outside that shared deadline.
+    """
     s = requests.Session()
-    retry = Retry(
-        total=0,
-        connect=0,
-        read=0,
-        redirect=0,
-        status=0,
-        respect_retry_after_header=False,
-    )
+    if producer_budgeted:
+        retry = Retry(
+            total=0,
+            connect=0,
+            read=0,
+            redirect=0,
+            status=0,
+            respect_retry_after_header=False,
+        )
+    else:
+        retry = Retry(
+            total=MAX_RETRIES,
+            backoff_factor=2,
+            status_forcelist=[429, 500, 502, 503, 504],
+            respect_retry_after_header=True,
+        )
     adapter = HTTPAdapter(max_retries=retry)
     s.mount("https://", adapter)
     s.mount("http://", adapter)
@@ -839,6 +854,14 @@ _gh_session = _make_github_session()
 _producer_api_budget: ContextVar[Optional[plugin_release_utils.ApiRequestBudget]] = (
     ContextVar("producer_api_budget", default=None)
 )
+_producer_github_session: ContextVar[Optional[requests.Session]] = ContextVar(
+    "producer_github_session", default=None
+)
+
+
+def _active_github_session() -> requests.Session:
+    """Return the budget-safe producer transport or the normal worker transport."""
+    return _producer_github_session.get() or _gh_session
 
 
 @contextmanager
@@ -848,11 +871,15 @@ def _producer_api_budget_scope(deadline_seconds: int):
         deadline_seconds,
         max_retries=MAX_RETRIES,
     )
-    token = _producer_api_budget.set(budget)
+    session = _make_github_session(producer_budgeted=True)
+    budget_token = _producer_api_budget.set(budget)
+    session_token = _producer_github_session.set(session)
     try:
         yield budget
     finally:
-        _producer_api_budget.reset(token)
+        _producer_github_session.reset(session_token)
+        _producer_api_budget.reset(budget_token)
+        session.close()
 
 
 def _gh_get(url: str, params: Optional[dict] = None) -> dict | list:
@@ -860,7 +887,7 @@ def _gh_get(url: str, params: Optional[dict] = None) -> dict | list:
     budget = _producer_api_budget.get()
     if budget is not None:
         response = budget.get_response(
-            _gh_session,
+            _active_github_session(),
             url,
             params=params,
             timeout=REQUEST_TIMEOUT,
@@ -875,7 +902,9 @@ def _gh_get(url: str, params: Optional[dict] = None) -> dict | list:
     for attempt in range(MAX_RETRIES + 1):
         resp = None
         try:
-            resp = _gh_session.get(url, params=params, timeout=REQUEST_TIMEOUT)
+            resp = _active_github_session().get(
+                url, params=params, timeout=REQUEST_TIMEOUT
+            )
         except requests.RequestException:
             if attempt < MAX_RETRIES:
                 time.sleep(2**attempt)
@@ -910,7 +939,7 @@ def get_releases(owner: str, repo: str) -> list[dict[str, Any]]:
     return plugin_release_utils.get_releases(
         owner,
         repo,
-        session=_gh_session,
+        session=_active_github_session(),
         timeout=REQUEST_TIMEOUT,
         api_budget=_producer_api_budget.get(),
     )
@@ -6639,7 +6668,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 repository_urls = [args.repository]
                 selection_mode = "repository"
 
-            with _producer_api_budget_scope(args.api_deadline_seconds):
+            with _producer_api_budget_scope(args.api_deadline_seconds) as api_budget:
                 fingerprint, _ = audit_worklist.prepare_audit_worklist(
                     args.prepare_worklist,
                     source_revision=args.source_revision,
@@ -6652,6 +6681,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     metadata_fetcher=get_repo_metadata,
                     tag_resolver=audit_worklist.resolve_repository_tags_via_ls_remote,
                     api_deadline_seconds=args.api_deadline_seconds,
+                    api_budget=api_budget,
                 )
             print(f"worklist_fingerprint={fingerprint}")
             return 0
