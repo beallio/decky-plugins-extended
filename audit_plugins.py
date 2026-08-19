@@ -4980,6 +4980,22 @@ def _redacted_exception_detail(exc: BaseException) -> str:
     return redact_secrets(_truncate(str(exc), EVIDENCE_MAX_LEN))
 
 
+def _combine_scanner_detail(
+    base_detail: Optional[str], source_preparation_error: Optional[str]
+) -> Optional[str]:
+    """Build a bounded, redacted scanner detail that preserves original context."""
+    detail_parts: list[str] = []
+    if base_detail:
+        detail_parts.append(base_detail)
+    if source_preparation_error:
+        detail_parts.append(
+            f"source snapshot preparation failed: {source_preparation_error}"
+        )
+    if not detail_parts:
+        return None
+    return redact_secrets(_truncate("; ".join(detail_parts), EVIDENCE_MAX_LEN))
+
+
 def _record_release_local_error(
     report: AuditReport,
     *,
@@ -5182,6 +5198,35 @@ def audit_release(
                 return cached
 
         # --- ZIP inspection ---
+        source_snapshot: Optional[audit_source_snapshot.SourceSnapshot] = None
+        source_preparation_error: Optional[str] = None
+        try:
+            source_snapshot = audit_source_snapshot.materialize_source_snapshot(
+                repo_url,
+                resolved_tag_commit_sha,
+                os.path.join(tmp_dir, "source"),
+                session=_gh_session,
+                policy=policy,
+            )
+            if source_snapshot.plugin_json is not None:
+                plugin_meta_data = source_snapshot.plugin_json
+            if source_snapshot.package_json is not None:
+                package_meta_data = source_snapshot.package_json
+        except Exception as exc:
+            source_preparation_error = _redacted_exception_detail(exc)
+            report.findings.append(
+                Finding(
+                    rule_id="SOURCE_ARTIFACT_PREPARATION_FAILED",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="",
+                    line=0,
+                    message="Source snapshot could not be prepared from tag commit.",
+                    evidence=source_preparation_error,
+                    scanner="source-snapshot",
+                )
+            )
+
         try:
             zip_stats, zip_findings = inspect_zip(zip_path, policy)
         except _SCOPED_ARCHIVE_INSPECTION_EXCEPTIONS as exc:
@@ -5275,40 +5320,7 @@ def audit_release(
 
         report.extracted_domains = sorted(all_domains)
 
-        source_snapshot: Optional[audit_source_snapshot.SourceSnapshot] = None
-        source_preparation_error: Optional[str] = None
         trivy_source_enabled = _scanner_enabled(policy, "trivy")
-        diff_source_enabled = _scanner_enabled(policy, "source-artifact-diff")
-        source_consumers_enabled = trivy_source_enabled or diff_source_enabled
-
-        if zip_stats.safe and os.path.isdir(extract_dir) and source_consumers_enabled:
-            try:
-                source_snapshot = audit_source_snapshot.materialize_source_snapshot(
-                    repo_url,
-                    resolved_tag_commit_sha,
-                    os.path.join(tmp_dir, "source"),
-                    session=_gh_session,
-                    policy=policy,
-                )
-                if source_snapshot.plugin_json is not None:
-                    plugin_meta_data = source_snapshot.plugin_json
-                    plugin_meta_path = "plugin.json@source-snapshot"
-                if source_snapshot.package_json is not None:
-                    package_meta_data = source_snapshot.package_json
-                    package_meta_path = "package.json@source-snapshot"
-            except Exception as exc:
-                source_preparation_error = _redacted_exception_detail(exc)
-                finding = Finding(
-                    rule_id="SOURCE_ARTIFACT_PREPARATION_FAILED",
-                    severity="low",
-                    classification="PASS_WITH_WARNINGS",
-                    path="",
-                    line=0,
-                    message="Source snapshot could not be prepared from tag commit.",
-                    evidence=source_preparation_error,
-                    scanner="source-artifact-diff",
-                )
-                report.findings.append(finding)
 
         # --- Metadata fallback from ZIP when missing at tag ---
         zip_plugin_json, zip_plugin_rel = _find_metadata_in_extracted(
@@ -5372,7 +5384,10 @@ def audit_release(
                 trivy_status = ScannerStatus(
                     name="trivy",
                     status="failed",
-                    detail=f"Source scan unavailable: {source_preparation_error}",
+                    detail=_combine_scanner_detail(
+                        trivy_status.detail,
+                        source_preparation_error,
+                    ),
                 )
             report.scanner_statuses.append(trivy_status)
             report.findings.extend(trivy_findings)
@@ -5401,10 +5416,11 @@ def audit_release(
                     diff_status = ScannerStatus(
                         name="source-artifact-diff",
                         status="failed",
-                        detail=(
-                            f"Source scan unavailable: {source_preparation_error}"
+                        detail=_combine_scanner_detail(
+                            None
                             if source_preparation_error is not None
-                            else "Source-artifact snapshot is missing."
+                            else "Source-artifact snapshot is missing.",
+                            source_preparation_error,
                         ),
                     )
             else:

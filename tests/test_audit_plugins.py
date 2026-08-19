@@ -17,6 +17,7 @@ import tarfile
 import tempfile
 import unittest
 import zipfile
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -2180,9 +2181,10 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 source_archive_bytes = source_archive.getvalue()
                 policy = ap._default_policy()
 
-                observed: dict[str, str] = {}
+                observed: dict[str, object] = {}
                 download_calls: list[str] = []
                 codeload_calls: list[tuple[str, dict[str, object]]] = []
+                observed_paths: dict[str, str] = {}
 
                 expected_source_url = (
                     f"https://codeload.github.com/owner/my-plugin/tar.gz/{commit_sha}"
@@ -2228,6 +2230,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 def fake_compare(extract_root, source_snapshot, ref):
                     del extract_root
                     observed["diff_root"] = source_snapshot.source_root
+                    observed["diff_snapshot"] = source_snapshot
                     observed["diff_snapshot_id"] = id(source_snapshot)
                     observed["diff_ref"] = ref
                     return (
@@ -2235,6 +2238,34 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                         [],
                         ap.ScannerStatus(name="source-artifact-diff", status="passed"),
                     )
+
+                real_materialize = ap.audit_source_snapshot.materialize_source_snapshot
+
+                def capture_materialize(
+                    repository_url: str,
+                    commit_sha: str,
+                    destination: str,
+                    **kwargs: object,
+                ) -> audit_source_snapshot.SourceSnapshot:
+                    snapshot = real_materialize(
+                        repository_url, commit_sha, destination, **kwargs
+                    )
+                    observed["snapshot"] = snapshot
+                    return snapshot
+
+                real_check_plugin_json = ap.check_plugin_json
+
+                def capture_plugin_json(data: bytes | None, path: str = "plugin.json"):
+                    observed_paths["plugin"] = path
+                    return real_check_plugin_json(data, path)
+
+                real_check_package_json = ap.check_package_json
+
+                def capture_package_json(
+                    data: bytes | None, path: str = "package.json"
+                ):
+                    observed_paths["package"] = path
+                    return real_check_package_json(data, path)
 
                 with tempfile.TemporaryDirectory() as td:
                     with (
@@ -2311,12 +2342,32 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                             "compare_source_and_artifact_from_snapshot",
                             side_effect=fake_compare,
                         ),
+                        patch.object(
+                            ap,
+                            "check_plugin_json",
+                            side_effect=capture_plugin_json,
+                        ),
+                        patch.object(
+                            ap,
+                            "check_package_json",
+                            side_effect=capture_package_json,
+                        ),
                     ):
-                        with patch.object(
-                            ap.audit_source_snapshot,
-                            "_extract_source_archive",
-                            wraps=ap.audit_source_snapshot._extract_source_archive,
-                        ) as extract_archive:
+                        with ExitStack() as materialization_stubs:
+                            extract_archive = materialization_stubs.enter_context(
+                                patch.object(
+                                    ap.audit_source_snapshot,
+                                    "_extract_source_archive",
+                                    wraps=ap.audit_source_snapshot._extract_source_archive,
+                                )
+                            )
+                            materialization_stubs.enter_context(
+                                patch.object(
+                                    ap.audit_source_snapshot,
+                                    "materialize_source_snapshot",
+                                    side_effect=capture_materialize,
+                                )
+                            )
                             report = ap.audit_repository(
                                 "https://github.com/owner/my-plugin",
                                 policy=policy,
@@ -2342,8 +2393,14 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 self.assertEqual(observed["diff_ref"], "v1.0.0")
                 self.assertIsNotNone(observed["trivy_root"])
                 self.assertEqual(len(download_calls), 1)
+                snapshot = observed.get("snapshot")
+                self.assertIsNotNone(snapshot)
+                self.assertIs(snapshot, observed["diff_snapshot"])  # type: ignore[arg-type]
+                self.assertEqual(snapshot.source_root, observed["diff_root"])  # type: ignore[attr-defined]
                 self.assertEqual(report.final_classification, "PASS")
                 self.assertEqual(report.plugin_name, "SourcePlugin")
+                self.assertEqual(observed_paths["plugin"], "plugin.json@v1.0.0")
+                self.assertEqual(observed_paths["package"], "package.json@v1.0.0")
                 self.assertEqual(observed["trivy_root"], observed["diff_root"])
 
     def _source_preparation_failure_report(
@@ -2351,8 +2408,18 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         *,
         trivy_required: bool,
         source_diff_required: bool,
+        trivy_enabled: bool = True,
+        source_diff_enabled: bool = True,
+        trivy_status: ap.ScannerStatus | None = None,
+        trivy_findings: list[ap.Finding] | None = None,
+        clamav_status: ap.ScannerStatus | None = None,
+        clamav_findings: list[ap.Finding] | None = None,
+        semgrep_status: ap.ScannerStatus | None = None,
+        semgrep_findings: list[ap.Finding] | None = None,
+        zip_data_override: bytes | None = None,
+        materialize_failure: str = "source snapshot failed",
     ) -> tuple[ap.AuditReport, dict[str, int]]:
-        zip_data = _make_zip(
+        zip_data = zip_data_override or _make_zip(
             [
                 _regular(
                     "my-plugin/plugin.json",
@@ -2378,7 +2445,20 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         meta = {"default_branch": "main", "archived": False}
         policy = ap._default_policy()
         policy["scanners"]["trivy"]["required"] = trivy_required
+        policy["scanners"]["trivy"]["enabled"] = trivy_enabled
         policy["scanners"]["source_artifact_diff"]["required"] = source_diff_required
+        policy["scanners"]["source_artifact_diff"]["enabled"] = source_diff_enabled
+
+        trivy_status = trivy_status or ap.ScannerStatus(name="trivy", status="passed")
+        trivy_findings = trivy_findings or []
+        clamav_status = clamav_status or ap.ScannerStatus(
+            name="clamav", status="passed"
+        )
+        clamav_findings = clamav_findings or []
+        semgrep_status = semgrep_status or ap.ScannerStatus(
+            name="semgrep", status="skipped"
+        )
+        semgrep_findings = semgrep_findings or []
 
         counts = {
             "trivy": 0,
@@ -2393,14 +2473,14 @@ class TestAuditRepositoryMocked(unittest.TestCase):
 
         def fake_trivy(_artifact_root, _policy, source_root=None):
             counts["trivy"] += 1
-            return (
-                ap.ScannerStatus(name="trivy", status="passed"),
-                [],
-            )
+            del source_root
+            if not _policy["scanners"]["trivy"].get("enabled", True):
+                return ap.ScannerStatus(name="trivy", status="skipped"), []
+            return trivy_status, trivy_findings
 
         def fake_materialize(*_args, **_kwargs):
             counts["materialize"] += 1
-            raise RuntimeError("source snapshot failed")
+            raise RuntimeError(materialize_failure)
 
         def fake_compare(_extract_root, _source_snapshot, _ref):
             counts["compare"] += 1
@@ -2424,8 +2504,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                     ap,
                     "run_clamav",
                     return_value=(
-                        ap.ScannerStatus(name="clamav", status="passed"),
-                        [],
+                        clamav_status,
+                        clamav_findings,
                     ),
                 ),
                 patch.object(ap, "run_trivy", side_effect=fake_trivy),
@@ -2433,8 +2513,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                     ap,
                     "run_semgrep",
                     return_value=(
-                        ap.ScannerStatus(name="semgrep", status="skipped"),
-                        [],
+                        semgrep_status,
+                        semgrep_findings,
                     ),
                 ),
                 patch.object(
@@ -2453,11 +2533,72 @@ class TestAuditRepositoryMocked(unittest.TestCase):
 
         return report, counts
 
+    def test_source_preparation_failure_with_both_sources_disabled(self):
+        source_findings = [
+            ap.Finding(
+                rule_id="CACHED_FINDING",
+                severity="medium",
+                classification="PASS_WITH_WARNINGS",
+                path="plugin.zip",
+                line=1,
+                message="artifact scan finding",
+                evidence="",
+                scanner="trivy",
+            )
+        ]
+        report, counts = self._source_preparation_failure_report(
+            trivy_required=False,
+            source_diff_required=False,
+            trivy_enabled=False,
+            source_diff_enabled=False,
+            trivy_status=ap.ScannerStatus(name="trivy", status="skipped"),
+            trivy_findings=source_findings,
+            clamav_status=ap.ScannerStatus(name="clamav", status="passed"),
+            clamav_findings=[
+                ap.Finding(
+                    rule_id="CLAM_FOUND",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="plugin/main.py",
+                    line=1,
+                    message="clamav test",
+                    evidence="",
+                    scanner="clamav",
+                )
+            ],
+        )
+        self.assertEqual(report.final_classification, "PASS_WITH_WARNINGS")
+        self.assertEqual(counts["materialize"], 1)
+        self.assertEqual(counts["trivy"], 1)
+        self.assertEqual(counts["compare"], 0)
+        self.assertEqual(report.plugin_name, "ZipOnlyPlugin")
+        self.assertTrue(
+            any(
+                status.name == "trivy" and status.status == "skipped"
+                for status in report.scanner_statuses
+            )
+        )
+        self.assertTrue(
+            any(
+                status.name == "source-artifact-diff" and status.status == "skipped"
+                for status in report.scanner_statuses
+            )
+        )
+        self.assertTrue(
+            any(
+                finding.rule_id == "SOURCE_ARTIFACT_PREPARATION_FAILED"
+                for finding in report.findings
+            )
+        )
+        self.assertTrue(any(f.rule_id == "CLAM_FOUND" for f in report.findings))
+
     def test_source_preparation_failure_marks_required_as_audit_error(self):
         report, counts = self._source_preparation_failure_report(
             trivy_required=True, source_diff_required=True
         )
         self.assertEqual(report.final_classification, "AUDIT_ERROR")
+        self.assertEqual(report.identity_status, "CURRENT")
+        self.assertEqual(report.completion_status, "incomplete")
         self.assertEqual(counts["materialize"], 1)
         self.assertEqual(counts["trivy"], 1)
         self.assertEqual(counts["compare"], 0)
@@ -2476,11 +2617,54 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             )
         )
 
+    def test_source_preparation_failure_marks_trivy_required_as_audit_error(self):
+        report, counts = self._source_preparation_failure_report(
+            trivy_required=True,
+            source_diff_required=False,
+            source_diff_enabled=False,
+            trivy_status=ap.ScannerStatus(name="trivy", status="passed"),
+        )
+        self.assertEqual(report.final_classification, "AUDIT_ERROR")
+        self.assertEqual(report.identity_status, "CURRENT")
+        self.assertEqual(report.completion_status, "incomplete")
+        self.assertEqual(counts["materialize"], 1)
+        self.assertEqual(counts["trivy"], 1)
+        self.assertEqual(counts["compare"], 0)
+        self.assertTrue(
+            any(
+                status.name == "trivy" and status.status == "failed"
+                for status in report.scanner_statuses
+            )
+        )
+
+    def test_source_preparation_failure_marks_source_diff_required_as_audit_error(self):
+        report, counts = self._source_preparation_failure_report(
+            trivy_required=False,
+            source_diff_required=True,
+            trivy_enabled=False,
+            source_diff_enabled=True,
+            trivy_status=ap.ScannerStatus(name="trivy", status="skipped"),
+        )
+        self.assertEqual(report.final_classification, "AUDIT_ERROR")
+        self.assertEqual(report.identity_status, "CURRENT")
+        self.assertEqual(report.completion_status, "incomplete")
+        self.assertEqual(counts["materialize"], 1)
+        self.assertEqual(counts["trivy"], 1)
+        self.assertEqual(counts["compare"], 0)
+        self.assertTrue(
+            any(
+                status.name == "source-artifact-diff" and status.status == "failed"
+                for status in report.scanner_statuses
+            )
+        )
+
     def test_source_preparation_failure_marks_optional_as_pass_with_warnings(self):
         report, counts = self._source_preparation_failure_report(
             trivy_required=False, source_diff_required=False
         )
         self.assertEqual(report.final_classification, "PASS_WITH_WARNINGS")
+        self.assertEqual(report.identity_status, "CURRENT")
+        self.assertEqual(report.completion_status, "completed")
         self.assertEqual(counts["materialize"], 1)
         self.assertEqual(counts["trivy"], 1)
         self.assertEqual(counts["compare"], 0)
@@ -2500,6 +2684,110 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         self.assertTrue(
             any(
                 finding.rule_id == "SOURCE_ARTIFACT_DIFF_INCOMPLETE"
+                for finding in report.findings
+            )
+        )
+        self.assertTrue(
+            any(
+                status.name == "trivy" and status.status == "failed"
+                for status in report.scanner_statuses
+            )
+        )
+        self.assertTrue(
+            any(
+                status.name == "source-artifact-diff" and status.status == "failed"
+                for status in report.scanner_statuses
+            )
+        )
+
+    def test_source_preparation_failure_preserves_scanner_findings_and_bounds_secrets(
+        self,
+    ):
+        long_secret = 'token="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
+        report, _ = self._source_preparation_failure_report(
+            trivy_required=False,
+            source_diff_required=False,
+            materialize_failure=f"failed: {long_secret}",
+            trivy_findings=[
+                ap.Finding(
+                    rule_id="TRIVY_FINDING",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="artifact:plugin/main.py",
+                    line=1,
+                    message="artifact-only trivy detail",
+                    evidence="",
+                    scanner="trivy",
+                )
+            ],
+            trivy_status=ap.ScannerStatus(
+                name="trivy", status="failed", detail=f"failed: {long_secret}"
+            ),
+            clamav_findings=[
+                ap.Finding(
+                    rule_id="CLAMAV_FINDING",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="artifact:plugin/main.py",
+                    line=2,
+                    message="clamav finding",
+                    evidence="",
+                    scanner="clamav",
+                )
+            ],
+            semgrep_findings=[
+                ap.Finding(
+                    rule_id="SEMIGREP_FINDING",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="artifact:plugin/main.py",
+                    line=3,
+                    message="semgrep finding",
+                    evidence="",
+                    scanner="semgrep",
+                )
+            ],
+        )
+        trivy_status = next(
+            (status for status in report.scanner_statuses if status.name == "trivy"),
+            None,
+        )
+        self.assertIsNotNone(trivy_status)
+        self.assertIsNotNone(trivy_status.detail)
+        self.assertIn("source snapshot preparation failed", trivy_status.detail or "")
+        self.assertNotIn("aaaaaaaa", trivy_status.detail or "")
+        self.assertTrue(
+            any(finding.rule_id == "TRIVY_FINDING" for finding in report.findings)
+        )
+        self.assertTrue(
+            any(finding.rule_id == "CLAMAV_FINDING" for finding in report.findings)
+        )
+        self.assertTrue(
+            any(finding.rule_id == "SEMIGREP_FINDING" for finding in report.findings)
+        )
+
+    def test_source_preparation_failure_with_blocking_archive_findings_remains_block(
+        self,
+    ):
+        bad_zip_data = _make_zip(
+            [
+                _regular("../evil.py", "print('nope')"),
+                _regular(
+                    "my-plugin/plugin.json",
+                    json.dumps({"name": "ZipOnlyPlugin", "flags": []}),
+                ),
+            ]
+        )
+        report, _ = self._source_preparation_failure_report(
+            trivy_required=False,
+            source_diff_required=False,
+            zip_data_override=bad_zip_data,
+        )
+        self.assertEqual(report.final_classification, "BLOCK")
+        self.assertTrue(any(f.rule_id == "ARCHIVE_TRAVERSAL" for f in report.findings))
+        self.assertTrue(
+            any(
+                finding.rule_id == "SOURCE_ARTIFACT_PREPARATION_FAILED"
                 for finding in report.findings
             )
         )

@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import unittest
 import zipfile
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -646,14 +647,104 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                     [],
                     cache_dir=cache_dir,
                 )
-                second = ap.audit_repository(
-                    "https://github.com/owner/repo",
-                    policy,
-                    [],
-                    cache_dir=cache_dir,
-                )
+                self.assertEqual(first.final_classification, "PASS")
 
-        self.assertEqual(first.final_classification, "PASS")
+                with ExitStack() as _cache_hit_sentinels:
+                    _cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.get_repo_file_raw",
+                            side_effect=AssertionError(
+                                "legacy source metadata API used"
+                            ),
+                        )
+                    )
+                    _cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins._gh_get",
+                            side_effect=AssertionError(
+                                "legacy REST call used after cache hit"
+                            ),
+                        )
+                    )
+                    _cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins._fetch_source_tree",
+                            side_effect=AssertionError(
+                                "legacy source-tree REST path used"
+                            ),
+                        )
+                    )
+                    _cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins._download_source_archive",
+                            side_effect=AssertionError(
+                                "legacy source-archive REST path used"
+                            ),
+                        )
+                    )
+                    _cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.compare_source_and_artifact",
+                            side_effect=AssertionError("legacy source compare used"),
+                        )
+                    )
+                    _cache_hit_sentinels.enter_context(
+                        patch.object(
+                            ap.audit_source_snapshot,
+                            "materialize_source_snapshot",
+                            side_effect=AssertionError(
+                                "prepared source snapshot should be skipped"
+                            ),
+                        )
+                    )
+                    _cache_hit_sentinels.enter_context(
+                        patch.object(
+                            ap.audit_source_snapshot,
+                            "_extract_source_archive",
+                            side_effect=AssertionError(
+                                "prepared source extraction should be skipped"
+                            ),
+                        )
+                    )
+                    _cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.run_trivy",
+                            side_effect=AssertionError(
+                                "prepared trivy should be skipped"
+                            ),
+                        )
+                    )
+                    _cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.run_clamav",
+                            side_effect=AssertionError(
+                                "prepared clamscan should be skipped"
+                            ),
+                        )
+                    )
+                    _cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.run_semgrep",
+                            side_effect=AssertionError(
+                                "prepared semgrep should be skipped"
+                            ),
+                        )
+                    )
+                    _cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.compare_source_and_artifact_from_snapshot",
+                            side_effect=AssertionError(
+                                "prepared source comparison should be skipped"
+                            ),
+                        )
+                    )
+                    second = ap.audit_repository(
+                        "https://github.com/owner/repo",
+                        policy,
+                        [],
+                        cache_dir=cache_dir,
+                    )
+
         self.assertEqual(second.final_classification, "PASS")
         self.assertEqual(download_count, 1)
         self.assertEqual(materialize_count, 1)
@@ -754,12 +845,104 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                     exceptions,
                     cache_dir=cache_dir,
                 )
-                second = ap.audit_repository(
-                    "https://github.com/owner/repo",
-                    policy,
-                    exceptions,
-                    cache_dir=cache_dir,
-                )
+                self.assertEqual(first.final_classification, "PASS")
+
+                with ExitStack() as source_cache_hit_sentinels:
+                    source_cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.get_repo_file_raw",
+                            side_effect=AssertionError(
+                                "legacy source metadata API used"
+                            ),
+                        )
+                    )
+                    source_cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins._gh_get",
+                            side_effect=AssertionError(
+                                "legacy REST call used after cache hit"
+                            ),
+                        )
+                    )
+                    source_cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins._fetch_source_tree",
+                            side_effect=AssertionError(
+                                "legacy source-tree REST path used"
+                            ),
+                        )
+                    )
+                    source_cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins._download_source_archive",
+                            side_effect=AssertionError(
+                                "legacy source-archive REST path used"
+                            ),
+                        )
+                    )
+                    source_cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.compare_source_and_artifact",
+                            side_effect=AssertionError("legacy source compare used"),
+                        )
+                    )
+                    source_cache_hit_sentinels.enter_context(
+                        patch.object(
+                            ap.audit_source_snapshot,
+                            "materialize_source_snapshot",
+                            side_effect=AssertionError(
+                                "prepared source snapshot should be skipped"
+                            ),
+                        )
+                    )
+                    source_cache_hit_sentinels.enter_context(
+                        patch.object(
+                            ap.audit_source_snapshot,
+                            "_extract_source_archive",
+                            side_effect=AssertionError(
+                                "prepared source extraction should be skipped"
+                            ),
+                        )
+                    )
+                    source_cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.run_trivy",
+                            side_effect=AssertionError(
+                                "prepared trivy should be skipped"
+                            ),
+                        )
+                    )
+                    source_cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.run_clamav",
+                            side_effect=AssertionError(
+                                "prepared clamscan should be skipped"
+                            ),
+                        )
+                    )
+                    source_cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.run_semgrep",
+                            side_effect=AssertionError(
+                                "prepared semgrep should be skipped"
+                            ),
+                        )
+                    )
+                    source_cache_hit_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.compare_source_and_artifact_from_snapshot",
+                            side_effect=AssertionError(
+                                "prepared source comparison should be skipped"
+                            ),
+                        )
+                    )
+                    second = ap.audit_repository(
+                        "https://github.com/owner/repo",
+                        policy,
+                        exceptions,
+                        cache_dir=cache_dir,
+                    )
+                self.assertEqual(second.final_classification, "PASS")
 
         self.assertEqual(first.final_classification, "PASS")
         self.assertEqual(second.final_classification, "PASS")
@@ -955,28 +1138,132 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                     side_effect=fake_compare,
                 ),
             ):
-                _ = ap.audit_repository(
+                first = ap.audit_repository(
                     "https://github.com/owner/repo",
                     policy,
                     exceptions,
                     cache_dir=cache_dir,
                     skip_cache=False,
                 )
-                _ = ap.audit_repository(
-                    "https://github.com/owner/repo",
-                    policy,
-                    exceptions,
-                    cache_dir=cache_dir,
-                    skip_cache=False,
-                )
-                _ = ap.audit_repository(
+                self.assertEqual(first.final_classification, "PASS")
+                self.assertEqual(download_count, 1)
+                self.assertEqual(materialize_count, 1)
+                self.assertEqual(trivy_count, 1)
+                self.assertEqual(compare_count, 1)
+
+                with ExitStack() as skip_cache_sentinels:
+                    skip_cache_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.get_repo_file_raw",
+                            side_effect=AssertionError(
+                                "legacy source metadata API used"
+                            ),
+                        )
+                    )
+                    skip_cache_sentinels.enter_context(
+                        patch(
+                            "audit_plugins._gh_get",
+                            side_effect=AssertionError(
+                                "legacy REST call used after cache hit"
+                            ),
+                        )
+                    )
+                    skip_cache_sentinels.enter_context(
+                        patch(
+                            "audit_plugins._fetch_source_tree",
+                            side_effect=AssertionError(
+                                "legacy source-tree REST path used"
+                            ),
+                        )
+                    )
+                    skip_cache_sentinels.enter_context(
+                        patch(
+                            "audit_plugins._download_source_archive",
+                            side_effect=AssertionError(
+                                "legacy source-archive REST path used"
+                            ),
+                        )
+                    )
+                    skip_cache_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.compare_source_and_artifact",
+                            side_effect=AssertionError(
+                                "prepared source comparison should be skipped"
+                            ),
+                        )
+                    )
+                    skip_cache_sentinels.enter_context(
+                        patch.object(
+                            ap.audit_source_snapshot,
+                            "materialize_source_snapshot",
+                            side_effect=AssertionError(
+                                "prepared source snapshot should be skipped"
+                            ),
+                        )
+                    )
+                    skip_cache_sentinels.enter_context(
+                        patch.object(
+                            ap.audit_source_snapshot,
+                            "_extract_source_archive",
+                            side_effect=AssertionError(
+                                "prepared source extraction should be skipped"
+                            ),
+                        )
+                    )
+                    skip_cache_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.run_trivy",
+                            side_effect=AssertionError(
+                                "prepared trivy should be skipped"
+                            ),
+                        )
+                    )
+                    skip_cache_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.run_clamav",
+                            side_effect=AssertionError(
+                                "prepared clamscan should be skipped"
+                            ),
+                        )
+                    )
+                    skip_cache_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.run_semgrep",
+                            side_effect=AssertionError(
+                                "prepared semgrep should be skipped"
+                            ),
+                        )
+                    )
+                    skip_cache_sentinels.enter_context(
+                        patch(
+                            "audit_plugins.compare_source_and_artifact_from_snapshot",
+                            side_effect=AssertionError(
+                                "prepared source comparison should be skipped"
+                            ),
+                        )
+                    )
+                    second = ap.audit_repository(
+                        "https://github.com/owner/repo",
+                        policy,
+                        exceptions,
+                        cache_dir=cache_dir,
+                        skip_cache=False,
+                    )
+
+                self.assertEqual(second.final_classification, "PASS")
+                self.assertEqual(download_count, 2)
+                self.assertEqual(materialize_count, 1)
+                self.assertEqual(trivy_count, 1)
+                self.assertEqual(compare_count, 1)
+
+                third = ap.audit_repository(
                     "https://github.com/owner/repo",
                     policy,
                     exceptions,
                     cache_dir=cache_dir,
                     skip_cache=True,
                 )
-
+        self.assertEqual(third.final_classification, "PASS")
         self.assertEqual(download_count, 3)
         self.assertEqual(materialize_count, 2)
         self.assertEqual(trivy_count, 2)

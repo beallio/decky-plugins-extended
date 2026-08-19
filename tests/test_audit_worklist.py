@@ -2578,7 +2578,7 @@ def test_mixed_release_run_isolates_archive_oserror_and_preserves_prior_verdict(
     assert failed_report["audit_context_hash"] == "current-context"
     assert failed_report["identity_status"] == "CURRENT"
     assert failed_report["errors"] == ["Archive inspection failed: unreadable archive"]
-    assert successful_report["final_classification"] == "PASS"
+    assert successful_report["final_classification"] == "PASS_WITH_WARNINGS"
     delta = json.loads(
         (output_dir / "verdict-delta-shard-0.json").read_text(encoding="utf-8")
     )
