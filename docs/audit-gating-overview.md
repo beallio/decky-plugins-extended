@@ -4,7 +4,7 @@
 > `docs/plans/`. Each sub-plan carries its own orchestration contract, branch, and markers.
 > Nothing here is run directly.
 
-## Current implementation state (2026-08-08)
+## Current implementation state (2026-08-18)
 
 The historical design and appendix below describe the incremental rollout at
 the time those sub-plans landed. The current authoritative behavior is:
@@ -13,9 +13,11 @@ the time those sub-plans landed. The current authoritative behavior is:
   supported but inactive.
 - The auditor processes every stable and prerelease catalog-eligible release in
   canonical repository and deterministic newest-first release order. Full PR
-  and scheduled runs use fourteen disjoint shards, atomic per-release checkpoints,
-  isolated verdict deltas, and duplicate-rejecting aggregation. Only explicit
-  `--repository ... --latest-only` uses one release.
+  and scheduled runs first prepare one immutable run-global worklist, then use
+  fourteen disjoint API-free shard workers with atomic per-release checkpoints,
+  isolated verdict deltas, and manifests that prove exact coverage before
+  duplicate-rejecting aggregation. Only explicit `--repository ... --latest-only`
+  uses one release.
 - Catalog decisions bind the exact release key to the current artifact hash.
   Only a `CURRENT` effective `BLOCK` is excluded. `STALE_HASH` and `UNKNOWN`
   are explicit fail-open outcomes; neither can reuse an old pass or block.
@@ -30,6 +32,16 @@ the time those sub-plans landed. The current authoritative behavior is:
 - Repository URLs and the complete tracked verdict schema are validated
   strictly. Release/source streams use the policy's 64 MiB/256 MiB limits,
   10/60-second connect/read timeouts, and 1 MiB chunks.
+- Preparation has an eight-minute shared monotonic API deadline inside a
+  ten-minute job. It bounds every producer REST request, pagination step,
+  retry, and rate-limit wait; workers use the prepared commit/source snapshot
+  and make no GitHub REST calls. Each uncached release obtains one immutable
+  `codeload` archive and reuses its safely extracted source snapshot for all
+  source consumers.
+- The shared scanner bootstrap replaces three inline workflow bodies. It logs
+  named bounded phases, verifies Trivy's signing-key fingerprint, retries only
+  safe APT/key-fetch work, and fails closed for ClamAV, Trivy, or exact Semgrep
+  `1.132.0` setup failures.
 - CI selects changed repositories only for a plugin-list-only diff. Security
   pipeline, policy, verdict, dependency, quality-gate, test, or audit-workflow
   changes select the fourteen-shard corpus. Local and CI gates use Ruff, pytest,
@@ -37,8 +49,10 @@ the time those sub-plans landed. The current authoritative behavior is:
 - Production capacity is measured against the largest fourteen-shard wall-time
   projection rather than sequential unsharded completion. The preserved
   579-release snapshot projects the largest shard to 16.58 minutes at the
-  observed p95 rate, within the unchanged 22-minute PR audit-step limit;
-  hosted-runner concurrency and API behavior remain deferred.
+  observed p95 rate, within the unchanged 22-minute PR audit-step limit. Its
+  repeated-enumeration count is historical evidence, not a new-design result;
+  hosted-runner quota behavior, concurrency, and external scanner-mirror
+  resilience remain deferred.
 
 ## Sub-plans, in execution order
 
