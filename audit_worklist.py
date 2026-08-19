@@ -517,7 +517,7 @@ def parse_ls_remote_tags(output: str, repository: str) -> dict[str, str]:
 def resolve_repository_tags_via_ls_remote(
     owner: str,
     repo: str,
-    timeout_seconds: int,
+    timeout_seconds: int | float,
     *,
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
 ) -> dict[str, str]:
@@ -842,8 +842,9 @@ def prepare_audit_worklist(
     base_ref: Optional[str] = None,
     release_fetcher: Optional[Callable[[str, str], list[dict[str, Any]]]] = None,
     metadata_fetcher: Optional[Callable[[str, str], dict[str, Any]]] = None,
-    tag_resolver: Optional[Callable[[str, str, int], dict[str, str]]] = None,
+    tag_resolver: Optional[Callable[[str, str, int | float], dict[str, str]]] = None,
     api_deadline_seconds: int = 300,
+    api_budget: Optional[plugin_release_utils.ApiRequestBudget] = None,
     ref_resolver: Optional[Callable[[str, int], str]] = None,
 ) -> tuple[str, dict[str, Any]]:
     if not isinstance(output_path, (str, os.PathLike)):
@@ -906,8 +907,16 @@ def prepare_audit_worklist(
                 owner, repo = plugin_release_utils.parse_github_repository_url(
                     repository
                 )
+                tag_timeout_seconds = api_deadline_seconds
+                if api_budget is not None:
+                    remaining = api_budget.remaining_seconds()
+                    if remaining <= 0:
+                        raise plugin_release_utils.ApiDeadlineExceeded(
+                            "Cannot start git ls-remote: no remaining API deadline"
+                        )
+                    tag_timeout_seconds = min(float(api_deadline_seconds), remaining)
                 tag_map = _normalise_tag_map(
-                    tag_resolver(owner, repo, api_deadline_seconds)
+                    tag_resolver(owner, repo, tag_timeout_seconds)
                 )
                 metadata = metadata_fetcher(owner, repo)
                 if not isinstance(metadata, Mapping):

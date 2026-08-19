@@ -13,6 +13,7 @@ import pytest
 
 import audit_plugins as ap
 import audit_worklist as worklist
+import plugin_release_utils as pru
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_REVISION = "a" * 40
@@ -1625,6 +1626,121 @@ def test_resolve_tags_uses_expected_git_arguments():
             },
         )
     ]
+
+
+def test_prepare_worklist_clips_each_ls_remote_to_the_shared_api_budget(tmp_path):
+    class Clock:
+        def __init__(self):
+            self.now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+    clock = Clock()
+    budget = pru.ApiRequestBudget(8, monotonic=clock.monotonic)
+    tag_timeouts = []
+    releases = {
+        "a": _with_digest(
+            _with_asset_urls(
+                _release(
+                    "v1",
+                    1,
+                    10,
+                    repository_url="https://github.com/owner/a",
+                ),
+                "https://github.com/owner/a",
+            ),
+            "a" * 64,
+        ),
+        "b": _with_digest(
+            _with_asset_urls(
+                _release(
+                    "v2",
+                    2,
+                    20,
+                    repository_url="https://github.com/owner/b",
+                ),
+                "https://github.com/owner/b",
+            ),
+            "b" * 64,
+        ),
+    }
+
+    def tag_resolver(owner, repo, timeout_seconds):
+        tag_timeouts.append(timeout_seconds)
+        if repo == "a":
+            clock.now += 7
+        return {releases[repo]["tag_name"]: "c" * 40}
+
+    worklist.prepare_audit_worklist(
+        tmp_path / "worklist.json",
+        source_revision=SOURCE_REVISION,
+        selection_mode="all",
+        repository_urls=[
+            "https://github.com/owner/a",
+            "https://github.com/owner/b",
+        ],
+        shard_count=14,
+        release_fetcher=lambda owner, repo: [releases[repo]],
+        metadata_fetcher=lambda owner, repo: _release_metadata(owner, repo),
+        tag_resolver=tag_resolver,
+        api_deadline_seconds=480,
+        api_budget=budget,
+    )
+
+    assert tag_timeouts == [8, 1]
+
+
+def test_prepare_worklist_stops_before_late_ls_remote_after_budget_exhaustion(
+    tmp_path,
+):
+    class Clock:
+        def __init__(self):
+            self.now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+    clock = Clock()
+    budget = pru.ApiRequestBudget(8, monotonic=clock.monotonic)
+    tag_timeouts = []
+    release = _with_digest(
+        _with_asset_urls(
+            _release(
+                "v1",
+                1,
+                10,
+                repository_url="https://github.com/owner/a",
+            ),
+            "https://github.com/owner/a",
+        ),
+        "a" * 64,
+    )
+
+    def tag_resolver(_owner, _repo, timeout_seconds):
+        tag_timeouts.append(timeout_seconds)
+        clock.now += 8
+        return {"v1": "c" * 40}
+
+    with pytest.raises(pru.ApiDeadlineExceeded, match="remaining API deadline"):
+        worklist.prepare_audit_worklist(
+            tmp_path / "worklist.json",
+            source_revision=SOURCE_REVISION,
+            selection_mode="all",
+            repository_urls=[
+                "https://github.com/owner/a",
+                "https://github.com/owner/b",
+            ],
+            shard_count=14,
+            release_fetcher=lambda _owner, _repo: [release],
+            metadata_fetcher=lambda owner, repo: _release_metadata(owner, repo),
+            tag_resolver=tag_resolver,
+            api_deadline_seconds=480,
+            api_budget=budget,
+        )
+
+    assert tag_timeouts == [8]
+    assert not (tmp_path / "worklist.json").exists()
 
 
 def _write_shard_report(path: Path, report: ap.AuditReport) -> None:
