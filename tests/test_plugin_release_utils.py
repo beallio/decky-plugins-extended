@@ -648,6 +648,7 @@ def test_bounded_stream_download_rejects_unknown_kind_without_request(tmp_path):
         "uv.lock",
         "tests/test_catalog_gate.py",
         "scripts/orchestration/run-quality-gates",
+        "scripts/install-security-scanners",
         ".github/workflows/plugin-security-audit.yml",
         ".github/workflows/scheduled-security-audit.yml",
         ".github/workflows/future-audit-contract.yml",

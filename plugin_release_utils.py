@@ -644,6 +644,7 @@ _FULL_AUDIT_PATHS = frozenset(
         "pyproject.toml",
         "uv.lock",
         "scripts/orchestration/run-quality-gates",
+        "scripts/install-security-scanners",
         ".github/workflows/plugin-security-audit.yml",
         ".github/workflows/scheduled-security-audit.yml",
     }

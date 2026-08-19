@@ -75,6 +75,8 @@ class WorkflowSecurityTests(unittest.TestCase):
             "semgrep-rules.yml",
             "audit_plugins.py",
             "plugin_release_utils.py",
+            "audit_worklist.py",
+            "scripts/install-security-scanners",
             "pyproject.toml",
             "uv.lock",
         ):
@@ -94,15 +96,23 @@ class WorkflowSecurityTests(unittest.TestCase):
             "verdicts.setdefault(repository, {}).update(releases)", workflow
         )
 
-    def test_scheduled_audit_installs_and_verifies_semgrep(self):
-        workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
+    def test_workflows_use_one_checked_in_scanner_bootstrap(self):
+        plugin_workflow = (WORKFLOWS / "plugin-security-audit.yml").read_text()
+        scheduled_workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
 
-        self.assertIn(
-            "uv tool install --python 3.12 --with setuptools==70.3.0 semgrep==1.132.0",
-            workflow,
+        for workflow in (plugin_workflow, scheduled_workflow):
+            self.assertNotIn("sudo apt-get", workflow)
+            self.assertNotIn("semgrep --version --disable-version-check", workflow)
+        self.assertEqual(
+            3,
+            (plugin_workflow + scheduled_workflow).count(
+                "run: scripts/install-security-scanners"
+            ),
         )
-        self.assertIn('echo "$SEMGREP_BIN_DIR" >> "$GITHUB_PATH"', workflow)
-        self.assertIn("semgrep --version --disable-version-check", workflow)
+        self.assertEqual(
+            3,
+            (plugin_workflow + scheduled_workflow).count("timeout-minutes: 12"),
+        )
 
     def test_scheduled_audit_publishes_only_changed_verdict_store(self):
         workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()

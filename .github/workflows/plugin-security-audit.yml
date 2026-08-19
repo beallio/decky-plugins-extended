@@ -78,7 +78,10 @@ jobs:
             tests/test_enforcement_workflow.py::test_pull_request_audit_still_fails_on_enforcement_exit_codes \
             tests/test_workflow_selection.py::test_full_corpus_is_fourteen_isolated_shards_with_expected_artifact_names \
             tests/test_workflow_selection.py::test_workflow_executes_selector_for_required_path_classes[audit-only] \
-            tests/test_audit_cache_invalidation.py::TestAuditCacheInvalidation::test_context_hash_covers_semgrep_rules_and_scanner_freshness
+            tests/test_audit_cache_invalidation.py::TestAuditCacheInvalidation::test_context_hash_covers_semgrep_rules_and_scanner_freshness \
+            tests/test_scanner_bootstrap.py::test_scanner_bootstrap_happy_path \
+            tests/test_scanner_bootstrap.py::test_scanner_bootstrap_timeout_fails_named_phase \
+            tests/test_scanner_bootstrap.py::test_scanner_bootstrap_key_failure_is_not_masked
           do
             grep -Fqx -- "$node_id" "$collection_file" || {
               echo "::error::pytest collection missed node ID $node_id"
@@ -241,30 +244,7 @@ jobs:
           path: audit-worklist
 
       - name: Install required security scanners
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends wget apt-transport-https gnupg lsb-release clamav
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
-            | gpg --dearmor \
-            | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb \
-            $(lsb_release -sc) main" \
-            | sudo tee /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends trivy
-          uv tool install --python 3.12 --with setuptools==70.3.0 semgrep==1.132.0
-          SEMGREP_BIN_DIR=$(uv tool dir --bin)
-          echo "$SEMGREP_BIN_DIR" >> "$GITHUB_PATH"
-          export PATH="$SEMGREP_BIN_DIR:$PATH"
-          semgrep_version="$(semgrep --version --disable-version-check)"
-          [[ "$semgrep_version" == "1.132.0" ]] || {
-            echo "::error::expected Semgrep 1.132.0, got $semgrep_version"
-            exit 1
-          }
-          sudo systemctl stop clamav-freshclam || true
-          sudo freshclam
-          clamscan --version
-          ls /var/lib/clamav/*.c?d >/dev/null
+        run: scripts/install-security-scanners
         timeout-minutes: 12
 
       - name: Run isolated audit shard
@@ -450,23 +430,7 @@ jobs:
           python-version-file: pyproject.toml
 
       - name: Install required security scanners
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends wget apt-transport-https gnupg lsb-release clamav
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends trivy
-          uv tool install --python 3.12 --with setuptools==70.3.0 semgrep==1.132.0
-          SEMGREP_BIN_DIR=$(uv tool dir --bin)
-          echo "$SEMGREP_BIN_DIR" >> "$GITHUB_PATH"
-          export PATH="$SEMGREP_BIN_DIR:$PATH"
-          semgrep_version="$(semgrep --version --disable-version-check)"
-          [[ "$semgrep_version" == "1.132.0" ]]
-          sudo systemctl stop clamav-freshclam || true
-          sudo freshclam
-          clamscan --version
-          ls /var/lib/clamav/*.c?d >/dev/null
+        run: scripts/install-security-scanners
         timeout-minutes: 12
 
       - name: Run fast single-release smoke audit
