@@ -54,7 +54,6 @@ def _configure_successful_audit(monkeypatch, zip_data: bytes) -> None:
         lambda _owner, _repo, _ref: ("a" * 40, "tree-000", None),
     )
     monkeypatch.setattr(ap, "get_repo_metadata", lambda *_args: {"archived": False})
-    monkeypatch.setattr(ap, "get_repo_file_raw", lambda *_args: None)
     monkeypatch.setattr(
         ap.audit_source_snapshot,
         "materialize_source_snapshot",
@@ -86,15 +85,6 @@ def _configure_successful_audit(monkeypatch, zip_data: bytes) -> None:
         ap,
         "run_semgrep",
         lambda *_args: (ap.ScannerStatus(name="semgrep", status="skipped"), []),
-    )
-    monkeypatch.setattr(
-        ap,
-        "compare_source_and_artifact",
-        lambda *_args: (
-            {"checked": True},
-            [],
-            ap.ScannerStatus(name="source-artifact-diff", status="passed"),
-        ),
     )
     monkeypatch.setattr(
         ap,
@@ -391,7 +381,6 @@ def test_bounded_release_failure_preserves_cache_and_verdict_bytes(
         lambda _owner, _repo, ref: (f"commit-{ref}", f"tree-{ref}", None),
     )
     monkeypatch.setattr(ap, "get_repo_metadata", lambda *_args: {"archived": False})
-    monkeypatch.setattr(ap, "get_repo_file_raw", lambda *_args: None)
     monkeypatch.setattr(ap._gh_session, "get", lambda *_args, **_kwargs: response)
     monkeypatch.setattr(ap.tempfile, "mkdtemp", lambda **_kwargs: str(audit_tmp))
     for downstream in ("inspect_zip", "run_clamav", "run_trivy", "run_semgrep"):

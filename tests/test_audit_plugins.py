@@ -21,8 +21,6 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import requests
-
 import audit_source_snapshot
 
 # Ensure the module is importable
@@ -1441,479 +1439,14 @@ class TestSemgrepSeverityMapping(unittest.TestCase):
         self.assertEqual(findings[0].classification, "MANUAL_REVIEW")
 
 
-class TestSourceArtifactDiff(unittest.TestCase):
-    def _policy(self, required: bool = True, enabled: bool = True) -> dict:
-        p = ap._default_policy()
-        p["scanners"]["source_artifact_diff"] = {
-            "enabled": enabled,
-            "required": required,
-        }
-        p["scanners"]["semgrep"] = {"enabled": False, "required": False}
-        return p
-
-    def _mk_extract(
-        self, files: dict[str, bytes | str], executable_paths: set[str] | None = None
-    ) -> str:
-        td = tempfile.TemporaryDirectory()
-        executable_paths = executable_paths or set()
-        for rel, content in files.items():
-            p = Path(td.name) / rel
-            p.parent.mkdir(parents=True, exist_ok=True)
-            if isinstance(content, str):
-                content = content.encode("utf-8")
-            p.write_bytes(content)
-            if rel in executable_paths:
-                p.chmod(p.stat().st_mode | stat.S_IXUSR)
-        self.addCleanup(td.cleanup)
-        return td.name
-
-    def _patch_tree(self, *, tag_type: str = "commit", truncated: bool = False):
-        def side_effect(url, params=None):
-            if "/git/ref/tags/" in url:
-                return {"object": {"type": tag_type, "sha": "sha-tag"}}
-            if "/git/tags/" in url:
-                return {"object": {"type": "commit", "sha": "sha-commit"}}
-            if "/git/commits/" in url:
-                return {"tree": {"sha": "sha-tree"}}
-            if "/git/trees/" in url:
-                return {
-                    "truncated": truncated,
-                    "tree": [{"path": "plugin/main.py"}],
-                }
-            raise AssertionError(f"Unexpected URL {url}")
-
-        return patch.object(ap, "_gh_get", side_effect=side_effect)
-
-    def test_zip_only_python_script(self):
-        extract = self._mk_extract({"plugin/extra.py": "print('x')"})
-        with self._patch_tree():
-            summary, findings, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertEqual(status.status, "found_issue")
-        self.assertIn("plugin/extra.py", summary["zip_only_scripts"])
-        self.assertIn("ZIP_ONLY_SCRIPT", {f.rule_id for f in findings})
-
-    def test_zip_only_shebang_script(self):
-        extract = self._mk_extract({"plugin/run": "#!/bin/sh\necho ok\n"})
-        with self._patch_tree():
-            summary, findings, _ = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertIn("plugin/run", summary["zip_only_scripts"])
-        self.assertIn("ZIP_ONLY_SCRIPT", {f.rule_id for f in findings})
-
-    def test_zip_only_executable_text_file(self):
-        extract = self._mk_extract(
-            {"plugin/tool": "echo hi\n"}, executable_paths={"plugin/tool"}
-        )
-        with self._patch_tree():
-            summary, findings, _ = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertIn("plugin/tool", summary["zip_only_scripts"])
-        self.assertIn("ZIP_ONLY_SCRIPT", {f.rule_id for f in findings})
-
-    def test_script_in_source_not_flagged(self):
-        extract = self._mk_extract({"plugin/main.py": "print('x')"})
-        with self._patch_tree():
-            summary, findings, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertEqual(status.status, "passed")
-        self.assertEqual(summary["zip_only_scripts"], [])
-        self.assertFalse(any(f.rule_id == "ZIP_ONLY_SCRIPT" for f in findings))
-
-    def test_modified_same_path_file_detected(self):
-        source_data = b"print('original')"
-        header = f"blob {len(source_data)}\x00".encode("ascii")
-        source_sha = hashlib.sha1(header + source_data).hexdigest()
-
-        extract = self._mk_extract({"plugin/main.py": "print('modified')"})
-
-        def side_effect(url, params=None):
-            if "/git/ref/tags/" in url:
-                return {"object": {"type": "commit", "sha": "sha-commit"}}
-            if "/git/commits/" in url:
-                return {"tree": {"sha": "sha-tree"}}
-            if "/git/trees/" in url:
-                return {
-                    "truncated": False,
-                    "tree": [
-                        {"path": "plugin/main.py", "type": "blob", "sha": source_sha}
-                    ],
-                }
-            raise AssertionError(f"Unexpected URL {url}")
-
-        with patch.object(ap, "_gh_get", side_effect=side_effect):
-            summary, findings, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertEqual(status.status, "found_issue")
-        self.assertIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
-
-    def _compare_metadata_files(
-        self, source_files, artifact_files, ref="v1.0.1-dev.gabc"
-    ):
-        extract = self._mk_extract(
-            {f"plugin/{path}": content for path, content in artifact_files.items()}
-        )
-        tree = []
-        for path, content in source_files.items():
-            source_raw = content if isinstance(content, bytes) else content.encode()
-            tree.append(
-                {
-                    "path": path,
-                    "type": "blob",
-                    "sha": ap.git_blob_sha1(source_raw),
-                }
-            )
-
-        def get_source(_owner, _repo, _ref, path):
-            content = source_files.get(path)
-            if content is None:
-                return None
-            return content if isinstance(content, bytes) else content.encode()
-
-        with (
-            patch.object(
-                ap, "_resolve_ref_to_tree_sha", return_value=("sha-tree", None)
-            ),
-            patch.object(
-                ap,
-                "_gh_get",
-                return_value={"truncated": False, "tree": tree},
-            ),
-            patch.object(ap, "get_repo_file_raw", side_effect=get_source),
-        ):
-            return ap.compare_source_and_artifact(extract, "o", "r", ref)
-
-    def _build_stamp(self, path, source, artifact, version="1.0.1-dev.gabc"):
-        return ap._metadata_diff_is_build_stamped(
-            path,
-            json.dumps(source).encode(),
-            json.dumps(artifact).encode(),
-            version,
-        )
-
-    def test_exact_package_version_build_stamp_is_allowed(self):
-        self.assertTrue(
-            self._build_stamp(
-                "package.json",
-                {"name": "plugin", "version": "1.0.0"},
-                {"name": "plugin", "version": "1.0.1-dev.gabc"},
-            )
-        )
-
-    def test_exact_debug_flag_removal_build_stamp_is_allowed(self):
-        self.assertTrue(
-            self._build_stamp(
-                "plugin.json",
-                {
-                    "name": "Plugin",
-                    "version": "1.0.1-dev.gabc",
-                    "flags": ["debug", "root"],
-                },
-                {"name": "Plugin", "version": "1.0.1-dev.gabc", "flags": ["root"]},
-            )
-        )
-
-    def test_exact_publish_image_build_stamp_is_allowed(self):
-        self.assertTrue(
-            self._build_stamp(
-                "plugin.json",
-                {
-                    "name": "Plugin",
-                    "version": "1.0.1-dev.gabc",
-                    "publish": {
-                        "image": "https://raw.githubusercontent.com/o/r/main/icon.png"
-                    },
-                },
-                {
-                    "name": "Plugin",
-                    "version": "1.0.1-dev.gabc",
-                    "publish": {
-                        "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/icon.png"
-                    },
-                },
-            )
-        )
-
-    def test_arbitrary_version_build_stamp_is_rejected(self):
-        self.assertFalse(
-            self._build_stamp(
-                "package.json",
-                {"name": "plugin", "version": "1.0.0"},
-                {"name": "plugin", "version": "999.0.0"},
-            )
-        )
-
-    def test_combined_unrelated_build_drift_is_rejected(self):
-        self.assertFalse(
-            self._build_stamp(
-                "plugin.json",
-                {"name": "Plugin", "version": "1.0.0", "flags": ["debug"]},
-                {"name": "Renamed", "version": "1.0.1-dev.gabc", "flags": []},
-            )
-        )
-
-    def test_reordered_flags_build_stamp_is_rejected(self):
-        self.assertFalse(
-            self._build_stamp(
-                "plugin.json",
-                {
-                    "name": "Plugin",
-                    "version": "1.0.1-dev.gabc",
-                    "flags": ["root", "debug", "network"],
-                },
-                {
-                    "name": "Plugin",
-                    "version": "1.0.1-dev.gabc",
-                    "flags": ["network", "root"],
-                },
-            )
-        )
-
-    def test_near_match_publish_image_build_stamp_is_rejected(self):
-        self.assertFalse(
-            self._build_stamp(
-                "plugin.json",
-                {
-                    "name": "Plugin",
-                    "version": "1.0.1-dev.gabc",
-                    "publish": {
-                        "image": "https://raw.githubusercontent.com/o/r/mainly/icon.png"
-                    },
-                },
-                {
-                    "name": "Plugin",
-                    "version": "1.0.1-dev.gabc",
-                    "publish": {
-                        "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/icon.png"
-                    },
-                },
-            )
-        )
-
-    def test_version_only_metadata_drift_is_allowed(self):
-        source_files = {
-            "plugin.json": json.dumps(
-                {"name": "Syncthing", "version": "1.0.0", "flags": []}
-            ),
-            "package.json": json.dumps(
-                {"name": "syncthing", "version": "1.0.0", "private": True}
-            ),
-        }
-        artifact_files = {
-            "plugin.json": json.dumps(
-                {"name": "Syncthing", "version": "1.0.1-dev.gabc", "flags": []}
-            ),
-            "package.json": json.dumps(
-                {
-                    "name": "syncthing",
-                    "version": "1.0.1-dev.gabc",
-                    "private": True,
-                }
-            ),
-        }
-        summary, findings, status = self._compare_metadata_files(
-            source_files, artifact_files
-        )
-        self.assertEqual(status.status, "passed")
-        self.assertEqual(summary["modified_source_files"], [])
-        self.assertNotIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
-
-    def test_decky_stamped_plugin_metadata_is_allowed(self):
-        source = json.dumps(
-            {
-                "name": "Syncthing",
-                "version": "1.0.0",
-                "flags": ["debug"],
-                "publish": {
-                    "image": "https://raw.githubusercontent.com/o/r/main/assets/icon.png"
-                },
-            }
-        )
-        artifact = json.dumps(
-            {
-                "name": "Syncthing",
-                "version": "1.0.1-dev.gabc",
-                "flags": [],
-                "publish": {
-                    "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/assets/icon.png"
-                },
-            }
-        )
-        summary, findings, status = self._compare_metadata_files(
-            {"plugin.json": source}, {"plugin.json": artifact}
-        )
-        self.assertEqual(status.status, "passed")
-        self.assertEqual(summary["modified_source_files"], [])
-        self.assertNotIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
-
-    def test_plugin_flags_drift_is_not_allowed(self):
-        source = json.dumps({"name": "Syncthing", "version": "1.0.0", "flags": []})
-        artifact = json.dumps(
-            {"name": "Syncthing", "version": "1.0.0", "flags": ["root"]}
-        )
-        summary, findings, status = self._compare_metadata_files(
-            {"plugin.json": source}, {"plugin.json": artifact}
-        )
-        self.assertEqual(status.status, "found_issue")
-        self.assertEqual(summary["modified_source_files"], ["plugin/plugin.json"])
-        self.assertIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
-
-    def test_malformed_metadata_drift_is_not_allowed(self):
-        source = json.dumps({"name": "Syncthing", "version": "1.0.0", "flags": []})
-        summary, findings, status = self._compare_metadata_files(
-            {"plugin.json": source}, {"plugin.json": "{not-json"}
-        )
-        self.assertEqual(status.status, "found_issue")
-        self.assertEqual(summary["modified_source_files"], ["plugin/plugin.json"])
-        self.assertIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
-
-    def test_shannon_entropy_removed(self):
-        self.assertFalse(hasattr(ap, "_shannon_entropy"))
-
-    def test_normal_plugin_compiled_assets_no_false_positives(self):
-        extract = self._mk_extract(
-            {
-                "plugin/dist/index.js": "var a=1; /* minified bundle */",
-                "plugin/dist/index.js.map": '{"version":3}',
-                "plugin/assets/logo.png": b"\x89PNG\r\n\x1a\n",
-                "plugin/main.py": "print('ok')",
-            }
-        )
-        source_data = b"print('ok')"
-        header = f"blob {len(source_data)}\x00".encode("ascii")
-        source_sha = hashlib.sha1(header + source_data).hexdigest()
-
-        def side_effect(url, params=None):
-            if "/git/ref/tags/" in url:
-                return {"object": {"type": "commit", "sha": "sha-commit"}}
-            if "/git/commits/" in url:
-                return {"tree": {"sha": "sha-tree"}}
-            if "/git/trees/" in url:
-                return {
-                    "truncated": False,
-                    "tree": [
-                        {"path": "plugin/main.py", "type": "blob", "sha": source_sha}
-                    ],
-                }
-            raise AssertionError(f"Unexpected URL {url}")
-
-        with patch.object(ap, "_gh_get", side_effect=side_effect):
-            summary, findings, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertEqual(status.status, "passed")
-        self.assertEqual(summary["modified_source_files"], [])
-        self.assertEqual(summary["zip_only_scripts"], [])
-        self.assertEqual(findings, [])
-
-    def test_native_binary_is_executable_not_script(self):
-        extract = self._mk_extract({"plugin/helper": b"\x7fELF\x02\x01\x01\x00abc"})
-        with self._patch_tree():
-            summary, findings, _ = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertIn("plugin/helper", summary["zip_only_executables"])
-        self.assertNotIn("plugin/helper", summary["zip_only_scripts"])
-        self.assertIn("ZIP_ONLY_EXECUTABLE", {f.rule_id for f in findings})
-        self.assertNotIn("ZIP_ONLY_SCRIPT", {f.rule_id for f in findings})
-
-    def test_non_script_data_not_flagged(self):
-        extract = self._mk_extract(
-            {
-                "plugin/data.json": '{"k":1}',
-                "plugin/style.css": "body{}",
-                "plugin/image.png": b"\x89PNG\r\n\x1a\n",
-                "plugin/app.min.js": "var a=1;",
-            }
-        )
-        with self._patch_tree():
-            summary, findings, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertEqual(status.status, "passed")
-        self.assertEqual(summary["zip_only_scripts"], [])
-        self.assertEqual(findings, [])
-
-    def test_lightweight_tag_resolution(self):
-        extract = self._mk_extract({"plugin/main.py": "print('x')"})
-        with self._patch_tree(tag_type="commit"):
-            summary, _, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1.0.0"
-            )
-        self.assertTrue(summary["checked"])
-        self.assertEqual(status.status, "passed")
-
-    def test_annotated_tag_resolution(self):
-        extract = self._mk_extract({"plugin/main.py": "print('x')"})
-        with self._patch_tree(tag_type="tag"):
-            summary, _, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1.0.0"
-            )
-        self.assertTrue(summary["checked"])
-        self.assertEqual(status.status, "passed")
-
-    def test_missing_tag_returns_failed_status(self):
-        extract = self._mk_extract({"plugin/main.py": "print('x')"})
-        with patch.object(
-            ap,
-            "_gh_get",
-            side_effect=requests.HTTPError(response=MagicMock(status_code=404)),
-        ):
-            summary, _, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "missing-tag"
-            )
-        self.assertFalse(summary["checked"])
-        self.assertEqual(status.status, "failed")
-
-    def test_api_failure_returns_failed_status(self):
-        extract = self._mk_extract({"plugin/main.py": "print('x')"})
-        with patch.object(ap, "_gh_get", side_effect=RuntimeError("boom")):
-            summary, _, status = ap.compare_source_and_artifact(extract, "o", "r", "v1")
-        self.assertFalse(summary["checked"])
-        self.assertEqual(status.status, "failed")
-
-    def test_truncated_tree_is_failed(self):
-        extract = self._mk_extract({"plugin/main.py": "print('x')"})
-        with self._patch_tree(truncated=True):
-            summary, _, status = ap.compare_source_and_artifact(extract, "o", "r", "v1")
-        self.assertFalse(summary["checked"])
-        self.assertEqual(status.status, "failed")
-
-    def test_required_failure_becomes_audit_error(self):
-        policy = self._policy(required=True, enabled=True)
-        statuses = [ap.ScannerStatus(name="source-artifact-diff", status="failed")]
-        cls, _ = ap.classify_findings([], scanner_statuses=statuses, policy=policy)
-        self.assertEqual(cls, "AUDIT_ERROR")
-
-    def test_optional_failure_becomes_pass_with_warnings(self):
-        policy = self._policy(required=False, enabled=True)
-        findings = [
-            ap.Finding(
-                rule_id="SOURCE_ARTIFACT_DIFF_INCOMPLETE",
-                severity="low",
-                classification="PASS_WITH_WARNINGS",
-                path="",
-                line=0,
-                message="incomplete",
-                evidence="",
-                scanner="source-artifact-diff",
-            )
-        ]
-        statuses = [ap.ScannerStatus(name="source-artifact-diff", status="failed")]
-        cls, _ = ap.classify_findings(
-            findings, scanner_statuses=statuses, policy=policy
-        )
-        self.assertEqual(cls, "PASS_WITH_WARNINGS")
-
-
-# ---------------------------------------------------------------------------
-# Safe extraction
-# ---------------------------------------------------------------------------
+class TestLegacySourceArtifactDiffRemoved(unittest.TestCase):
+    def test_removed_legacy_source_artifact_entrypoints_are_absent(self):
+        self.assertFalse(hasattr(ap, "compare_source_and_artifact"))
+        self.assertFalse(hasattr(ap, "_resolve_ref_to_tree_sha"))
+        self.assertFalse(hasattr(ap, "_fetch_source_tree"))
+        self.assertFalse(hasattr(ap, "_download_source_archive"))
+        self.assertFalse(hasattr(ap, "get_repo_file_raw"))
+        self.assertNotIn("source_repo", ap.run_trivy.__code__.co_varnames)
 
 
 class TestSafeExtraction(unittest.TestCase):
@@ -2271,37 +1804,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                     with (
                         patch.object(
                             ap,
-                            "get_repo_file_raw",
-                            side_effect=AssertionError(
-                                "legacy source metadata API used"
-                            ),
-                        ),
-                        patch.object(
-                            ap,
                             "_gh_get",
                             side_effect=AssertionError("legacy repository API used"),
-                        ),
-                        patch.object(
-                            ap,
-                            "_resolve_ref_to_tree_sha",
-                            side_effect=AssertionError("legacy tag tree resolver used"),
-                        ),
-                        patch.object(
-                            ap,
-                            "_fetch_source_tree",
-                            side_effect=AssertionError("legacy source tree fetch used"),
-                        ),
-                        patch.object(
-                            ap,
-                            "_download_source_archive",
-                            side_effect=AssertionError(
-                                "legacy source archive downloader used"
-                            ),
-                        ),
-                        patch.object(
-                            ap,
-                            "compare_source_and_artifact",
-                            side_effect=AssertionError("legacy source comparison used"),
                         ),
                         patch.object(
                             ap,
@@ -3202,7 +2706,6 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         with (
             patch.object(ap, "get_repo_metadata", return_value=meta),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(ap, "get_repo_file_raw", return_value=None),
             patch.object(ap, "download_zip", side_effect=fake_download),
         ):
             # Disable required scanners so BLOCK is not masked by AUDIT_ERROR.
@@ -4410,51 +3913,36 @@ class TestTrivyStructuredFindings(unittest.TestCase):
     def test_scans_artifact_and_exact_commit_source_lockfile(self):
         scanned_paths = []
         supplied_policy = self._policy()
-        supplied_policy["downloads"]["source_max_bytes"] = 11
+        with (
+            tempfile.TemporaryDirectory() as artifact_dir,
+            tempfile.TemporaryDirectory() as source_dir,
+        ):
+            Path(artifact_dir, "package-lock.json").write_text("artifact-lock")
+            Path(source_dir, "package-lock.json").write_text("source-lock")
 
-        def fake_fetch(owner, repo, commit_sha, destination, policy=None):
-            self.assertIs(policy, supplied_policy)
-            self.assertEqual(policy["downloads"]["source_max_bytes"], 11)
-            self.assertEqual((owner, repo, commit_sha), ("owner", "plugin", "abc123"))
-            source_root = Path(destination) / "owner-plugin-abc123"
-            source_root.mkdir()
-            (source_root / "package-lock.json").write_text(
-                json.dumps(
-                    {
-                        "name": "fixture",
-                        "lockfileVersion": 3,
-                        "packages": {
-                            "": {"name": "fixture"},
-                            "node_modules/lodash": {"version": "4.17.20"},
-                        },
-                    }
-                )
-            )
-            return str(source_root)
+            def fake_scanner(args, _name, timeout=120):
+                scan_path = Path(args[-1])
+                scanned_paths.append(scan_path)
+                if any(scan_path.rglob("package-lock.json")):
+                    return True, self._trivy_json([self._vuln("high")]), ""
+                return True, self._trivy_json([]), ""
 
-        def fake_scanner(args, _name, timeout=120):
-            scan_path = Path(args[-1])
-            scanned_paths.append(scan_path)
-            if any(scan_path.rglob("package-lock.json")):
-                return True, self._trivy_json([self._vuln("high")]), ""
-            return True, self._trivy_json([]), ""
-
-        with tempfile.TemporaryDirectory() as artifact_dir:
             with (
                 patch("shutil.which", return_value="/usr/bin/trivy"),
-                patch.object(ap, "_fetch_source_tree", side_effect=fake_fetch),
                 patch.object(ap, "_run_scanner", side_effect=fake_scanner),
             ):
                 status, findings = ap.run_trivy(
                     artifact_dir,
                     supplied_policy,
-                    source_repo=("owner", "plugin", "abc123"),
+                    source_root=source_dir,
                 )
 
         self.assertEqual(len(scanned_paths), 2)
         self.assertEqual(status.status, "found_issue")
-        self.assertEqual(len(findings), 1)
-        self.assertTrue(findings[0].path.startswith("source:"))
+        self.assertEqual(len(findings), 2)
+        paths = {finding.path for finding in findings}
+        self.assertTrue(any(path.startswith("source:") for path in paths))
+        self.assertTrue(any(path.startswith("artifact:") for path in paths))
         self.assertIn("source", status.detail)
         self.assertIn("artifact", status.detail)
 
@@ -4474,50 +3962,13 @@ class TestTrivyStructuredFindings(unittest.TestCase):
 
             with (
                 patch("shutil.which", return_value="/usr/bin/trivy"),
-                patch.object(
-                    ap,
-                    "_fetch_source_tree",
-                    side_effect=AssertionError("legacy source fetch should not run"),
-                ),
-                patch.object(
-                    ap,
-                    "_run_scanner",
-                    side_effect=fake_scanner,
-                ),
-                patch.object(
-                    ap,
-                    "_gh_get",
-                    side_effect=AssertionError("_gh_get should not be used"),
-                ),
-                patch.object(
-                    ap,
-                    "_resolve_ref_to_tree_sha",
-                    side_effect=AssertionError(
-                        "_resolve_ref_to_tree_sha should not be used"
-                    ),
-                ),
-                patch.object(
-                    ap,
-                    "get_repo_file_raw",
-                    side_effect=AssertionError("get_repo_file_raw should not be used"),
-                ),
-                patch.object(
-                    ap,
-                    "_download_source_archive",
-                    side_effect=AssertionError(
-                        "_download_source_archive should not be used"
-                    ),
-                ),
+                patch.object(ap, "_run_scanner", side_effect=fake_scanner),
             ):
-                with patch(
-                    "audit_plugins.tempfile.TemporaryDirectory",
-                    side_effect=AssertionError("temp source fetch should not run"),
-                ):
-                    status, findings = ap.run_trivy(
-                        artifact_dir,
-                        supplied_policy,
-                        source_root=source_dir,
-                    )
+                status, findings = ap.run_trivy(
+                    artifact_dir,
+                    supplied_policy,
+                    source_root=source_dir,
+                )
 
         self.assertEqual(len(scanned_paths), 2)
         self.assertEqual(scanned_paths.count(Path(artifact_dir)), 1)
@@ -4525,15 +3976,10 @@ class TestTrivyStructuredFindings(unittest.TestCase):
         self.assertEqual(status.status, "found_issue")
         self.assertEqual(len(findings), 2)
 
-    def test_failed_source_fetch_is_not_reported_as_passed(self):
+    def test_failed_source_root_is_not_reported_as_passed(self):
         with tempfile.TemporaryDirectory() as artifact_dir:
             with (
                 patch("shutil.which", return_value="/usr/bin/trivy"),
-                patch.object(
-                    ap,
-                    "_fetch_source_tree",
-                    side_effect=RuntimeError("source fetch failed"),
-                ),
                 patch.object(
                     ap,
                     "_run_scanner",
@@ -4543,65 +3989,13 @@ class TestTrivyStructuredFindings(unittest.TestCase):
                 status, findings = ap.run_trivy(
                     artifact_dir,
                     self._policy(),
-                    source_repo=("owner", "plugin", "abc123"),
+                    source_root="/no/where",
                 )
 
         self.assertEqual(status.status, "failed")
         self.assertEqual(findings, [])
-        self.assertIn("source fetch failed", status.detail)
+        self.assertIn("source_root", status.detail)
         scanner.assert_called_once()
-
-
-class TestSourceTreeFetch(unittest.TestCase):
-    def test_source_archive_is_materialized_without_executing_hooks(self):
-        with tempfile.TemporaryDirectory() as td:
-            supplied_policy = ap._default_policy()
-            supplied_policy["downloads"]["source_max_bytes"] = 11
-            sentinel = Path(td) / "executed"
-            archive_path = Path(td) / "source.tar.gz"
-            with tarfile.open(archive_path, "w:gz") as tf:
-                files = {
-                    "owner-plugin-abc123/package.json": json.dumps(
-                        {
-                            "scripts": {
-                                "postinstall": f"touch {sentinel}",
-                            }
-                        }
-                    ),
-                    "owner-plugin-abc123/setup.py": (
-                        f"from pathlib import Path\nPath({str(sentinel)!r}).touch()\n"
-                    ),
-                }
-                for name, content in files.items():
-                    raw = content.encode()
-                    info = tarfile.TarInfo(name)
-                    info.size = len(raw)
-                    tf.addfile(info, io.BytesIO(raw))
-
-            archive_bytes = archive_path.read_bytes()
-
-            def fake_download(_owner, _repo, _commit_sha, destination, policy=None):
-                self.assertIs(policy, supplied_policy)
-                self.assertEqual(policy["downloads"]["source_max_bytes"], 11)
-                Path(destination).write_bytes(archive_bytes)
-
-            destination = Path(td) / "source"
-            with patch.object(
-                ap, "_download_source_archive", side_effect=fake_download
-            ):
-                source_root = Path(
-                    ap._fetch_source_tree(
-                        "owner",
-                        "plugin",
-                        "abc123",
-                        destination,
-                        policy=supplied_policy,
-                    )
-                )
-
-            self.assertTrue((source_root / "package.json").is_file())
-            self.assertTrue((source_root / "setup.py").is_file())
-            self.assertFalse(sentinel.exists())
 
 
 class TestSourceArtifactDiffSnapshot(unittest.TestCase):
@@ -4676,30 +4070,6 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
                 ap,
                 "_gh_get",
                 side_effect=AssertionError("_gh_get should not be used"),
-            ),
-            patch.object(
-                ap,
-                "_resolve_ref_to_tree_sha",
-                side_effect=AssertionError(
-                    "_resolve_ref_to_tree_sha should not be used"
-                ),
-            ),
-            patch.object(
-                ap,
-                "get_repo_file_raw",
-                side_effect=AssertionError("get_repo_file_raw should not be used"),
-            ),
-            patch.object(
-                ap,
-                "_fetch_source_tree",
-                side_effect=AssertionError("_fetch_source_tree should not be used"),
-            ),
-            patch.object(
-                ap,
-                "_download_source_archive",
-                side_effect=AssertionError(
-                    "legacy source archive download should not be used"
-                ),
             ),
         ):
             for rel, payload in extract_files.items():

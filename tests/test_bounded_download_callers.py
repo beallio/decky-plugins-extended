@@ -2,7 +2,6 @@ import hashlib
 import io
 import json
 import os
-import tarfile
 import zipfile
 from pathlib import Path
 
@@ -17,11 +16,8 @@ import plugin_release_utils as pru
 
 REPOSITORY = "https://github.com/owner/plugin"
 ARTIFACT_URL = "https://github.com/owner/plugin/releases/download/v1.0.0/plugin.zip"
-SOURCE_CONTENT = b"source fixture\n"
-
 CALLERS = (
     "release-audit",
-    "source-archive",
     "generator-hash",
     "upstream-reconciliation",
     "update-detection",
@@ -96,21 +92,9 @@ def _release_zip_bytes():
     return stream.getvalue()
 
 
-def _source_archive_bytes():
-    stream = io.BytesIO()
-    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
-        info = tarfile.TarInfo("owner-plugin-commit/plugin.txt")
-        info.size = len(SOURCE_CONTENT)
-        info.mtime = 0
-        archive.addfile(info, io.BytesIO(SOURCE_CONTENT))
-    return stream.getvalue()
-
-
 def _payload_for(caller):
-    if caller == "release-audit":
+    if caller in {"release-audit", "generator-hash"}:
         return _release_zip_bytes()
-    if caller == "source-archive":
-        return _source_archive_bytes()
     return b"current catalog artifact bytes\n"
 
 
@@ -143,12 +127,8 @@ def _response_and_limit(payload, case):
 
 def _download_policy(caller, target_limit):
     policy = ap._default_policy()
-    if caller == "source-archive":
-        release_limit = target_limit + 19
-        source_limit = target_limit
-    else:
-        release_limit = target_limit
-        source_limit = target_limit + 19
+    release_limit = target_limit
+    source_limit = target_limit
     policy["downloads"].update(
         {
             "release_max_bytes": release_limit,
@@ -225,15 +205,6 @@ def _invoke_release_audit(monkeypatch, tmp_path, session, policy, should_succeed
         "_resolve_ref_to_commit_and_tree_sha",
         lambda _owner, _repo, _ref: ("commit-sha", "tree-sha", None),
     )
-    monkeypatch.setattr(
-        ap,
-        "get_repo_file_raw",
-        lambda _owner, _repo, _ref, path: (
-            b'{"name":"Plugin","flags":[]}'
-            if path == "plugin.json"
-            else b'{"name":"plugin"}'
-        ),
-    )
     monkeypatch.setattr(ap.tempfile, "mkdtemp", lambda **_kwargs: str(work_root))
     if not should_succeed:
         for name in (
@@ -242,7 +213,7 @@ def _invoke_release_audit(monkeypatch, tmp_path, session, policy, should_succeed
             "run_trivy",
             "run_clamav",
             "run_semgrep",
-            "compare_source_and_artifact",
+            "compare_source_and_artifact_from_snapshot",
         ):
             monkeypatch.setattr(ap, name, _forbid_downstream(probes, name))
 
@@ -273,41 +244,6 @@ def _invoke_release_audit(monkeypatch, tmp_path, session, policy, should_succeed
         "safe_value": None,
         "destination": work_root / "release.zip",
         "downloaded_bytes": None,
-        "probes": probes,
-    }
-
-
-def _invoke_source_archive(monkeypatch, tmp_path, session, policy, should_succeed):
-    work_root = tmp_path / "source-archive-work"
-    probes = []
-    monkeypatch.setattr(ap, "_gh_session", session)
-    if not should_succeed:
-        monkeypatch.setattr(
-            ap.tarfile,
-            "open",
-            _forbid_downstream(probes, "source archive extraction"),
-        )
-
-    try:
-        source_root = ap._fetch_source_tree(
-            "owner", "plugin", "commit-sha", work_root, policy=policy
-        )
-    except Exception as exc:
-        return {
-            "failure": exc,
-            "safe_value": None,
-            "destination": work_root / "source.tar.gz",
-            "downloaded_bytes": None,
-            "probes": probes,
-        }
-
-    archive_path = work_root / "source.tar.gz"
-    assert (Path(source_root) / "plugin.txt").read_bytes() == SOURCE_CONTENT
-    return {
-        "sha": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
-        "safe_value": source_root,
-        "destination": archive_path,
-        "downloaded_bytes": archive_path.read_bytes(),
         "probes": probes,
     }
 
@@ -440,10 +376,6 @@ def _invoke_caller(
         return _invoke_release_audit(
             monkeypatch, tmp_path, session, policy, should_succeed
         )
-    if caller == "source-archive":
-        return _invoke_source_archive(
-            monkeypatch, tmp_path, session, policy, should_succeed
-        )
     if caller == "generator-hash":
         return _invoke_generator_hash(monkeypatch, tmp_path, session, policy)
     if caller == "upstream-reconciliation":
@@ -469,7 +401,6 @@ def test_bounded_download_boundary_matrix(caller, case, monkeypatch, tmp_path):
     expected_sha = hashlib.sha256(payload).hexdigest()
 
     downloads = policy["downloads"]
-    assert downloads["release_max_bytes"] != downloads["source_max_bytes"]
     assert downloads["release_max_bytes"] != pru.DEFAULT_RELEASE_MAX_BYTES
     assert downloads["source_max_bytes"] != pru.DEFAULT_SOURCE_MAX_BYTES
 
@@ -485,11 +416,7 @@ def test_bounded_download_boundary_matrix(caller, case, monkeypatch, tmp_path):
 
     assert len(session.calls) == 1
     url, request_kwargs = session.calls[0]
-    expected_url = (
-        "https://api.github.com/repos/owner/plugin/tarball/commit-sha"
-        if caller == "source-archive"
-        else ARTIFACT_URL
-    )
+    expected_url = ARTIFACT_URL
     assert url == expected_url
     assert request_kwargs == {"stream": True, "timeout": (2, 3)}
     assert response.closed is True
@@ -515,8 +442,6 @@ def test_bounded_download_boundary_matrix(caller, case, monkeypatch, tmp_path):
             assert report.completion_status == "incomplete"
             assert report.error_scope == "release"
             assert any("exceeds" in error for error in report.errors)
-        elif caller == "source-archive":
-            assert isinstance(result["failure"], pru.DownloadLimitError)
         else:
             assert isinstance(result["failure"], generate_json.ArtifactDownloadError)
         assert "exceeds" in str(result["failure"])

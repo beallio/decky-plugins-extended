@@ -2533,7 +2533,6 @@ def test_mixed_release_run_isolates_archive_oserror_and_preserves_prior_verdict(
         "_resolve_ref_to_commit_and_tree_sha",
         lambda _owner, _repo, ref: (f"commit-{ref}", f"tree-{ref}", None),
     )
-    monkeypatch.setattr(ap, "get_repo_file_raw", lambda *_args: None)
     monkeypatch.setattr(ap, "_scanner_runtime_identities", lambda *_args: {})
     monkeypatch.setattr(
         ap, "compute_audit_context_hash", lambda *_args, **_kwargs: "current-context"

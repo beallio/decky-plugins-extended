@@ -32,7 +32,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import unicodedata
@@ -867,19 +866,6 @@ def get_tags(owner: str, repo: str) -> list[dict[str, Any]]:
         f"https://api.github.com/repos/{owner}/{repo}/tags",
         params={"per_page": 100},
     )
-
-
-def get_repo_file_raw(owner: str, repo: str, ref: str, path: str) -> Optional[bytes]:
-    """Fetch raw file bytes from a GitHub repository at a specific ref."""
-    url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
-    try:
-        resp = _gh_session.get(url, timeout=REQUEST_TIMEOUT)
-        if resp.status_code == 404:
-            return None
-        resp.raise_for_status()
-        return resp.content
-    except requests.RequestException:
-        return None
 
 
 def parse_owner_repo(url: str) -> tuple[str, str]:
@@ -2212,7 +2198,6 @@ def run_trivy(
     extract_dir: str,
     policy: dict[str, Any],
     *,
-    source_repo: Optional[tuple[str, str, str]] = None,
     source_root: Optional[str] = None,
 ) -> tuple[ScannerStatus, list[Finding]]:
     """Scan the release artifact and exact-tag source tree with Trivy."""
@@ -2236,106 +2221,86 @@ def run_trivy(
     review_rank = _severity_rank(review_sev)
 
     scan_targets = [("artifact", extract_dir)]
-    source_temp: Optional[tempfile.TemporaryDirectory[str]] = None
     errors: list[str] = []
     scope_counts: dict[str, int] = {}
     findings: list[Finding] = []
 
-    try:
-        if source_root is not None and source_repo is not None:
-            raise ValueError(
-                "source_repo is transitional only; use source_root instead"
+    if source_root is not None:
+        if os.path.isdir(source_root):
+            scan_targets.append(("source", source_root))
+        else:
+            errors.append(
+                f"source scan failed: source_root unavailable: {source_root!r}"
             )
 
-        if source_root is not None:
-            if os.path.isdir(source_root):
-                scan_targets.append(("source", source_root))
-            else:
-                errors.append(
-                    f"source scan failed: source_root unavailable: {source_root!r}"
+    for scope, scan_dir in scan_targets:
+        # Trivy exits 0 on a completed scan because no --exit-code override is
+        # used. Parse any JSON it emits even if the process reports non-zero so
+        # useful findings survive alongside an infrastructure error.
+        ok, stdout, stderr = _run_scanner(
+            ["trivy", "fs", "--format", "json", "--quiet", scan_dir],
+            "trivy",
+        )
+        if not stdout.strip():
+            detail = stderr[:500] if stderr else "no output"
+            errors.append(f"{scope} scan failed: {detail}")
+            continue
+
+        try:
+            data = json.loads(stdout)
+        except (json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"{scope} scan JSON parse error: {exc}")
+            continue
+
+        if not ok:
+            detail = stderr[:500] if stderr else "scanner exited non-zero"
+            errors.append(f"{scope} scan failed: {detail}")
+
+        before = len(findings)
+        for result in data.get("Results") or []:
+            target = str(result.get("Target") or "dependency manifest")
+            for vuln in result.get("Vulnerabilities") or []:
+                vuln_id = vuln.get("VulnerabilityID", "UNKNOWN")
+                pkg_name = vuln.get("PkgName", "unknown")
+                installed = vuln.get("InstalledVersion", "")
+                fixed = vuln.get("FixedVersion", "")
+                raw_sev = (vuln.get("Severity") or "UNKNOWN").lower()
+                sev = raw_sev if raw_sev in SEVERITY_SCORE else "low"
+                refs = vuln.get("References") or []
+                advisory_url = refs[0] if refs else ""
+                title = _truncate(
+                    vuln.get("Title") or vuln.get("Description") or vuln_id,
+                    120,
                 )
-        elif source_repo is not None:
-            owner, repo, commit_sha = source_repo
-            source_temp = tempfile.TemporaryDirectory(prefix="decky-source-")
-            try:
-                source_root = _fetch_source_tree(
-                    owner, repo, commit_sha, source_temp.name, policy=policy
+                rank = _severity_rank(sev)
+                if rank >= block_rank:
+                    classification = "BLOCK"
+                elif rank >= review_rank:
+                    classification = "MANUAL_REVIEW"
+                else:
+                    classification = "PASS_WITH_WARNINGS"
+
+                fixed_str = f" (fix: {fixed})" if fixed else ""
+                findings.append(
+                    Finding(
+                        rule_id=f"TRIVY_{vuln_id.replace('-', '_').upper()}",
+                        severity=sev,
+                        classification=classification,
+                        path=f"{scope}:{target}",
+                        line=0,
+                        message=(
+                            f"[{scope}] {vuln_id} in {pkg_name}@{installed}"
+                            f"{fixed_str}: {title}"
+                            + (f" — {advisory_url}" if advisory_url else "")
+                        ),
+                        evidence=_truncate(
+                            f"{vuln_id} {pkg_name}@{installed}" + fixed_str,
+                            EVIDENCE_MAX_LEN,
+                        ),
+                        scanner="trivy",
+                    )
                 )
-                scan_targets.append(("source", source_root))
-            except Exception as exc:
-                errors.append(f"source fetch failed: {exc}")
-
-        for scope, scan_dir in scan_targets:
-            # Trivy exits 0 on a completed scan because no --exit-code override is
-            # used. Parse any JSON it emits even if the process reports non-zero so
-            # useful findings survive alongside an infrastructure error.
-            ok, stdout, stderr = _run_scanner(
-                ["trivy", "fs", "--format", "json", "--quiet", scan_dir],
-                "trivy",
-            )
-            if not stdout.strip():
-                detail = stderr[:500] if stderr else "no output"
-                errors.append(f"{scope} scan failed: {detail}")
-                continue
-
-            try:
-                data = json.loads(stdout)
-            except (json.JSONDecodeError, ValueError) as exc:
-                errors.append(f"{scope} scan JSON parse error: {exc}")
-                continue
-
-            if not ok:
-                detail = stderr[:500] if stderr else "scanner exited non-zero"
-                errors.append(f"{scope} scan failed: {detail}")
-
-            before = len(findings)
-            for result in data.get("Results") or []:
-                target = str(result.get("Target") or "dependency manifest")
-                for vuln in result.get("Vulnerabilities") or []:
-                    vuln_id = vuln.get("VulnerabilityID", "UNKNOWN")
-                    pkg_name = vuln.get("PkgName", "unknown")
-                    installed = vuln.get("InstalledVersion", "")
-                    fixed = vuln.get("FixedVersion", "")
-                    raw_sev = (vuln.get("Severity") or "UNKNOWN").lower()
-                    sev = raw_sev if raw_sev in SEVERITY_SCORE else "low"
-                    refs = vuln.get("References") or []
-                    advisory_url = refs[0] if refs else ""
-                    title = _truncate(
-                        vuln.get("Title") or vuln.get("Description") or vuln_id,
-                        120,
-                    )
-                    rank = _severity_rank(sev)
-                    if rank >= block_rank:
-                        classification = "BLOCK"
-                    elif rank >= review_rank:
-                        classification = "MANUAL_REVIEW"
-                    else:
-                        classification = "PASS_WITH_WARNINGS"
-
-                    fixed_str = f" (fix: {fixed})" if fixed else ""
-                    findings.append(
-                        Finding(
-                            rule_id=f"TRIVY_{vuln_id.replace('-', '_').upper()}",
-                            severity=sev,
-                            classification=classification,
-                            path=f"{scope}:{target}",
-                            line=0,
-                            message=(
-                                f"[{scope}] {vuln_id} in {pkg_name}@{installed}"
-                                f"{fixed_str}: {title}"
-                                + (f" — {advisory_url}" if advisory_url else "")
-                            ),
-                            evidence=_truncate(
-                                f"{vuln_id} {pkg_name}@{installed}" + fixed_str,
-                                EVIDENCE_MAX_LEN,
-                            ),
-                            scanner="trivy",
-                        )
-                    )
-            scope_counts[scope] = len(findings) - before
-    finally:
-        if source_temp is not None:
-            source_temp.cleanup()
+        scope_counts[scope] = len(findings) - before
 
     detail_parts = [
         f"{scope} scanned ({count} findings)" for scope, count in scope_counts.items()
@@ -2856,14 +2821,6 @@ def _resolve_ref_to_commit_and_tree_sha(
         )
 
 
-def _resolve_ref_to_tree_sha(
-    owner: str, repo: str, ref: str
-) -> tuple[Optional[str], Optional[str]]:
-    """Resolve tag/ref/commit to a tree SHA. Returns (tree_sha, error_detail)."""
-    _c_sha, t_sha, err = _resolve_ref_to_commit_and_tree_sha(owner, repo, ref)
-    return t_sha, err
-
-
 def compare_source_and_artifact_from_snapshot(
     extract_dir: str,
     source_snapshot: audit_source_snapshot.SourceSnapshot,
@@ -3087,228 +3044,6 @@ def compare_source_and_artifact_from_snapshot(
                             "but has modified content in the release ZIP."
                         ),
                         evidence=f"hash-mismatch (source: {source_sha[:8]}, zip: {zip_sha[:8]})",
-                        scanner="source-artifact-diff",
-                    )
-                )
-
-    summary["zip_only_executables"].sort()
-    summary["zip_only_scripts"].sort()
-    summary["modified_source_files"].sort()
-    status = "found_issue" if findings else "passed"
-    return summary, findings, ScannerStatus(name="source-artifact-diff", status=status)
-
-
-def compare_source_and_artifact(
-    extract_dir: str,
-    owner: str,
-    repo: str,
-    ref: str,
-) -> tuple[dict[str, Any], list[Finding], ScannerStatus]:
-    """Compare extracted ZIP against the repository source at ref.
-
-    Returns (diff_summary, findings, status).
-    """
-    summary: dict[str, Any] = {
-        "ref": ref,
-        "checked": False,
-        "zip_only_executables": [],
-        "zip_only_scripts": [],
-        "modified_source_files": [],
-        "large_binaries_absent_from_source": [],
-        "unexpected_urls": [],
-    }
-    findings: list[Finding] = []
-    normalized_release_version = plugin_release_utils.normalize_version(ref)
-
-    if not os.path.isdir(extract_dir):
-        return (
-            summary,
-            findings,
-            ScannerStatus(
-                name="source-artifact-diff",
-                status="unavailable",
-                detail="Extraction directory is unavailable.",
-            ),
-        )
-
-    try:
-        tree_sha, tree_err = _resolve_ref_to_tree_sha(owner, repo, ref)
-        if not tree_sha:
-            return (
-                summary,
-                findings,
-                ScannerStatus(
-                    name="source-artifact-diff",
-                    status="failed",
-                    detail=tree_err or f"Could not resolve ref {ref!r} to a tree SHA",
-                ),
-            )
-        tree_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{tree_sha}"
-        tree_data = _gh_get(tree_url + "?recursive=1")
-        if not isinstance(tree_data, dict):
-            return (
-                summary,
-                findings,
-                ScannerStatus(
-                    name="source-artifact-diff",
-                    status="failed",
-                    detail="Malformed tree response.",
-                ),
-            )
-        if tree_data.get("truncated") is True:
-            return (
-                summary,
-                findings,
-                ScannerStatus(
-                    name="source-artifact-diff",
-                    status="failed",
-                    detail="Tree response truncated by GitHub API.",
-                ),
-            )
-        source_tree_exact: dict[str, Optional[str]] = {}
-        source_tree_lower: dict[str, Optional[str]] = {}
-        source_path_lower: dict[str, str] = {}
-        for item in tree_data.get("tree") or []:
-            if isinstance(item, dict):
-                p = item.get("path")
-                sha = item.get("sha")
-                if p:
-                    source_tree_exact[p] = sha
-                    source_tree_lower[p.lower()] = sha
-                    source_path_lower[p.lower()] = p
-        summary["checked"] = True
-    except Exception as exc:
-        detail = f"Could not fetch source tree for {owner}/{repo}@{ref}: {exc}"
-        log.debug(detail)
-        return (
-            summary,
-            findings,
-            ScannerStatus(
-                name="source-artifact-diff",
-                status="failed",
-                detail=detail,
-            ),
-        )
-
-    # Walk extracted directory and compare
-    for root, _dirs, files in os.walk(extract_dir):
-        for fname in files:
-            full_path = os.path.join(root, fname)
-            rel_path = os.path.relpath(full_path, extract_dir).replace("\\", "/")
-            rel_lower = rel_path.lower()
-
-            # Strip a leading plugin-name directory (common in release ZIPs)
-            parts = rel_path.split("/", 1)
-            short_path = parts[1] if len(parts) == 2 else parts[0]
-            short_lower = short_path.lower()
-
-            source_path: Optional[str] = None
-            if short_path in source_tree_exact:
-                source_path = short_path
-            elif rel_path in source_tree_exact:
-                source_path = rel_path
-            elif short_lower in source_tree_lower:
-                source_path = source_path_lower[short_lower]
-            elif rel_lower in source_tree_lower:
-                source_path = source_path_lower[rel_lower]
-            source_sha = (
-                source_tree_exact.get(source_path) if source_path is not None else None
-            )
-            in_source = source_path is not None
-
-            try:
-                if os.path.islink(full_path):
-                    raw = os.readlink(full_path).encode("utf-8", errors="replace")
-                else:
-                    with open(full_path, "rb") as fh:
-                        raw = fh.read()
-            except Exception:
-                continue
-
-            bin_info = identify_binary(raw[:16], rel_path)
-            if bin_info and not in_source:
-                summary["zip_only_executables"].append(rel_path)
-                findings.append(
-                    Finding(
-                        rule_id="ZIP_ONLY_EXECUTABLE",
-                        severity="high",
-                        classification="MANUAL_REVIEW",
-                        path=rel_path,
-                        line=0,
-                        message=(
-                            f"Binary file {rel_path!r} ({bin_info['label']}) is present "
-                            "in the release ZIP but absent from the repository source."
-                        ),
-                        evidence=bin_info["label"],
-                        scanner="source-artifact-diff",
-                    )
-                )
-                continue
-
-            if in_source:
-                if source_sha:
-                    zip_sha = git_blob_sha1(raw)
-                    if zip_sha != source_sha:
-                        raw_lf = raw.replace(b"\r\n", b"\n")
-                        zip_sha_lf = git_blob_sha1(raw_lf)
-                        if zip_sha_lf != source_sha:
-                            build_stamped_metadata = False
-                            if source_path and posixpath.basename(
-                                source_path
-                            ).lower() in {"plugin.json", "package.json"}:
-                                source_raw = get_repo_file_raw(
-                                    owner, repo, ref, source_path
-                                )
-                                if source_raw is not None:
-                                    build_stamped_metadata = (
-                                        _metadata_diff_is_build_stamped(
-                                            source_path,
-                                            source_raw,
-                                            raw,
-                                            normalized_release_version,
-                                        )
-                                    )
-                            if not build_stamped_metadata:
-                                summary["modified_source_files"].append(rel_path)
-                                findings.append(
-                                    Finding(
-                                        rule_id="MODIFIED_SOURCE_FILE",
-                                        severity="high",
-                                        classification="MANUAL_REVIEW",
-                                        path=rel_path,
-                                        line=0,
-                                        message=(
-                                            f"File {rel_path!r} is present in repository source "
-                                            "but has modified content in the release ZIP."
-                                        ),
-                                        evidence=f"hash-mismatch (source: {source_sha[:8]}, zip: {zip_sha[:8]})",
-                                        scanner="source-artifact-diff",
-                                    )
-                                )
-                continue
-
-            try:
-                executable_bits = bool(
-                    os.stat(full_path).st_mode
-                    & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-                )
-            except OSError:
-                executable_bits = False
-
-            if _looks_like_script_asset(short_path, raw, executable_bits):
-                summary["zip_only_scripts"].append(rel_path)
-                findings.append(
-                    Finding(
-                        rule_id="ZIP_ONLY_SCRIPT",
-                        severity="high",
-                        classification="MANUAL_REVIEW",
-                        path=rel_path,
-                        line=0,
-                        message=(
-                            f"Script-like file {rel_path!r} is present in the release ZIP "
-                            "but absent from the repository source."
-                        ),
-                        evidence="script-heuristic",
                         scanner="source-artifact-diff",
                     )
                 )
@@ -4354,98 +4089,6 @@ def download_zip(
         kind="release",
         policy=policy,
     ).sha256
-
-
-def _download_source_archive(
-    owner: str,
-    repo: str,
-    commit_sha: str,
-    dest_path: str | Path,
-    policy: Optional[dict[str, Any]] = None,
-) -> None:
-    """Download the exact commit tarball without invoking repository code."""
-    url = f"https://api.github.com/repos/{owner}/{repo}/tarball/{commit_sha}"
-    plugin_release_utils.bounded_stream_download(
-        url,
-        dest_path,
-        session=_gh_session,
-        kind="source",
-        policy=policy,
-    )
-
-
-def _fetch_source_tree(
-    owner: str,
-    repo: str,
-    commit_sha: str,
-    destination: str | Path,
-    policy: Optional[dict[str, Any]] = None,
-) -> str:
-    """Materialize an exact GitHub source archive without executing its contents."""
-    destination_path = Path(destination)
-    destination_path.mkdir(parents=True, exist_ok=True)
-    archive_path = destination_path / "source.tar.gz"
-    extracted_path = destination_path / "extracted"
-    extracted_path.mkdir()
-    effective_policy = policy if policy is not None else _default_policy()
-    _download_source_archive(
-        owner, repo, commit_sha, archive_path, policy=effective_policy
-    )
-
-    limits = effective_policy["archive"]
-    file_count = 0
-    total_size = 0
-    top_levels: set[str] = set()
-    seen_paths: set[str] = set()
-
-    with tarfile.open(archive_path, "r:*") as archive:
-        for member in archive:
-            safe, reason = _is_safe_member_path(member.name)
-            if not safe:
-                raise ValueError(
-                    f"Unsafe source archive member {member.name!r}: {reason}"
-                )
-            relative = PurePosixPath(member.name)
-            if not relative.parts:
-                continue
-            top_levels.add(relative.parts[0])
-            target = extracted_path.joinpath(*relative.parts)
-
-            if member.isdir():
-                target.mkdir(parents=True, exist_ok=True)
-                continue
-            if not member.isfile():
-                # Git symlinks and other special entries are unnecessary for
-                # dependency resolution and are never materialized.
-                continue
-
-            file_count += 1
-            total_size += member.size
-            if file_count > limits["max_files"]:
-                raise ValueError("Source archive exceeds maximum file count")
-            if member.size > limits["max_single_file_bytes"]:
-                raise ValueError(f"Source archive member too large: {member.name}")
-            if total_size > limits["max_uncompressed_bytes"]:
-                raise ValueError("Source archive exceeds maximum uncompressed size")
-            relative_key = relative.as_posix()
-            if relative_key in seen_paths:
-                raise ValueError(f"Duplicate source archive member: {member.name}")
-            seen_paths.add(relative_key)
-
-            source = archive.extractfile(member)
-            if source is None:
-                raise ValueError(f"Could not read source archive member: {member.name}")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with source, open(target, "wb") as output:
-                shutil.copyfileobj(source, output)
-
-    if file_count == 0:
-        raise ValueError("Source archive contains no regular files")
-    if len(top_levels) == 1:
-        source_root = extracted_path / next(iter(top_levels))
-        if source_root.is_dir():
-            return str(source_root)
-    return str(extracted_path)
 
 
 def _find_metadata_in_extracted(

@@ -221,7 +221,6 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                     "audit_plugins._resolve_ref_to_commit_and_tree_sha",
                     return_value=("a" * 40, "tree123", None),
                 ),
-                patch("audit_plugins.get_repo_file_raw", return_value=None),
                 patch("audit_plugins.download_zip", side_effect=download),
                 patch.object(
                     ap.audit_source_snapshot,
@@ -399,7 +398,6 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                     "audit_plugins._resolve_ref_to_commit_and_tree_sha",
                     return_value=("a" * 40, "tree123", None),
                 ),
-                patch("audit_plugins.get_repo_file_raw", return_value=None),
                 patch("audit_plugins.download_zip", side_effect=download),
                 patch("audit_plugins.run_clamav", side_effect=clamav),
                 patch(
@@ -503,10 +501,9 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                     "audit_plugins._resolve_ref_to_commit_and_tree_sha",
                     return_value=("a" * 40, "tree123", None),
                 ),
-                patch("audit_plugins.get_repo_file_raw", return_value=None),
                 patch("audit_plugins.download_zip", side_effect=mock_download),
                 patch(
-                    "audit_plugins.compare_source_and_artifact",
+                    "audit_plugins.compare_source_and_artifact_from_snapshot",
                     return_value=(
                         {},
                         [],
@@ -617,7 +614,6 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                     "audit_plugins._resolve_ref_to_commit_and_tree_sha",
                     return_value=("a" * 40, "tree123", None),
                 ),
-                patch("audit_plugins.get_repo_file_raw", return_value=None),
                 patch("audit_plugins.download_zip", side_effect=download),
                 patch.object(
                     ap.audit_source_snapshot,
@@ -652,48 +648,10 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                 with ExitStack() as _cache_hit_sentinels:
                     _cache_hit_sentinels.enter_context(
                         patch(
-                            "audit_plugins.get_repo_file_raw",
-                            side_effect=AssertionError(
-                                "legacy source metadata API used"
-                            ),
-                        )
-                    )
-                    _cache_hit_sentinels.enter_context(
-                        patch(
                             "audit_plugins._gh_get",
                             side_effect=AssertionError(
                                 "legacy REST call used after cache hit"
                             ),
-                        )
-                    )
-                    _cache_hit_sentinels.enter_context(
-                        patch(
-                            "audit_plugins._resolve_ref_to_tree_sha",
-                            side_effect=AssertionError(
-                                "_resolve_ref_to_tree_sha should not run after cache hit"
-                            ),
-                        )
-                    )
-                    _cache_hit_sentinels.enter_context(
-                        patch(
-                            "audit_plugins._fetch_source_tree",
-                            side_effect=AssertionError(
-                                "legacy source-tree REST path used"
-                            ),
-                        )
-                    )
-                    _cache_hit_sentinels.enter_context(
-                        patch(
-                            "audit_plugins._download_source_archive",
-                            side_effect=AssertionError(
-                                "legacy source-archive REST path used"
-                            ),
-                        )
-                    )
-                    _cache_hit_sentinels.enter_context(
-                        patch(
-                            "audit_plugins.compare_source_and_artifact",
-                            side_effect=AssertionError("legacy source compare used"),
                         )
                     )
                     _cache_hit_sentinels.enter_context(
@@ -823,7 +781,6 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                     "audit_plugins._resolve_ref_to_commit_and_tree_sha",
                     return_value=("a" * 40, "tree123", None),
                 ),
-                patch("audit_plugins.get_repo_file_raw", return_value=None),
                 patch("audit_plugins.download_zip", side_effect=download),
                 patch.object(
                     ap.audit_source_snapshot,
@@ -858,48 +815,10 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                 with ExitStack() as source_cache_hit_sentinels:
                     source_cache_hit_sentinels.enter_context(
                         patch(
-                            "audit_plugins.get_repo_file_raw",
-                            side_effect=AssertionError(
-                                "legacy source metadata API used"
-                            ),
-                        )
-                    )
-                    source_cache_hit_sentinels.enter_context(
-                        patch(
                             "audit_plugins._gh_get",
                             side_effect=AssertionError(
                                 "legacy REST call used after cache hit"
                             ),
-                        )
-                    )
-                    source_cache_hit_sentinels.enter_context(
-                        patch(
-                            "audit_plugins._resolve_ref_to_tree_sha",
-                            side_effect=AssertionError(
-                                "_resolve_ref_to_tree_sha should not run after cache hit"
-                            ),
-                        )
-                    )
-                    source_cache_hit_sentinels.enter_context(
-                        patch(
-                            "audit_plugins._fetch_source_tree",
-                            side_effect=AssertionError(
-                                "legacy source-tree REST path used"
-                            ),
-                        )
-                    )
-                    source_cache_hit_sentinels.enter_context(
-                        patch(
-                            "audit_plugins._download_source_archive",
-                            side_effect=AssertionError(
-                                "legacy source-archive REST path used"
-                            ),
-                        )
-                    )
-                    source_cache_hit_sentinels.enter_context(
-                        patch(
-                            "audit_plugins.compare_source_and_artifact",
-                            side_effect=AssertionError("legacy source compare used"),
                         )
                     )
                     source_cache_hit_sentinels.enter_context(
@@ -1030,7 +949,6 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                     "audit_plugins._resolve_ref_to_commit_and_tree_sha",
                     return_value=("a" * 40, "tree123", None),
                 ),
-                patch("audit_plugins.get_repo_file_raw", return_value=None),
                 patch("audit_plugins.download_zip", side_effect=download),
                 patch.object(
                     ap.audit_source_snapshot,
@@ -1130,7 +1048,6 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                     "audit_plugins._resolve_ref_to_commit_and_tree_sha",
                     return_value=("a" * 40, "tree123", None),
                 ),
-                patch("audit_plugins.get_repo_file_raw", return_value=None),
                 patch("audit_plugins.download_zip", side_effect=download),
                 patch.object(
                     ap.audit_source_snapshot,
@@ -1170,14 +1087,6 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                 with ExitStack() as skip_cache_sentinels:
                     skip_cache_sentinels.enter_context(
                         patch(
-                            "audit_plugins.get_repo_file_raw",
-                            side_effect=AssertionError(
-                                "legacy source metadata API used"
-                            ),
-                        )
-                    )
-                    skip_cache_sentinels.enter_context(
-                        patch(
                             "audit_plugins._gh_get",
                             side_effect=AssertionError(
                                 "legacy REST call used after cache hit"
@@ -1186,23 +1095,7 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                     )
                     skip_cache_sentinels.enter_context(
                         patch(
-                            "audit_plugins._fetch_source_tree",
-                            side_effect=AssertionError(
-                                "legacy source-tree REST path used"
-                            ),
-                        )
-                    )
-                    skip_cache_sentinels.enter_context(
-                        patch(
-                            "audit_plugins._download_source_archive",
-                            side_effect=AssertionError(
-                                "legacy source-archive REST path used"
-                            ),
-                        )
-                    )
-                    skip_cache_sentinels.enter_context(
-                        patch(
-                            "audit_plugins.compare_source_and_artifact",
+                            "audit_plugins.compare_source_and_artifact_from_snapshot",
                             side_effect=AssertionError(
                                 "prepared source comparison should be skipped"
                             ),
@@ -1328,10 +1221,9 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                     "audit_plugins._resolve_ref_to_commit_and_tree_sha",
                     return_value=("a" * 40, "tree123", None),
                 ),
-                patch("audit_plugins.get_repo_file_raw", return_value=None),
                 patch("audit_plugins.download_zip", side_effect=mock_download),
                 patch(
-                    "audit_plugins.compare_source_and_artifact",
+                    "audit_plugins.compare_source_and_artifact_from_snapshot",
                     return_value=(
                         {},
                         [],
@@ -1409,10 +1301,9 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                     "audit_plugins._resolve_ref_to_commit_and_tree_sha",
                     side_effect=mock_resolve,
                 ),
-                patch("audit_plugins.get_repo_file_raw", return_value=None),
                 patch("audit_plugins.download_zip", side_effect=mock_download),
                 patch(
-                    "audit_plugins.compare_source_and_artifact",
+                    "audit_plugins.compare_source_and_artifact_from_snapshot",
                     return_value=(
                         {},
                         [],
@@ -1483,10 +1374,9 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                     "audit_plugins._resolve_ref_to_commit_and_tree_sha",
                     return_value=("a" * 40, "tree123", None),
                 ),
-                patch("audit_plugins.get_repo_file_raw", return_value=None),
                 patch("audit_plugins.download_zip", side_effect=mock_download),
                 patch(
-                    "audit_plugins.compare_source_and_artifact",
+                    "audit_plugins.compare_source_and_artifact_from_snapshot",
                     return_value=(
                         {},
                         [],
