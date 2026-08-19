@@ -4,18 +4,17 @@ set -Eeuo pipefail
 
 # The bootstrap has a hard 600-second total budget, leaving two minutes below
 # the calling workflow's unchanged twelve-minute step cap. Each named phase is
-# clipped to the time remaining after its 5-second forced-kill grace and
-# 1-second timeout-supervisor guard; the budget therefore includes the two
-# 15-second dpkg-lock waits per APT retry, 10-second APT retry backoffs,
-# 4-second key/Semgrep retry backoffs, every timeout grace period, and a
-# 1-second clock-boundary guard. The normal cold-install APT budgets are 90
-# seconds each.
+# clipped to the time remaining after its 5-second forced-kill grace and an
+# equal 5-second timeout-supervisor cleanup margin; the budget therefore
+# includes the two 15-second dpkg-lock waits per APT retry, 10-second APT retry
+# backoffs, 4-second key/Semgrep retry backoffs, every timeout grace period,
+# and a 1-second clock-boundary guard. The normal cold-install APT budgets are
+# 90 seconds each.
 BOOTSTRAP_TIMEOUT_SECONDS=600
 NETWORK_ATTEMPTS=2
 RETRY_BACKOFF_SECONDS=4
 APT_RETRY_BACKOFF_SECONDS=10
 PHASE_TIMEOUT_KILL_GRACE_SECONDS=5
-PHASE_TIMEOUT_SUPERVISOR_GRACE_SECONDS=1
 DPKG_FRONTEND_LOCK_WAIT_TIMEOUT_SECONDS=15
 DPKG_FRONTEND_LOCK_POLL_SECONDS=1
 DPKG_FRONTEND_LOCK_PATH="/var/lib/dpkg/lock-frontend"
@@ -69,9 +68,7 @@ phase_run() {
   started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'phase=%s start=%s\n' "$phase" "$started"
   remaining_seconds="$(remaining_bootstrap_seconds)"
-  local timeout_teardown_seconds=$((
-    PHASE_TIMEOUT_KILL_GRACE_SECONDS + PHASE_TIMEOUT_SUPERVISOR_GRACE_SECONDS
-  ))
+  local timeout_teardown_seconds=$((PHASE_TIMEOUT_KILL_GRACE_SECONDS * 2))
   if (( remaining_seconds <= timeout_teardown_seconds )); then
     status=124
   else
@@ -150,8 +147,23 @@ wait_for_dpkg_frontend_lock() {
     bash -c '
       lock_path="$1"
       poll_seconds="$2"
-      while sudo -n fuser "$lock_path" >/dev/null 2>&1; do
-        sleep "$poll_seconds"
+      if ! command -v fuser >/dev/null 2>&1; then
+        printf "%s\\n" "dpkg frontend lock check requires fuser on PATH" >&2
+        exit 127
+      fi
+      while :; do
+        if fuser_output="$(sudo -n fuser "$lock_path" 2>&1)"; then
+          sleep "$poll_seconds"
+          continue
+        else
+          fuser_status=$?
+        fi
+        if (( fuser_status == 1 )) && [[ -z "$fuser_output" ]]; then
+          break
+        fi
+        printf "dpkg frontend lock check failed (fuser status=%s): %s\\n" \
+          "$fuser_status" "$fuser_output" >&2
+        exit "$fuser_status"
       done
     ' -- "$DPKG_FRONTEND_LOCK_PATH" "$DPKG_FRONTEND_LOCK_POLL_SECONDS"
 }

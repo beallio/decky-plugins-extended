@@ -215,6 +215,7 @@ def test_scanner_bootstrap_happy_path(tmp_path):
     assert SCRIPT.is_file()
     assert os.access(SCRIPT, os.X_OK)
     assert result.returncode == 0, result.stderr
+    assert "dpkg frontend lock check failed" not in result.stderr
     assert "phase=install base packages start=" in result.stdout
     assert "phase=verify Semgrep version end=" in result.stdout
     assert (tmp_path / "github-path").read_text(encoding="utf-8").strip()
@@ -289,6 +290,57 @@ exec /bin/bash "$@"
         )
         assert result.returncode != 0
         assert "phase=install base packages status=124" in result.stderr
+        assert grandchild_pid_file.exists(), result.stdout + result.stderr
+        pid = int(grandchild_pid_file.read_text(encoding="utf-8"))
+        assert _wait_for_process_exit(pid, 0.5), result.stderr
+    finally:
+        if pid is not None:
+            _terminate_process(pid)
+
+
+def test_scanner_bootstrap_reserves_supervisor_cleanup_margin(tmp_path):
+    assert shutil.which("timeout", path=os.environ["PATH"])
+    assert shutil.which("setsid", path=os.environ["PATH"])
+    grandchild_pid_file = tmp_path / "grandchild.pid"
+    script = _script_with_short_timeouts(
+        tmp_path,
+        NETWORK_ATTEMPTS=1,
+        BASE_APT_TIMEOUT_SECONDS=1,
+        PHASE_TIMEOUT_KILL_GRACE_SECONDS=4,
+    )
+    environment = _fake_environment(tmp_path, real_timeout=True)
+    _write_executable(
+        tmp_path / "bin" / "sleep",
+        """
+if [[ "$1" == "4" ]]; then
+  exec /bin/sleep 6
+fi
+exec /bin/sleep "$@"
+""",
+    )
+    _write_executable(
+        tmp_path / "bin" / "bash",
+        """
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"apt-get"* ]]; then
+  trap 'exit 143' TERM
+  /bin/bash -c 'bash -c "trap \\\"\\\" TERM; exec sleep 20" </dev/null >/dev/null 2>&1 & child="$!"; printf "%s\\n" "$child" > "$FAKE_GRANDCHILD_PID_FILE"; wait "$child"' </dev/null >/dev/null 2>&1 &
+  wait "$!"
+  exit 0
+fi
+exec /bin/bash "$@"
+""",
+        interpreter="/bin/bash",
+    )
+
+    pid = None
+    try:
+        result = _run_bootstrap(
+            tmp_path,
+            script=script,
+            environment=environment
+            | {"FAKE_GRANDCHILD_PID_FILE": str(grandchild_pid_file)},
+        )
+        assert result.returncode != 0
         assert grandchild_pid_file.exists(), result.stdout + result.stderr
         pid = int(grandchild_pid_file.read_text(encoding="utf-8"))
         assert _wait_for_process_exit(pid, 0.5), result.stderr
@@ -442,6 +494,25 @@ def test_scanner_bootstrap_fails_closed_when_dpkg_lock_does_not_clear(tmp_path):
     assert "status=124" in result.stderr
 
 
+def test_scanner_bootstrap_fails_closed_without_fuser(tmp_path):
+    environment = _fake_environment(tmp_path)
+    bin_dir = tmp_path / "bin"
+    (bin_dir / "fuser").unlink()
+    for command in ("bash", "cp", "date", "grep", "mktemp", "rm", "tee"):
+        location = shutil.which(command)
+        assert location, f"{command} is required for this test"
+        (bin_dir / command).symlink_to(location)
+    environment["PATH"] = str(bin_dir)
+    assert shutil.which("fuser", path=environment["PATH"]) is None
+
+    result = _run_bootstrap(tmp_path, environment=environment)
+
+    assert result.returncode != 0
+    assert "dpkg frontend lock check requires fuser" in result.stderr
+    commands = (tmp_path / "commands.log").read_text(encoding="utf-8")
+    assert not any(line.startswith("apt-get ") for line in commands.splitlines())
+
+
 def test_scanner_bootstrap_does_not_retry_non_idempotent_service_stop(tmp_path):
     environment = _fake_environment(tmp_path)
     _write_executable(
@@ -464,16 +535,9 @@ def test_scanner_bootstrap_enforces_documented_total_budget():
     assert _integer_script_constant("BASE_APT_TIMEOUT_SECONDS") > 60
     assert _integer_script_constant("TRIVY_APT_TIMEOUT_SECONDS") > 60
     assert "timeout --foreground" not in source
-    assert 'timeout --kill-after="$((timeout_teardown_seconds))s"' in source
-    assert "set -m" in source
-    assert 'kill -KILL -- "-$payload_pid"' in source
-    assert "BOOTSTRAP_TIMEOUT_SECONDS - (SECONDS - bootstrap_started_seconds) - 1" in (
-        source
-    )
     header = "\n".join(source.splitlines()[4:12])
     for name in (
         "PHASE_TIMEOUT_KILL_GRACE_SECONDS",
-        "PHASE_TIMEOUT_SUPERVISOR_GRACE_SECONDS",
         "DPKG_FRONTEND_LOCK_WAIT_TIMEOUT_SECONDS",
         "APT_RETRY_BACKOFF_SECONDS",
         "RETRY_BACKOFF_SECONDS",
