@@ -75,6 +75,77 @@ def _regular(name: str, content: str | bytes = "") -> tuple[str, bytes | str, in
     return (name, content, 0)
 
 
+def test_producer_api_budget_is_shared_by_metadata_rest_calls():
+    class Clock:
+        def __init__(self):
+            self.now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+        @staticmethod
+        def wall_time():
+            return 1_000.0
+
+        def sleep(self, seconds):
+            self.now += seconds
+
+    class Response:
+        status_code = 200
+        text = ""
+        headers = {}
+
+        def __init__(self):
+            self.closed = False
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {"full_name": "owner/repo", "archived": False}
+
+        def close(self):
+            self.closed = True
+
+    class Session:
+        def __init__(self, response):
+            self.response = response
+            self.calls = []
+
+        def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            return self.response
+
+    clock = Clock()
+    response = Response()
+    session = Session(response)
+    budget = pru.ApiRequestBudget(
+        7,
+        monotonic=clock.monotonic,
+        wall_time=clock.wall_time,
+        sleep=clock.sleep,
+    )
+    token = ap._producer_api_budget.set(budget)
+    try:
+        with patch.object(ap, "_gh_session", new=session):
+            assert ap.get_repo_metadata("owner", "repo") == {
+                "full_name": "owner/repo",
+                "archived": False,
+            }
+    finally:
+        ap._producer_api_budget.reset(token)
+
+    assert session.calls == [
+        (
+            "https://api.github.com/repos/owner/repo",
+            {"timeout": 7},
+        )
+    ]
+    assert response.closed
+
+
 # ---------------------------------------------------------------------------
 # Repository list parsing
 # ---------------------------------------------------------------------------

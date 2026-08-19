@@ -38,6 +38,8 @@ import unicodedata
 import zipfile
 from collections import Counter
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Collection, Optional
@@ -811,10 +813,12 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 def _make_github_session() -> requests.Session:
     s = requests.Session()
     retry = Retry(
-        total=MAX_RETRIES,
-        backoff_factor=2,
-        status_forcelist=[429, 500, 502, 503, 504],
-        respect_retry_after_header=True,
+        total=0,
+        connect=0,
+        read=0,
+        redirect=0,
+        status=0,
+        respect_retry_after_header=False,
     )
     adapter = HTTPAdapter(max_retries=retry)
     s.mount("https://", adapter)
@@ -832,11 +836,44 @@ def _make_github_session() -> requests.Session:
 
 
 _gh_session = _make_github_session()
+_producer_api_budget: ContextVar[Optional[plugin_release_utils.ApiRequestBudget]] = (
+    ContextVar("producer_api_budget", default=None)
+)
+
+
+@contextmanager
+def _producer_api_budget_scope(deadline_seconds: int):
+    """Share one bounded REST budget across one worklist producer invocation."""
+    budget = plugin_release_utils.ApiRequestBudget(
+        deadline_seconds,
+        max_retries=MAX_RETRIES,
+    )
+    token = _producer_api_budget.set(budget)
+    try:
+        yield budget
+    finally:
+        _producer_api_budget.reset(token)
 
 
 def _gh_get(url: str, params: Optional[dict] = None) -> dict | list:
     """Perform a GitHub API GET with rate-limit handling."""
+    budget = _producer_api_budget.get()
+    if budget is not None:
+        response = budget.get_response(
+            _gh_session,
+            url,
+            params=params,
+            timeout=REQUEST_TIMEOUT,
+        )
+        try:
+            return response.json()
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+
     for attempt in range(MAX_RETRIES + 1):
+        resp = None
         try:
             resp = _gh_session.get(url, params=params, timeout=REQUEST_TIMEOUT)
         except requests.RequestException:
@@ -845,17 +882,22 @@ def _gh_get(url: str, params: Optional[dict] = None) -> dict | list:
                 continue
             raise
 
-        if resp.status_code == 429 or (
-            resp.status_code == 403 and "rate limit" in resp.text.lower()
-        ):
-            reset = int(resp.headers.get("X-RateLimit-Reset", time.time() + 60))
-            wait = max(1, reset - int(time.time())) + 5
-            log.warning("GitHub rate limit hit; sleeping %d s.", wait)
-            time.sleep(wait)
-            continue
+        try:
+            if resp.status_code == 429 or (
+                resp.status_code == 403 and "rate limit" in resp.text.lower()
+            ):
+                reset = int(resp.headers.get("X-RateLimit-Reset", time.time() + 60))
+                wait = max(1, reset - int(time.time())) + 5
+                log.warning("GitHub rate limit hit; sleeping %d s.", wait)
+                time.sleep(wait)
+                continue
 
-        resp.raise_for_status()
-        return resp.json()
+            resp.raise_for_status()
+            return resp.json()
+        finally:
+            close = getattr(resp, "close", None)
+            if callable(close):
+                close()
 
     raise RuntimeError(f"Failed to fetch {url} after retries")
 
@@ -866,7 +908,11 @@ def get_repo_metadata(owner: str, repo: str) -> dict[str, Any]:
 
 def get_releases(owner: str, repo: str) -> list[dict[str, Any]]:
     return plugin_release_utils.get_releases(
-        owner, repo, session=_gh_session, timeout=REQUEST_TIMEOUT
+        owner,
+        repo,
+        session=_gh_session,
+        timeout=REQUEST_TIMEOUT,
+        api_budget=_producer_api_budget.get(),
     )
 
 
@@ -6593,19 +6639,20 @@ def main(argv: Optional[list[str]] = None) -> int:
                 repository_urls = [args.repository]
                 selection_mode = "repository"
 
-            fingerprint, _ = audit_worklist.prepare_audit_worklist(
-                args.prepare_worklist,
-                source_revision=args.source_revision,
-                selection_mode=selection_mode,
-                repository_urls=repository_urls,
-                shard_count=args.shard_count,
-                latest_only=args.latest_only,
-                base_ref=args.base_ref if args.changed else None,
-                release_fetcher=get_releases,
-                metadata_fetcher=get_repo_metadata,
-                tag_resolver=audit_worklist.resolve_repository_tags_via_ls_remote,
-                api_deadline_seconds=args.api_deadline_seconds,
-            )
+            with _producer_api_budget_scope(args.api_deadline_seconds):
+                fingerprint, _ = audit_worklist.prepare_audit_worklist(
+                    args.prepare_worklist,
+                    source_revision=args.source_revision,
+                    selection_mode=selection_mode,
+                    repository_urls=repository_urls,
+                    shard_count=args.shard_count,
+                    latest_only=args.latest_only,
+                    base_ref=args.base_ref if args.changed else None,
+                    release_fetcher=get_releases,
+                    metadata_fetcher=get_repo_metadata,
+                    tag_resolver=audit_worklist.resolve_repository_tags_via_ls_remote,
+                    api_deadline_seconds=args.api_deadline_seconds,
+                )
             print(f"worklist_fingerprint={fingerprint}")
             return 0
         except Exception as exc:
