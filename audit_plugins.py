@@ -4709,6 +4709,33 @@ def _record_release_local_error(
     return report
 
 
+def _validate_prepared_source_identity(
+    prepared_commit_sha: Optional[str], prepared_source_resolution_error: Optional[str]
+) -> tuple[Optional[str], Optional[str]]:
+    """Validate source identity supplied by an immutable worker worklist.
+
+    The local/smoke path supplies neither value and retains its legacy tag
+    resolver. A worker supplies exactly one prepared value and must never
+    silently fall back to that resolver.
+    """
+    if prepared_commit_sha is not None and prepared_source_resolution_error is not None:
+        raise ValueError(
+            "Prepared source identity must not include both commit and resolution error"
+        )
+    if prepared_commit_sha is not None and (
+        not isinstance(prepared_commit_sha, str)
+        or not _CANONICAL_GIT_SHA1.fullmatch(prepared_commit_sha)
+    ):
+        raise ValueError("Prepared source commit must be a lowercase 40-hex SHA")
+    if prepared_source_resolution_error is not None and (
+        not isinstance(prepared_source_resolution_error, str)
+        or not prepared_source_resolution_error
+        or prepared_source_resolution_error != prepared_source_resolution_error.strip()
+    ):
+        raise ValueError("Prepared source resolution error must be a non-empty string")
+    return prepared_commit_sha, prepared_source_resolution_error
+
+
 def audit_release(
     repo_url: str,
     release: dict[str, Any],
@@ -4718,11 +4745,19 @@ def audit_release(
     skip_cache: bool = False,
     *,
     _repo_metadata: Optional[dict[str, Any]] = None,
+    _prepared_commit_sha: Optional[str] = None,
+    _prepared_source_resolution_error: Optional[str] = None,
     _policy_path: Optional[str] = DEFAULT_POLICY_FILE,
     _allowlist_path: Optional[str] = DEFAULT_ALLOWLIST_FILE,
     _persist_verdict: bool = True,
 ) -> AuditReport:
     """Audit exactly one supplied plugin release without selecting another."""
+    (
+        prepared_commit_sha,
+        prepared_source_resolution_error,
+    ) = _validate_prepared_source_identity(
+        _prepared_commit_sha, _prepared_source_resolution_error
+    )
     report = AuditReport(
         audit_timestamp=datetime.datetime.now(datetime.UTC)
         .isoformat()
@@ -4780,17 +4815,37 @@ def audit_release(
     if meta.get("archived"):
         report.errors.append(f"Repository {owner}/{repo} is archived.")
 
-    commit_sha, _tree_sha, tag_err = _resolve_ref_to_commit_and_tree_sha(
-        owner, repo, tag_name
+    scanner_identities = _scanner_runtime_identities(policy)
+    audit_ctx_hash = compute_audit_context_hash(
+        policy,
+        exceptions,
+        policy_path=_policy_path,
+        allowlist_path=_allowlist_path,
+        scanner_identities=scanner_identities,
     )
-    if not commit_sha:
-        report.errors.append(
-            f"Failed to resolve ref {tag_name} to commit SHA: {tag_err or 'unknown error'}"
-        )
-        report.final_classification = "AUDIT_ERROR"
-        return report
+    report.audit_context_hash = audit_ctx_hash
 
-    resolved_tag_commit_sha = commit_sha
+    if prepared_source_resolution_error is not None:
+        return _record_release_local_error(
+            report,
+            label="Prepared source resolution failed",
+            status_name="source-resolution",
+            exc=ValueError(prepared_source_resolution_error),
+        )
+
+    if prepared_commit_sha is not None:
+        resolved_tag_commit_sha = prepared_commit_sha
+    else:
+        commit_sha, _tree_sha, tag_err = _resolve_ref_to_commit_and_tree_sha(
+            owner, repo, tag_name
+        )
+        if not commit_sha:
+            report.errors.append(
+                f"Failed to resolve ref {tag_name} to commit SHA: {tag_err or 'unknown error'}"
+            )
+            report.final_classification = "AUDIT_ERROR"
+            return report
+        resolved_tag_commit_sha = commit_sha
     report.resolved_tag_commit_sha = resolved_tag_commit_sha
     artifact_url = report.artifact_url
 
@@ -4803,15 +4858,6 @@ def audit_release(
     # --- Cache check ---
     release_id = report.release_id
 
-    scanner_identities = _scanner_runtime_identities(policy)
-    audit_ctx_hash = compute_audit_context_hash(
-        policy,
-        exceptions,
-        policy_path=_policy_path,
-        allowlist_path=_allowlist_path,
-        scanner_identities=scanner_identities,
-    )
-    report.audit_context_hash = audit_ctx_hash
     scheduled_cache_requires_freshness = os.environ.get("AUDIT_SCHEDULED") == "1"
     cache_bypassed = skip_cache or (
         scheduled_cache_requires_freshness
@@ -5775,6 +5821,75 @@ def _validate_expected_shard_manifest(
     return normalised_manifest
 
 
+def _worklist_item_to_audit_inputs(
+    item: Mapping[str, Any],
+) -> tuple[str, dict[str, Any], dict[str, Any], Optional[str], Optional[str]]:
+    """Build audit inputs solely from one already-validated worklist item."""
+    identity = audit_worklist.worklist_identity(item)
+    repository = identity["repository"]
+    owner, repo = parse_owner_repo(repository)
+    asset_digest = item["asset_digest"]
+    release = {
+        "id": item["release_id"],
+        "tag_name": item["tag_name"],
+        "prerelease": item["prerelease"],
+        "draft": item["draft"],
+        "published_at": item["published_at"],
+        "created_at": item["created_at"],
+        "assets": [
+            {
+                "id": item["asset_id"],
+                "name": item["asset_name"],
+                "browser_download_url": item["asset_url"],
+                "digest": (
+                    f"sha256:{asset_digest}" if asset_digest is not None else None
+                ),
+            }
+        ],
+    }
+    return (
+        repository,
+        release,
+        {"full_name": f"{owner}/{repo}", "archived": item["repository_archived"]},
+        item["resolved_source_commit_sha"],
+        item["source_resolution_error"],
+    )
+
+
+def _report_manifest_identity(report: AuditReport) -> dict[str, str]:
+    """Return one identity-complete worker report identity or reject it."""
+    return _normalise_manifest_identity(
+        {
+            "repository": report.repository,
+            "github_release_id": report.github_release_id,
+            "asset_id": report.asset_id,
+        }
+    )
+
+
+def _worker_shard_manifest(
+    worklist: Mapping[str, Any],
+    shard_index: int,
+    assigned_items: list[Mapping[str, Any]],
+    reports: list[AuditReport],
+) -> dict[str, Any]:
+    """Build the exact worker checkpoint manifest for a validated snapshot."""
+    payload = worklist["payload"]
+    identities = [_report_manifest_identity(report) for report in reports]
+    return {
+        "schema_version": _SHARD_MANIFEST_SCHEMA_VERSION,
+        "worklist_fingerprint": worklist["fingerprint"],
+        "source_revision": payload["source_revision"],
+        "shard_count": payload["shard_count"],
+        "shard_index": shard_index,
+        "assigned_identities": [
+            audit_worklist.worklist_identity(item) for item in assigned_items
+        ],
+        "attempted_identities": identities,
+        "report_identities": identities,
+    }
+
+
 def _verdict_delta_from_reports(
     reports: list[AuditReport],
 ) -> dict[str, dict[str, dict[str, Any]]]:
@@ -5904,6 +6019,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Audit one explicit repository URL",
     )
     mode_group.add_argument(
+        "--worklist",
+        metavar="PATH",
+        help="Audit one validated immutable worklist shard",
+    )
+    mode_group.add_argument(
         "--aggregate-reports",
         nargs="+",
         metavar="REPORT",
@@ -5918,6 +6038,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--prepare-worklist",
         metavar="WORKLIST",
         help="Prepare immutable worklist JSON at the given path",
+    )
+    parser.add_argument(
+        "--expected-worklist-fingerprint",
+        metavar="SHA256",
+        help="Required worklist fingerprint expected by a shard worker",
     )
     parser.add_argument(
         "--aggregate-verdict-deltas",
@@ -5938,7 +6063,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--api-deadline-seconds",
         type=int,
-        default=300,
+        default=None,
         help="API timeout for producer-mode repository discovery",
     )
     parser.add_argument("--shard-count", type=int, default=1)
@@ -5958,7 +6083,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument(
         "--plugins-file",
-        default=PLUGINS_FILE,
+        default=None,
         help=f"Path to plugin list file (default: {PLUGINS_FILE})",
     )
     parser.add_argument(
@@ -5997,6 +6122,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    plugins_file_was_supplied = args.plugins_file is not None
+    api_deadline_was_supplied = args.api_deadline_seconds is not None
+    args.plugins_file = args.plugins_file or PLUGINS_FILE
+    args.api_deadline_seconds = (
+        args.api_deadline_seconds if args.api_deadline_seconds is not None else 300
+    )
 
     if args.all:
         selected_mode = "all"
@@ -6004,19 +6135,38 @@ def main(argv: Optional[list[str]] = None) -> int:
         selected_mode = "changed"
     elif args.repository:
         selected_mode = "repository"
+    elif args.worklist:
+        selected_mode = "worklist"
     elif args.aggregate_reports:
         selected_mode = "aggregate-reports"
     elif args.merge_verdict_delta:
         selected_mode = "merge-verdict-delta"
     else:
         parser.error(
-            "one of --all, --changed, --repository, "
+            "one of --all, --changed, --repository, --worklist, "
             "--aggregate-reports, or --merge-verdict-delta must be specified"
         )
 
     prepare_mode = args.prepare_worklist is not None
+    worklist_mode = args.worklist is not None
     if args.latest_only and selected_mode != "repository":
         parser.error("--latest-only is valid only with --repository")
+    if args.expected_worklist_fingerprint and not worklist_mode:
+        parser.error("--expected-worklist-fingerprint is valid only with --worklist")
+
+    if worklist_mode:
+        if not args.expected_worklist_fingerprint:
+            parser.error("--expected-worklist-fingerprint is required with --worklist")
+        if prepare_mode:
+            parser.error("--prepare-worklist cannot be combined with --worklist")
+        if args.latest_only or args.base_ref:
+            parser.error("local selection arguments are not valid with --worklist")
+        if plugins_file_was_supplied:
+            parser.error("--plugins-file is not valid with --worklist")
+        if args.source_revision is not None or api_deadline_was_supplied:
+            parser.error("producer-only arguments are not valid with --worklist")
+        if args.aggregate_verdict_deltas:
+            parser.error("aggregate arguments are not valid with --worklist")
 
     if prepare_mode:
         if selected_mode not in {"all", "changed", "repository"}:
@@ -6081,6 +6231,30 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
         except Exception as exc:
             log.error("Failed to prepare audit worklist: %s", exc)
+            return 1
+
+    worklist_document: Optional[dict[str, Any]] = None
+    worklist_items: list[dict[str, Any]] = []
+    if worklist_mode:
+        # This is intentionally before policy/configuration loading and every
+        # output-path write. A malformed or substituted snapshot is a
+        # run-global error with no worker evidence to publish.
+        try:
+            worklist_document = audit_worklist.load_expected_worklist_document(
+                args.worklist, args.expected_worklist_fingerprint
+            )
+            payload = worklist_document["payload"]
+            if (
+                args.shard_count != payload["shard_count"]
+                or args.shard_index < 0
+                or args.shard_index >= payload["shard_count"]
+            ):
+                raise ValueError("CLI shard shape does not match worklist")
+            worklist_items = audit_worklist.select_worklist_shard(
+                payload, args.shard_index
+            )
+        except Exception as exc:
+            log.error("Failed to load worker worklist: %s", exc)
             return 1
 
     # Load configuration
@@ -6152,94 +6326,157 @@ def main(argv: Optional[list[str]] = None) -> int:
         args.output_dir, f"verdict-delta-shard-{args.shard_index}.json"
     )
 
-    # Determine repositories to audit
-    try:
-        if args.all:
-            repo_urls = read_repo_urls(args.plugins_file)
-        elif args.changed:
-            repo_urls = get_changed_repos(args.plugins_file, args.base_ref)
-        else:
-            repo_urls = [args.repository]
-    except FileNotFoundError as exc:
-        log.error("%s", exc)
-        return 1
-
-    if not repo_urls:
-        log.info("No repositories to audit.")
-        # Still write deterministic empty reports so the workflow artifact
-        # upload always finds files and CI does not produce a spurious
-        # "No files were found" warning.
+    repository_errors: list[AuditReport] = []
+    if worklist_mode:
+        work_items: list[Any] = worklist_items
+    else:
+        # Local and smoke commands retain the discovery path. Worklist-mode
+        # must not enter this branch: its selection was authenticated above.
         try:
-            write_reports([], args.output_dir, verdicts=verdict_snapshot)
-            _atomic_write_text(
-                verdict_delta_path,
-                json.dumps({}, indent=2, sort_keys=True) + "\n",
+            if args.all:
+                repo_urls = read_repo_urls(args.plugins_file)
+            elif args.changed:
+                repo_urls = get_changed_repos(args.plugins_file, args.base_ref)
+            else:
+                repo_urls = [args.repository]
+        except FileNotFoundError as exc:
+            log.error("%s", exc)
+            return 1
+
+        if not repo_urls:
+            log.info("No repositories to audit.")
+            # Still write deterministic empty reports so the workflow artifact
+            # upload always finds files and CI does not produce a spurious
+            # "No files were found" warning.
+            try:
+                write_reports([], args.output_dir, verdicts=verdict_snapshot)
+                _atomic_write_text(
+                    verdict_delta_path,
+                    json.dumps({}, indent=2, sort_keys=True) + "\n",
+                )
+                log.info(
+                    "Empty reports and verdict delta written: %s, %s, %s",
+                    report_json_path,
+                    report_markdown_path,
+                    verdict_delta_path,
+                )
+            except Exception as exc:
+                log.error("Failed to write empty audit outputs: %s", exc)
+                return 1
+            # Print distinction in job summary
+            summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+            if summary_file:
+                try:
+                    with open(summary_file, "a", encoding="utf-8") as f:
+                        f.write(
+                            "## Security Audit\n\n"
+                            "No plugin repository changes were detected. "
+                            "No plugins were scanned in this run.\n"
+                        )
+                except Exception:
+                    pass
+            return 0
+
+        log.info("Enumerating %d repository/repositories.", len(repo_urls))
+        try:
+            work_items, repository_errors = build_audit_worklist(
+                repo_urls, latest_only=args.latest_only
             )
-            log.info(
-                "Empty reports and verdict delta written: %s, %s, %s",
-                report_json_path,
-                report_markdown_path,
-                verdict_delta_path,
+            work_items = select_audit_shard(
+                work_items, args.shard_count, args.shard_index
             )
         except Exception as exc:
-            log.error("Failed to write empty audit outputs: %s", exc)
+            log.error("Failed to build audit worklist: %s", exc)
             return 1
-        # Print distinction in job summary
-        summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
-        if summary_file:
-            try:
-                with open(summary_file, "a", encoding="utf-8") as f:
-                    f.write(
-                        "## Security Audit\n\n"
-                        "No plugin repository changes were detected. "
-                        "No plugins were scanned in this run.\n"
-                    )
-            except Exception:
-                pass
-        return 0
 
-    log.info("Enumerating %d repository/repositories.", len(repo_urls))
-    try:
-        worklist, repository_errors = build_audit_worklist(
-            repo_urls, latest_only=args.latest_only
-        )
-        worklist = select_audit_shard(worklist, args.shard_count, args.shard_index)
-    except Exception as exc:
-        log.error("Failed to build audit worklist: %s", exc)
-        return 1
-
-    if args.shard_count > 1 and repository_errors:
-        for report in repository_errors:
-            detail = "; ".join(report.errors) or "unknown repository error"
-            log.error(
-                "Run-global sharded enumeration failure for %s: %s",
-                report.repository,
-                detail,
-            )
-        return 1
+        if args.shard_count > 1 and repository_errors:
+            for report in repository_errors:
+                detail = "; ".join(report.errors) or "unknown repository error"
+                log.error(
+                    "Run-global sharded enumeration failure for %s: %s",
+                    report.repository,
+                    detail,
+                )
+            return 1
 
     log.info(
         "Auditing shard %d/%d with %d eligible release(s).",
         args.shard_index,
         args.shard_count,
-        len(worklist),
+        len(work_items),
     )
     try:
-        progress_records = _load_progress_manifest(progress_path)
+        progress_records = _load_progress_manifest(
+            progress_path,
+            worklist_document["fingerprint"] if worklist_mode else None,
+        )
     except Exception as exc:
-        log.error("Failed to load progress manifest: %s", exc)
-        return 1
+        if worklist_mode:
+            # A stale or malformed checkpoint must never make a different
+            # snapshot resumable. It is safe to disregard and recompute it.
+            log.warning("Ignoring stale worker progress manifest: %s", exc)
+            progress_records = {}
+        else:
+            log.error("Failed to load progress manifest: %s", exc)
+            return 1
 
     reports: list[AuditReport] = []
     if args.shard_index == 0:
         reports.extend(repository_errors)
 
-    for item in worklist:
-        release = item.release
-        asset = plugin_release_utils.get_zip_asset(release) or {}
+    def checkpoint_outputs() -> tuple[str, str]:
+        _write_progress_manifest(
+            progress_path,
+            progress_records,
+            worklist_document["fingerprint"] if worklist_mode else None,
+        )
+        json_path, md_path = write_reports(
+            reports, args.output_dir, verdicts=verdict_snapshot
+        )
+        _atomic_write_text(
+            verdict_delta_path,
+            json.dumps(_verdict_delta_from_reports(reports), indent=2, sort_keys=True)
+            + "\n",
+        )
+        if worklist_mode:
+            _write_shard_manifest(
+                os.path.join(args.output_dir, "shard-manifest.json"),
+                _worker_shard_manifest(
+                    worklist_document,
+                    args.shard_index,
+                    work_items,
+                    reports,
+                ),
+            )
+        return json_path, md_path
+
+    if worklist_mode and not work_items:
+        try:
+            checkpoint_outputs()
+        except Exception as exc:
+            log.error("Failed to checkpoint empty worker outputs: %s", exc)
+            return 1
+
+    for item in work_items:
+        if worklist_mode:
+            (
+                repository,
+                release,
+                repository_metadata,
+                prepared_commit_sha,
+                prepared_source_resolution_error,
+            ) = _worklist_item_to_audit_inputs(item)
+            asset = release["assets"][0]
+        else:
+            repository = item.repository
+            release = item.release
+            repository_metadata = item.repository_metadata
+            prepared_commit_sha = None
+            prepared_source_resolution_error = None
+            asset = plugin_release_utils.get_zip_asset(release) or {}
         key = "\0".join(
             (
-                item.repository,
+                repository,
                 str(release.get("id", "")),
                 str(asset.get("id", "")),
             )
@@ -6249,19 +6486,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             asset.get("digest")
         )
         if digest and key in progress_records:
-            commit_sha, _tree_sha, _error = _resolve_ref_to_commit_and_tree_sha(
-                *parse_owner_repo(item.repository), release.get("tag_name", "")
-            )
+            if worklist_mode:
+                resolved_tag_commit_sha = prepared_commit_sha or ""
+            else:
+                commit_sha, _tree_sha, _error = _resolve_ref_to_commit_and_tree_sha(
+                    *parse_owner_repo(repository), release.get("tag_name", "")
+                )
+                resolved_tag_commit_sha = commit_sha or ""
             scanner_identities = _scanner_runtime_identities(policy)
             expected = {
-                "repository": item.repository,
+                "repository": repository,
                 "release": str(release.get("tag_name", "")),
                 "release_id": (f"{release.get('tag_name', '')}@{asset.get('id', '')}"),
                 "github_release_id": str(release.get("id", "")),
                 "asset_id": str(asset.get("id", "")),
                 "artifact_url": str(asset.get("browser_download_url", "")),
                 "artifact_sha256": digest,
-                "resolved_tag_commit_sha": commit_sha or "",
+                "resolved_tag_commit_sha": resolved_tag_commit_sha,
                 "audit_context_hash": compute_audit_context_hash(
                     policy,
                     exceptions,
@@ -6271,13 +6512,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                 ),
                 "completion_status": "completed",
             }
+            if worklist_mode:
+                expected["worklist_fingerprint"] = worklist_document["fingerprint"]
             resumed_report = _resumable_progress_report(
                 progress_records[key], expected, key
             )
             if resumed_report is not None:
                 log.info(
                     "Resuming completed release %s %s.",
-                    item.repository,
+                    repository,
                     resumed_report.release_id,
                 )
 
@@ -6286,13 +6529,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             try:
                 report = audit_release(
-                    item.repository,
+                    repository,
                     release,
                     policy=policy,
                     exceptions=exceptions,
                     cache_dir=args.cache_dir,
                     skip_cache=args.skip_cache,
-                    _repo_metadata=item.repository_metadata,
+                    _repo_metadata=repository_metadata,
+                    _prepared_commit_sha=prepared_commit_sha,
+                    _prepared_source_resolution_error=prepared_source_resolution_error,
                     _policy_path=args.policy,
                     _allowlist_path=args.allowlist,
                     _persist_verdict=False,
@@ -6300,25 +6545,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             except Exception as exc:
                 log.error(
                     "Run-global audit failure while processing %s release %s: %s",
-                    item.repository,
+                    repository,
                     release.get("id", ""),
                     _redacted_exception_detail(exc),
                 )
                 return 1
         reports.append(report)
-        progress_records[key] = _progress_record(report)
+        progress_records[key] = _progress_record(
+            report,
+            worklist_document["fingerprint"] if worklist_mode else None,
+        )
         try:
-            _write_progress_manifest(progress_path, progress_records)
-            write_reports(reports, args.output_dir, verdicts=verdict_snapshot)
-            _atomic_write_text(
-                verdict_delta_path,
-                json.dumps(
-                    _verdict_delta_from_reports(reports),
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-            )
+            checkpoint_outputs()
         except Exception as exc:
             log.error("Failed to checkpoint audit outputs: %s", exc)
             return 1
@@ -6327,7 +6565,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         log.info(
             "%s %s %s → %s (score %d)",
             cls_emoji,
-            item.repository,
+            repository,
             report.release_id,
             cls,
             report.risk_score,
@@ -6358,6 +6596,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             json.dumps(_verdict_delta_from_reports(reports), indent=2, sort_keys=True)
             + "\n",
         )
+        if worklist_mode:
+            _write_shard_manifest(
+                os.path.join(args.output_dir, "shard-manifest.json"),
+                _worker_shard_manifest(
+                    worklist_document,
+                    args.shard_index,
+                    work_items,
+                    reports,
+                ),
+            )
         log.info("JSON report: %s", json_path)
         log.info("Markdown report: %s", md_path)
     except Exception as exc:
