@@ -5,3 +5,4 @@ public/
 .wrangler/
 security-reports/
 .audit-cache/
+.scanner-package-cache/

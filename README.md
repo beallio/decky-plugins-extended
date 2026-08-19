@@ -440,12 +440,24 @@ cap. A retryable phase splits that allocation across its attempts so a
 full-length first try keeps useful time for its retry. The bootstrap refreshes
 the configured package indexes even when its installed-package query lets it
 skip the base-package install; after configuring Trivy, the second index
-refresh is restricted to the Trivy source list. This redistributes a fixed
-budget and reduces repeat mirror exposure; it does not guarantee a sufficiently
-slow or unavailable mirror will succeed. Retry remains limited to idempotent APT/key-fetch work, with a
-verified Trivy signing-key fingerprint and hard ClamAV, Trivy, and exact
-Semgrep `1.132.0` checks. A shard that cannot install its scanners fails closed
-and blocks publication.
+refresh is restricted to the Trivy source list. Base-package archives live in
+the workspace-local `.scanner-package-cache/apt-archives` directory (or the
+`BASE_APT_ARCHIVE_DIR` override). The three scanner jobs restore that directory
+before setup and save it afterwards; its key includes the hosted runner image
+identifier, the exact base-package set (`wget`, `apt-transport-https`, `gnupg`,
+`lsb-release`, and `clamav`), and the bootstrap script's SHA-256.
+
+That cache is untrusted input. Before a cached archive is installed, APT checks
+it against the signed package index with its normal checksum verification; the
+bootstrap never installs a cached `.deb` with `dpkg -i`. A checksum mismatch
+fails the named install phase rather than falling back to the mirror. A valid
+warm cache takes APT's no-download path and logs `cache=warm downloaded=false`,
+which removes the repeated package download on the common path. This does not
+guarantee scanner setup: a cache miss, unusable cache, or changed key takes the
+cold APT path and still depends on the mirror. Retry remains limited to
+idempotent APT/key-fetch work, with a verified Trivy signing-key fingerprint
+and hard ClamAV, Trivy, and exact Semgrep `1.132.0` checks. A shard that cannot
+install its scanners fails closed and blocks publication.
 
 Production capacity is measured against the maximum fourteen-shard wall-time
 estimate, not against a sequential unsharded scan. The preserved 579-release

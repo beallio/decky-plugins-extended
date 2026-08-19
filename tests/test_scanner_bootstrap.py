@@ -123,8 +123,63 @@ printf '%s\\n' "dpkg-query $*" >> "$FAKE_COMMAND_LOG"
 printf '%s\\n' "${FAKE_DPKG_QUERY_STATE:-not-installed}"
 """,
     )
+    _write_executable(
+        bin_dir / "dpkg",
+        """
+printf '%s\\n' "dpkg $*" >> "$FAKE_COMMAND_LOG"
+if [[ "$1" == "-i" ]]; then
+  [[ -z "${FAKE_APT_INSTALL_MARKER:-}" ]] || : > "$FAKE_APT_INSTALL_MARKER"
+  exit 0
+fi
+exit 1
+""",
+    )
+    _write_executable(
+        bin_dir / "apt-get",
+        """
+printf '%s\\n' "apt-get $*" >> "$FAKE_COMMAND_LOG"
+if [[ "${FAKE_APT_PACKAGE_CACHE:-}" != "1" ]] || [[ "$*" != *"install -y --no-install-recommends"*"clamav"* ]]; then
+  exit 0
+fi
+
+archive_dir=""
+for argument in "$@"; do
+  case "$argument" in
+    Dir::Cache::archives=*) archive_dir="${argument#Dir::Cache::archives=}" ;;
+  esac
+done
+if [[ -z "$archive_dir" ]]; then
+  printf '%s\\n' 'APT archive directory was not configured' >&2
+  exit 100
+fi
+if [[ ! -d "$archive_dir" ]]; then
+  printf 'APT archive directory does not exist: %s\\n' "$archive_dir" >&2
+  exit 100
+fi
+
+archive="$archive_dir/fake-clamav_1.0_all.deb"
+expected_contents="${FAKE_APT_ARCHIVE_CONTENT:-signed-indexed-archive}"
+expected_checksum="$(printf '%s' "$expected_contents" | sha256sum | awk '{print $1}')"
+if [[ -e "$archive" ]]; then
+  actual_checksum="$(sha256sum "$archive" | awk '{print $1}')"
+  if [[ "$actual_checksum" != "$expected_checksum" ]]; then
+    printf 'E: Hash Sum mismatch for cached archive: %s\\n' "$archive" >&2
+    exit 100
+  fi
+  printf '%s\\n' "APT cache verified $archive"
+else
+  [[ "${FAKE_APT_MIRROR_FAILURE:-}" != "1" ]] || {
+    printf '%s\\n' 'E: mirror unavailable' >&2
+    exit 100
+  }
+  printf 'Get:1 mirror.example fake-clamav [1 B]\\n'
+  printf '%s' "$expected_contents" > "$archive"
+  printf '%s\\n' "apt-get cache-download $archive" >> "$FAKE_COMMAND_LOG"
+fi
+[[ -z "${FAKE_APT_INSTALL_MARKER:-}" ]] || : > "$FAKE_APT_INSTALL_MARKER"
+""",
+    )
     for name in (
-        "apt-get",
         "systemctl",
         "freshclam",
         "trivy",
@@ -565,6 +620,162 @@ def test_scanner_bootstrap_happy_path(tmp_path):
     )
 
 
+def test_scanner_bootstrap_reuses_a_verified_cached_base_package_without_download(
+    tmp_path,
+):
+    archive_dir = tmp_path / "apt-archives"
+    archive_dir.mkdir()
+    archive = archive_dir / "fake-clamav_1.0_all.deb"
+    archive.write_text("signed-indexed-archive", encoding="utf-8")
+    install_marker = tmp_path / "installed-from-cache"
+    environment = _fake_environment(
+        tmp_path,
+        FAKE_APT_PACKAGE_CACHE="1",
+        FAKE_APT_MIRROR_FAILURE="1",
+        FAKE_APT_INSTALL_MARKER=str(install_marker),
+        BASE_APT_ARCHIVE_DIR=str(archive_dir),
+    )
+
+    result = _run_bootstrap(tmp_path, environment=environment)
+
+    assert result.returncode == 0, result.stderr
+    assert install_marker.exists()
+    assert "APT cache verified" in result.stdout
+    assert "cache=warm downloaded=false" in result.stdout
+    commands = (tmp_path / "commands.log").read_text(encoding="utf-8")
+    assert "cache-download" not in commands
+    assert any(
+        line.startswith("apt-get ")
+        and "Dir::Cache::archives=" in line
+        and "install -y --no-install-recommends" in line
+        and "clamav" in line
+        for line in commands.splitlines()
+    )
+
+
+def test_scanner_bootstrap_cold_cache_downloads_and_preserves_base_archive(tmp_path):
+    archive_dir = tmp_path / "apt-archives"
+    install_marker = tmp_path / "installed-from-mirror"
+    environment = _fake_environment(
+        tmp_path,
+        FAKE_APT_PACKAGE_CACHE="1",
+        FAKE_APT_INSTALL_MARKER=str(install_marker),
+        BASE_APT_ARCHIVE_DIR=str(archive_dir),
+    )
+
+    result = _run_bootstrap(tmp_path, environment=environment)
+
+    assert result.returncode == 0, result.stderr
+    assert install_marker.exists()
+    assert (archive_dir / "fake-clamav_1.0_all.deb").read_text(
+        encoding="utf-8"
+    ) == "signed-indexed-archive"
+    assert "cache=cold downloaded=true" in result.stdout
+    commands = (tmp_path / "commands.log").read_text(encoding="utf-8")
+    assert "cache-download" in commands
+
+
+def test_scanner_bootstrap_discards_tampered_cached_base_package_before_cold_install(
+    tmp_path,
+):
+    archive_dir = tmp_path / "apt-archives"
+    archive_dir.mkdir()
+    archive = archive_dir / "fake-clamav_1.0_all.deb"
+    archive.write_text("tampered archive bytes", encoding="utf-8")
+    install_marker = tmp_path / "installed-after-cache-discard"
+    environment = _fake_environment(
+        tmp_path,
+        FAKE_APT_PACKAGE_CACHE="1",
+        FAKE_APT_INSTALL_MARKER=str(install_marker),
+        BASE_APT_ARCHIVE_DIR=str(archive_dir),
+    )
+
+    result = _run_bootstrap(tmp_path, environment=environment)
+
+    assert archive.exists(), "the integrity case must exercise a present archive"
+    assert result.returncode == 0, result.stderr
+    assert "Hash Sum mismatch for cached archive" in result.stdout + result.stderr
+    assert (
+        "base package cache verification failed; discarding cached archives"
+        in result.stderr
+    )
+    assert str(archive) in result.stderr
+    assert install_marker.exists()
+    assert archive.read_text(encoding="utf-8") == "signed-indexed-archive"
+    assert "cache=cold downloaded=true" in result.stdout
+    assert "dpkg -i" not in SCRIPT.read_text(encoding="utf-8")
+
+
+def test_scanner_bootstrap_falls_back_to_cold_install_for_partial_cache(tmp_path):
+    archive_dir = tmp_path / "apt-archives"
+    (archive_dir / "partial").mkdir(parents=True)
+    (archive_dir / "partial" / "fake-clamav_1.0_all.deb.partial").write_text(
+        "partial archive bytes", encoding="utf-8"
+    )
+    environment = _fake_environment(
+        tmp_path,
+        FAKE_APT_PACKAGE_CACHE="1",
+        BASE_APT_ARCHIVE_DIR=str(archive_dir),
+    )
+
+    result = _run_bootstrap(tmp_path, environment=environment)
+
+    assert result.returncode == 0, result.stderr
+    assert "cache=cold downloaded=true" in result.stdout
+    assert (archive_dir / "fake-clamav_1.0_all.deb").exists()
+
+
+def test_scanner_bootstrap_falls_back_to_isolated_cold_cache_when_unreadable(
+    tmp_path,
+):
+    archive_dir = tmp_path / "apt-archives"
+    archive_dir.mkdir()
+    archive_dir.chmod(0)
+    environment = _fake_environment(
+        tmp_path,
+        FAKE_APT_PACKAGE_CACHE="1",
+        BASE_APT_ARCHIVE_DIR=str(archive_dir),
+    )
+
+    try:
+        result = _run_bootstrap(tmp_path, environment=environment)
+    finally:
+        archive_dir.chmod(0o755)
+
+    assert result.returncode == 0, result.stderr
+    assert "base package cache unavailable" in result.stderr
+    assert "cache=cold downloaded=true" in result.stdout
+
+
+def test_scanner_bootstrap_cold_mirror_failure_stays_fail_closed(tmp_path):
+    archive_dir = tmp_path / "apt-archives"
+    environment = _fake_environment(
+        tmp_path,
+        FAKE_APT_PACKAGE_CACHE="1",
+        FAKE_APT_MIRROR_FAILURE="1",
+        BASE_APT_ARCHIVE_DIR=str(archive_dir),
+    )
+
+    result = _run_bootstrap(tmp_path, environment=environment)
+
+    assert result.returncode != 0
+    assert "E: mirror unavailable" in result.stdout + result.stderr
+    assert "phase=install base packages status=100 failed" in result.stderr
+
+
+def test_scanner_bootstrap_never_weakens_apt_archive_verification():
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "--no-download" in source
+    for unsafe_option in (
+        "--allow-unauthenticated",
+        "--allow-insecure-repositories",
+        "Acquire::AllowInsecureRepositories",
+        "APT::Get::AllowUnauthenticated",
+    ):
+        assert unsafe_option not in source
+
+
 def test_scanner_bootstrap_timeout_fails_named_phase(tmp_path):
     result = _run_bootstrap(
         tmp_path,
@@ -839,7 +1050,7 @@ def test_scanner_bootstrap_fails_closed_without_fuser(tmp_path):
     environment = _fake_environment(tmp_path)
     bin_dir = tmp_path / "bin"
     (bin_dir / "fuser").unlink()
-    for command in ("bash", "cp", "date", "grep", "mktemp", "rm", "tee"):
+    for command in ("bash", "cp", "date", "grep", "mkdir", "mktemp", "rm", "tee"):
         location = shutil.which(command)
         assert location, f"{command} is required for this test"
         (bin_dir / command).symlink_to(location)
