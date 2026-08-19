@@ -28,7 +28,7 @@ https://github.com/Hooandee/panel-de-control
 https://github.com/AG69075/steamOS_plugin_achievements
 https://github.com/beallio/Decky-SteamAchievements
 https://github.com/rsore/decky-bootnext
-https://github.com/snoein/decky-insignia
+https://github.com/stevensnoeijen/decky-insignia
 https://github.com/Teppichseite/RetroDECKY
 https://github.com/zany130/RSM-Decky
 https://github.com/Rayekkk/LeGoTDP
