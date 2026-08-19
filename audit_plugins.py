@@ -6301,7 +6301,24 @@ def validate_aggregate_worklist_coverage(
         "worklist_fingerprint": document["fingerprint"],
         "shard_count": shard_count,
         "identity_count": len(expected_identities),
+        "repository_errors": payload.get("repository_errors", []),
     }
+
+
+def _repository_error_reports(
+    repository_errors: list[dict[str, str]],
+) -> list[AuditReport]:
+    """Render producer-recorded repository errors as aggregate-only evidence."""
+    return [
+        AuditReport(
+            repository=error["repository"],
+            final_classification="AUDIT_ERROR",
+            completion_status="incomplete",
+            error_scope="repository",
+            errors=[f"Repository worklist preparation failed: {error['reason']}"],
+        )
+        for error in repository_errors
+    ]
 
 
 def _verdict_delta_from_reports(
@@ -6741,16 +6758,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.aggregate_reports:
         try:
             aggregate_delta_paths = args.aggregate_verdict_deltas or []
+            repository_error_reports: list[AuditReport] = []
             if len(args.aggregate_reports) != len(aggregate_delta_paths):
                 raise ValueError(
                     "Each aggregated shard report requires a corresponding verdict delta shard artifact"
                 )
             if args.expected_worklist is not None:
-                validate_aggregate_worklist_coverage(
+                coverage = validate_aggregate_worklist_coverage(
                     args.expected_worklist,
                     args.aggregate_reports,
                     aggregate_delta_paths,
                     args.aggregate_shard_manifests,
+                )
+                repository_error_reports = _repository_error_reports(
+                    coverage["repository_errors"]
                 )
             for report_path, delta_path in zip(
                 args.aggregate_reports, aggregate_delta_paths
@@ -6766,6 +6787,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     raise ValueError("Aggregated report/delta mismatch")
 
             reports = aggregate_audit_reports(args.aggregate_reports)
+            reports.extend(repository_error_reports)
             delta = aggregate_verdict_deltas(aggregate_delta_paths)
             write_reports(reports, args.output_dir, verdicts=verdict_snapshot)
             destination = args.verdict_delta or os.path.join(

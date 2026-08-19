@@ -4,7 +4,7 @@ https://github.com/0u73r-h34v3n/SDH-PlayTime
 https://github.com/SheffeyG/CheatDeck/
 https://github.com/mubaraknumann/unifideck
 https://github.com/panyiwei-home/Friendeck
-https://github.com/danielcopper/decky-romm-sync
+https://github.com/danielcopper/romm-tender
 https://github.com/MrWaip/vpn-deck
 https://github.com/hydralauncher/decky-hydra-launcher
 https://github.com/mdeguzis/decky-proton-pulse

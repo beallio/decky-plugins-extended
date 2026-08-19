@@ -146,6 +146,26 @@ def test_producer_api_budget_is_shared_by_metadata_rest_calls():
     assert response.closed
 
 
+def test_repository_error_reports_have_no_release_identity_or_verdict_delta():
+    reports = ap._repository_error_reports(
+        [
+            {
+                "repository": "https://github.com/owner/renamed",
+                "reason": "repository-metadata-identity-mismatch",
+            }
+        ]
+    )
+
+    assert len(reports) == 1
+    report = reports[0]
+    assert report.repository == "https://github.com/owner/renamed"
+    assert report.final_classification == "AUDIT_ERROR"
+    assert report.completion_status == "incomplete"
+    assert report.error_scope == "repository"
+    assert not report.release_id
+    assert ap._verdict_delta_from_reports(reports) == {}
+
+
 def test_worker_download_session_retries_transient_http_failures():
     """Worker artifact/codeload downloads retain the established retry policy."""
     retry = ap._make_github_session().get_adapter("https://example.invalid").max_retries
@@ -3479,6 +3499,45 @@ class TestCLI(unittest.TestCase):
             ap.main(
                 ["--prepare-worklist", "worklist.json", "--source-revision", "a" * 40]
             )
+
+    def test_prepare_main_returns_exit_one_when_every_repository_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            worklist_path = str(Path(tmp) / "worklist.json")
+            with (
+                patch.object(
+                    ap,
+                    "read_repo_urls",
+                    return_value=[
+                        "https://github.com/owner/broken-a",
+                        "https://github.com/owner/broken-b",
+                    ],
+                ),
+                patch.object(
+                    ap,
+                    "get_repo_metadata",
+                    side_effect=lambda owner, repo: {
+                        "full_name": f"{owner}/{repo}",
+                        "archived": False,
+                    },
+                ),
+                patch.object(
+                    ap.audit_worklist,
+                    "resolve_repository_tags_via_ls_remote",
+                    side_effect=RuntimeError("git ls-remote failed"),
+                ),
+            ):
+                code = ap.main(
+                    [
+                        "--prepare-worklist",
+                        worklist_path,
+                        "--all",
+                        "--source-revision",
+                        "a" * 40,
+                    ]
+                )
+
+            self.assertEqual(code, 1)
+            self.assertFalse(Path(worklist_path).exists())
 
     def test_prepare_main_rejects_changed_without_base_ref(self):
         with self.assertRaises(SystemExit):

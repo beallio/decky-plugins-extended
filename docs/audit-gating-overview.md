@@ -18,6 +18,15 @@ the time those sub-plans landed. The current authoritative behavior is:
   isolated verdict deltas, and manifests that prove exact coverage before
   duplicate-rejecting aggregation. Only explicit `--repository ... --latest-only`
   uses one release.
+- If upstream metadata no longer proves that a configured repository URL has
+  the same identity, or that repository's tags or releases cannot be resolved,
+  or it has no catalog-eligible release, preparation records a visible
+  per-repository `AUDIT_ERROR` and continues with the rest of the corpus. If
+  every selected repository has such an error, preparation is run-global and
+  writes no worklist. The audit never follows a rename redirect: adopting a
+  renamed upstream requires an explicit reviewed edit to
+  `additional_plugins.txt`, so a re-registered former name cannot be audited
+  under the configured identity.
 - Catalog decisions bind the exact release key to the current artifact hash.
   Only a `CURRENT` effective `BLOCK` is excluded. `STALE_HASH` and `UNKNOWN`
   are explicit fail-open outcomes; neither can reuse an old pass or block.

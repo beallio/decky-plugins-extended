@@ -62,6 +62,17 @@ def test_readme_documents_current_identity_and_outcome_contract():
         assert contract in readme
 
 
+def test_configured_repository_list_uses_the_auditable_rename_target():
+    configured_repositories = (
+        (ROOT / "additional_plugins.txt").read_text(encoding="utf-8").splitlines()
+    )
+
+    assert (
+        "https://github.com/danielcopper/decky-romm-sync" not in configured_repositories
+    )
+    assert "https://github.com/danielcopper/romm-tender" in configured_repositories
+
+
 def test_source_inventory_proof_is_complete_and_self_consistent():
     proof = _read_json(SOURCE_INVENTORY_PROOF_PATH)
     projection = _read_json(CAPACITY_PROJECTION_PATH)
@@ -364,6 +375,9 @@ def test_current_docs_describe_the_quota_safe_worklist_data_plane():
             "immutable run-global worklist",
             "API-free shard",
             "exact coverage",
+            "rename",
+            "redirect",
+            "additional_plugins.txt",
             "codeload",
             "eight-minute",
             "shared scanner bootstrap",
@@ -372,6 +386,21 @@ def test_current_docs_describe_the_quota_safe_worklist_data_plane():
             assert required_statement in text
 
     assert "Fourteen shards repeat the 83-request baseline enumeration" not in readme
+
+
+def test_current_docs_describe_repository_local_preparation_errors():
+    readme = README_PATH.read_text(encoding="utf-8")
+    overview = OVERVIEW_PATH.read_text(encoding="utf-8")
+
+    for text in (readme, overview):
+        normalized_text = " ".join(text.split())
+        for required_statement in (
+            "tags or releases cannot be resolved",
+            "catalog-eligible release",
+            "every selected repository",
+            "writes no worklist",
+        ):
+            assert required_statement in normalized_text
 
 
 def test_capacity_contract_uses_fourteen_shard_projection_and_preserves_blocker():
