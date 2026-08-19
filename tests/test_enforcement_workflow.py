@@ -542,7 +542,9 @@ def _coverage_release(tag: str, release_id: int, asset_id: int, owner: str, repo
     }
 
 
-def _prepare_coverage_worklist(tmp_path: Path, *, empty: bool = False):
+def _prepare_coverage_worklist(
+    tmp_path: Path, *, empty: bool = False, repository_error: bool = False
+):
     """Prepare one real multi-repository (or empty) worklist document."""
     releases = {
         ("owner", "repo"): [
@@ -550,6 +552,7 @@ def _prepare_coverage_worklist(tmp_path: Path, *, empty: bool = False):
             _coverage_release("v1", 1, 10, "owner", "repo"),
         ],
         ("owner", "other"): [_coverage_release("v1", 3, 30, "owner", "other")],
+        ("owner", "renamed"): [_coverage_release("v1", 4, 40, "owner", "renamed")],
     }
     worklist_path = tmp_path / "audit-worklist" / "worklist.json"
     worklist_path.parent.mkdir()
@@ -562,12 +565,15 @@ def _prepare_coverage_worklist(tmp_path: Path, *, empty: bool = False):
         else [
             "https://github.com/owner/other",
             "https://github.com/owner/repo",
+            *(["https://github.com/owner/renamed"] if repository_error else []),
         ],
         shard_count=PRODUCTION_SHARD_COUNT,
         latest_only=False,
         release_fetcher=lambda owner, repo: releases[(owner, repo)],
         metadata_fetcher=lambda owner, repo: {
-            "full_name": f"{owner}/{repo}",
+            "full_name": "owner/redirected"
+            if repository_error and (owner, repo) == ("owner", "renamed")
+            else f"{owner}/{repo}",
             "archived": False,
         },
         tag_resolver=lambda owner, repo, *_args: {"v1": "f" * 40, "v2": "e" * 40},
@@ -800,6 +806,69 @@ def test_aggregate_counts_release_local_incomplete_reports_as_covered(tmp_path):
         (output_dir / "security-report.json").read_text(encoding="utf-8")
     )
     assert aggregate["report_count"] == 3
+
+
+def test_aggregate_workflow_surfaces_repository_error_and_publishes_siblings(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(
+        tmp_path, repository_error=True
+    )
+    _document, plan = _coverage_shard_plan(worklist_path)
+    _write_coverage_shards(tmp_path, plan)
+    for index in range(PRODUCTION_SHARD_COUNT):
+        (tmp_path / "shard-artifacts" / f"shard-{index}" / "audit-exit.txt").write_text(
+            "0\n", encoding="utf-8"
+        )
+
+    result, outputs, aggregate_output = _run_real_aggregate_step(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "audit_exit=4" in outputs
+    assert "publishable=true" in outputs
+    aggregate = json.loads(
+        (aggregate_output / "security-report.json").read_text(encoding="utf-8")
+    )
+    assert aggregate["report_count"] == 4
+    repository_error = next(
+        report
+        for report in aggregate["reports"]
+        if report["repository"] == "https://github.com/owner/renamed"
+    )
+    assert repository_error["final_classification"] == "AUDIT_ERROR"
+    assert repository_error["completion_status"] == "incomplete"
+    assert repository_error["error_scope"] == "repository"
+    assert not repository_error["release_id"]
+    delta = json.loads(
+        (aggregate_output / "security-verdict-delta.json").read_text(encoding="utf-8")
+    )
+    assert "https://github.com/owner/renamed" not in delta
+    assert sorted(delta) == [
+        "https://github.com/owner/other",
+        "https://github.com/owner/repo",
+    ]
+
+
+def test_repository_error_cannot_mask_missing_worklist_release_identity(tmp_path):
+    worklist_path, _fingerprint = _prepare_coverage_worklist(
+        tmp_path, repository_error=True
+    )
+    document, plan = _coverage_shard_plan(worklist_path)
+    missing_item = document["payload"]["items"][0]
+    missing_index = audit_worklist.shard_index_for_worklist_item(
+        missing_item, document["payload"]["shard_count"]
+    )
+    plan[missing_index]["reports"] = [
+        report
+        for report in plan[missing_index]["reports"]
+        if ap._report_manifest_identity(report)
+        != audit_worklist.worklist_identity(missing_item)
+    ]
+
+    exit_code, output_dir, _artifacts = _aggregate_coverage(
+        tmp_path, plan, worklist_path
+    )
+
+    assert exit_code == 1
+    assert not output_dir.exists()
 
 
 def test_aggregate_rejects_fourteen_artifacts_missing_one_expected_identity(tmp_path):
