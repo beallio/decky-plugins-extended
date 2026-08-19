@@ -1,7 +1,11 @@
 """Executable contract tests for the fail-closed scanner bootstrap script."""
 
 import os
+import re
+import shutil
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -9,12 +13,16 @@ SCRIPT = ROOT / "scripts" / "install-security-scanners"
 EXPECTED_FINGERPRINT = "825AD9036F7C850E6A6FED4935B8ACA44FD9CA9F"
 
 
-def _write_executable(path: Path, text: str) -> None:
-    path.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + text, encoding="utf-8")
+def _write_executable(
+    path: Path, text: str, *, interpreter: str = "/usr/bin/env bash"
+) -> None:
+    path.write_text(f"#!{interpreter}\nset -euo pipefail\n" + text, encoding="utf-8")
     path.chmod(0o755)
 
 
-def _fake_environment(tmp_path: Path, **overrides: str) -> dict[str, str]:
+def _fake_environment(
+    tmp_path: Path, *, real_timeout: bool = False, **overrides: str
+) -> dict[str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     command_log = tmp_path / "commands.log"
@@ -24,10 +32,14 @@ def _fake_environment(tmp_path: Path, **overrides: str) -> dict[str, str]:
     clamav_db.parent.mkdir(exist_ok=True)
     clamav_db.write_text("database", encoding="utf-8")
 
-    _write_executable(
-        bin_dir / "timeout",
-        """
+    if not real_timeout:
+        _write_executable(
+            bin_dir / "timeout",
+            """
 printf '%s\\n' "timeout $*" >> "$FAKE_COMMAND_LOG"
+while [[ "$1" == --kill-after=* ]]; do
+  shift
+done
 [[ "$1" == "--foreground" ]] && shift
 duration="$1"
 shift
@@ -36,7 +48,7 @@ if [[ "${FAKE_TIMEOUT_MATCH:-}" != "" && "$*" == *"${FAKE_TIMEOUT_MATCH}"* ]]; t
 fi
 exec "$@"
 """,
-    )
+        )
     _write_executable(
         bin_dir / "sudo",
         """
@@ -93,6 +105,10 @@ fi
         bin_dir / "semgrep",
         'printf "%s\\n" "${FAKE_SEMGREP_VERSION:-1.132.0}"\n',
     )
+    _write_executable(
+        bin_dir / "fuser",
+        'printf \'%s\\n\' "fuser $*" >> "$FAKE_COMMAND_LOG"\nexit 1\n',
+    )
     for name in (
         "apt-get",
         "systemctl",
@@ -129,15 +145,68 @@ fi
 
 
 def _run_bootstrap(
-    tmp_path: Path, **overrides: str
+    tmp_path: Path,
+    *,
+    script: Path = SCRIPT,
+    real_timeout: bool = False,
+    environment: dict[str, str] | None = None,
+    **overrides: str,
 ) -> subprocess.CompletedProcess[str]:
+    if environment is None:
+        environment = _fake_environment(
+            tmp_path, real_timeout=real_timeout, **overrides
+        )
+    command = ["bash", str(script)]
+    if real_timeout:
+        command = ["setsid", "--wait", *command]
     return subprocess.run(
-        ["bash", str(SCRIPT)],
+        command,
         cwd=ROOT,
-        env=_fake_environment(tmp_path, **overrides),
+        env=environment,
         capture_output=True,
         text=True,
     )
+
+
+def _script_with_short_timeouts(tmp_path: Path, **constants: float | int) -> Path:
+    script = tmp_path / "install-security-scanners"
+    text = SCRIPT.read_text(encoding="utf-8")
+    for name, value in constants.items():
+        text, replacements = re.subn(
+            rf"^{re.escape(name)}=.*$",
+            f"{name}={value}",
+            text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        assert replacements == 1, f"missing {name} assignment"
+    _write_executable(script, text.removeprefix("#!/usr/bin/env bash\n"))
+    return script
+
+
+def _wait_for_process_exit(pid: int, timeout_seconds: float) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _terminate_process(pid: int) -> None:
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    _wait_for_process_exit(pid, 2)
+
+
+def _integer_script_constant(name: str) -> int:
+    match = re.search(rf"^{re.escape(name)}=(\\d+)$", SCRIPT.read_text(), re.MULTILINE)
+    assert match, f"missing integer {name} assignment"
+    return int(match.group(1))
 
 
 def test_scanner_bootstrap_happy_path(tmp_path):
@@ -183,6 +252,226 @@ def test_scanner_bootstrap_retries_one_transient_key_download_failure(tmp_path):
     assert result.returncode == 0, result.stderr
     commands = (tmp_path / "commands.log").read_text(encoding="utf-8")
     assert sum(line.startswith("wget ") for line in commands.splitlines()) == 2
+
+
+def test_scanner_bootstrap_reaps_timeout_grandchildren_with_real_timeout(tmp_path):
+    assert shutil.which("timeout", path=os.environ["PATH"])
+    assert shutil.which("setsid", path=os.environ["PATH"])
+    grandchild_pid_file = tmp_path / "grandchild.pid"
+    script = _script_with_short_timeouts(
+        tmp_path,
+        NETWORK_ATTEMPTS=1,
+        BASE_APT_TIMEOUT_SECONDS=1,
+    )
+    environment = _fake_environment(tmp_path, real_timeout=True)
+    _write_executable(
+        tmp_path / "bin" / "bash",
+        """
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"apt-get"* ]]; then
+  trap 'exit 143' TERM
+  /bin/bash -c 'bash -c "exec sleep 2" </dev/null >/dev/null 2>&1 & child="$!"; printf "%s\\n" "$child" > "$FAKE_GRANDCHILD_PID_FILE"; wait "$child"' </dev/null >/dev/null 2>&1 &
+  wait "$!"
+  exit 0
+fi
+exec /bin/bash "$@"
+""",
+        interpreter="/bin/bash",
+    )
+
+    pid = None
+    try:
+        result = _run_bootstrap(
+            tmp_path,
+            script=script,
+            environment=environment
+            | {"FAKE_GRANDCHILD_PID_FILE": str(grandchild_pid_file)},
+        )
+        assert result.returncode != 0
+        assert "phase=install base packages status=124" in result.stderr
+        assert grandchild_pid_file.exists(), result.stdout + result.stderr
+        pid = int(grandchild_pid_file.read_text(encoding="utf-8"))
+        assert _wait_for_process_exit(pid, 0.5), result.stderr
+    finally:
+        if pid is not None:
+            _terminate_process(pid)
+
+
+def test_scanner_bootstrap_retries_timeout_then_continues_with_real_timeout(tmp_path):
+    assert shutil.which("timeout", path=os.environ["PATH"])
+    assert shutil.which("setsid", path=os.environ["PATH"])
+    retry_marker = tmp_path / "apt-retried"
+    script = _script_with_short_timeouts(
+        tmp_path,
+        BASE_APT_TIMEOUT_SECONDS=1,
+        RETRY_BACKOFF_SECONDS=0.1,
+        APT_RETRY_BACKOFF_SECONDS=0.1,
+    )
+    environment = _fake_environment(tmp_path, real_timeout=True)
+    _write_executable(
+        tmp_path / "bin" / "bash",
+        """
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"apt-get"* && ! -e "$FAKE_APT_RETRY_MARKER" ]]; then
+  : > "$FAKE_APT_RETRY_MARKER"
+  trap 'exit 143' TERM
+  /bin/bash -c 'exec sleep 2' </dev/null >/dev/null 2>&1 &
+  wait "$!"
+  exit 0
+fi
+exec /bin/bash "$@"
+""",
+        interpreter="/bin/bash",
+    )
+
+    result = _run_bootstrap(
+        tmp_path,
+        script=script,
+        environment=environment | {"FAKE_APT_RETRY_MARKER": str(retry_marker)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert retry_marker.exists()
+    assert result.stdout.count("phase=install base packages start=") == 2
+    assert "phase=download Trivy signing key end=" in result.stdout
+
+
+def test_scanner_bootstrap_waits_for_dpkg_lock_before_apt_retry(tmp_path):
+    assert shutil.which("timeout", path=os.environ["PATH"])
+    assert shutil.which("setsid", path=os.environ["PATH"])
+    first_attempt = tmp_path / "first-apt-attempt"
+    lock_active = tmp_path / "dpkg-lock-active"
+    lock_released = tmp_path / "dpkg-lock-released"
+    script = _script_with_short_timeouts(
+        tmp_path,
+        BASE_APT_TIMEOUT_SECONDS=1,
+        RETRY_BACKOFF_SECONDS=0.1,
+        APT_RETRY_BACKOFF_SECONDS=0.1,
+    )
+    environment = _fake_environment(tmp_path, real_timeout=True)
+    _write_executable(
+        tmp_path / "bin" / "bash",
+        """
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"apt-get"* && ! -e "$FAKE_APT_FIRST_ATTEMPT" ]]; then
+  : > "$FAKE_APT_FIRST_ATTEMPT"
+  : > "$FAKE_DPKG_LOCK_ACTIVE"
+  trap 'exit 143' TERM
+  /bin/bash -c 'exec sleep 2' </dev/null >/dev/null 2>&1 &
+  wait "$!"
+  exit 0
+fi
+exec /bin/bash "$@"
+""",
+        interpreter="/bin/bash",
+    )
+    _write_executable(
+        tmp_path / "bin" / "apt-get",
+        """
+if [[ "$*" == *" update" ]] && [[ ! -e "$FAKE_DPKG_LOCK_RELEASED" ]]; then
+  printf '%s\\n' 'E: Could not get lock /var/lib/dpkg/lock-frontend.' >&2
+  exit 100
+fi
+printf '%s\\n' "apt-get $*" >> "$FAKE_COMMAND_LOG"
+""",
+    )
+    _write_executable(
+        tmp_path / "bin" / "fuser",
+        """
+printf '%s\\n' "fuser $*" >> "$FAKE_COMMAND_LOG"
+if [[ -e "$FAKE_DPKG_LOCK_ACTIVE" && ! -e "$FAKE_DPKG_LOCK_RELEASED" ]]; then
+  exit 0
+fi
+exit 1
+""",
+    )
+    release_lock = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            'while [[ ! -e "$1" ]]; do sleep 0.01; done; sleep 0.5; : > "$2"',
+            "bash",
+            str(lock_active),
+            str(lock_released),
+        ]
+    )
+    try:
+        result = _run_bootstrap(
+            tmp_path,
+            script=script,
+            environment=environment
+            | {
+                "FAKE_APT_FIRST_ATTEMPT": str(first_attempt),
+                "FAKE_DPKG_LOCK_ACTIVE": str(lock_active),
+                "FAKE_DPKG_LOCK_RELEASED": str(lock_released),
+            },
+        )
+    finally:
+        release_lock.wait(timeout=3)
+
+    assert result.returncode == 0, result.stderr
+    commands = (tmp_path / "commands.log").read_text(encoding="utf-8")
+    assert any(line.startswith("fuser ") for line in commands.splitlines())
+    assert "Could not get lock" not in result.stderr
+
+
+def test_scanner_bootstrap_fails_closed_when_dpkg_lock_does_not_clear(tmp_path):
+    assert shutil.which("timeout", path=os.environ["PATH"])
+    assert shutil.which("setsid", path=os.environ["PATH"])
+    script = _script_with_short_timeouts(
+        tmp_path,
+        DPKG_FRONTEND_LOCK_WAIT_TIMEOUT_SECONDS=1,
+    )
+    environment = _fake_environment(tmp_path, real_timeout=True)
+    _write_executable(
+        tmp_path / "bin" / "fuser",
+        'printf \'%s\\n\' "fuser $*" >> "$FAKE_COMMAND_LOG"\nexit 0\n',
+    )
+
+    result = _run_bootstrap(
+        tmp_path,
+        script=script,
+        environment=environment,
+    )
+
+    assert result.returncode != 0
+    assert "phase=wait for dpkg frontend lock (/var/lib/dpkg/lock-frontend)" in (
+        result.stderr
+    )
+    assert "status=124" in result.stderr
+
+
+def test_scanner_bootstrap_does_not_retry_non_idempotent_service_stop(tmp_path):
+    environment = _fake_environment(tmp_path)
+    _write_executable(
+        tmp_path / "bin" / "systemctl",
+        'printf \'%s\\n\' "systemctl $*" >> "$FAKE_COMMAND_LOG"\nexit 1\n',
+    )
+
+    result = _run_bootstrap(tmp_path, environment=environment)
+
+    assert result.returncode == 0, result.stderr
+    commands = (tmp_path / "commands.log").read_text(encoding="utf-8")
+    assert sum(line.startswith("systemctl ") for line in commands.splitlines()) == 1
+    assert "warning: could not stop clamav-freshclam" in result.stderr
+
+
+def test_scanner_bootstrap_enforces_documented_total_budget():
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert _integer_script_constant("BOOTSTRAP_TIMEOUT_SECONDS") == 600
+    assert _integer_script_constant("BASE_APT_TIMEOUT_SECONDS") > 60
+    assert _integer_script_constant("TRIVY_APT_TIMEOUT_SECONDS") > 60
+    assert "timeout --foreground" not in source
+    assert 'timeout --kill-after="${PHASE_TIMEOUT_KILL_GRACE_SECONDS}s"' in source
+    assert "BOOTSTRAP_TIMEOUT_SECONDS - (SECONDS - bootstrap_started_seconds) - 1" in (
+        source
+    )
+    header = "\n".join(source.splitlines()[4:12])
+    for name in (
+        "PHASE_TIMEOUT_KILL_GRACE_SECONDS",
+        "DPKG_FRONTEND_LOCK_WAIT_TIMEOUT_SECONDS",
+        "APT_RETRY_BACKOFF_SECONDS",
+        "RETRY_BACKOFF_SECONDS",
+    ):
+        assert f"{_integer_script_constant(name)}-second" in header
 
 
 def test_scanner_bootstrap_rejects_wrong_semgrep_version_and_missing_database(tmp_path):
