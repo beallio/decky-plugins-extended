@@ -388,6 +388,21 @@ def test_current_docs_describe_the_quota_safe_worklist_data_plane():
     assert "Fourteen shards repeat the 83-request baseline enumeration" not in readme
 
 
+def test_current_docs_describe_repository_local_preparation_errors():
+    readme = README_PATH.read_text(encoding="utf-8")
+    overview = OVERVIEW_PATH.read_text(encoding="utf-8")
+
+    for text in (readme, overview):
+        normalized_text = " ".join(text.split())
+        for required_statement in (
+            "tags or releases cannot be resolved",
+            "catalog-eligible release",
+            "every selected repository",
+            "writes no worklist",
+        ):
+            assert required_statement in normalized_text
+
+
 def test_capacity_contract_uses_fourteen_shard_projection_and_preserves_blocker():
     plan = PLAN_PATH.read_text(encoding="utf-8")
     evidence = _read_json(CAPACITY_PROJECTION_PATH)

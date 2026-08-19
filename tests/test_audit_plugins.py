@@ -3500,6 +3500,45 @@ class TestCLI(unittest.TestCase):
                 ["--prepare-worklist", "worklist.json", "--source-revision", "a" * 40]
             )
 
+    def test_prepare_main_returns_exit_one_when_every_repository_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            worklist_path = str(Path(tmp) / "worklist.json")
+            with (
+                patch.object(
+                    ap,
+                    "read_repo_urls",
+                    return_value=[
+                        "https://github.com/owner/broken-a",
+                        "https://github.com/owner/broken-b",
+                    ],
+                ),
+                patch.object(
+                    ap,
+                    "get_repo_metadata",
+                    side_effect=lambda owner, repo: {
+                        "full_name": f"{owner}/{repo}",
+                        "archived": False,
+                    },
+                ),
+                patch.object(
+                    ap.audit_worklist,
+                    "resolve_repository_tags_via_ls_remote",
+                    side_effect=RuntimeError("git ls-remote failed"),
+                ),
+            ):
+                code = ap.main(
+                    [
+                        "--prepare-worklist",
+                        worklist_path,
+                        "--all",
+                        "--source-revision",
+                        "a" * 40,
+                    ]
+                )
+
+            self.assertEqual(code, 1)
+            self.assertFalse(Path(worklist_path).exists())
+
     def test_prepare_main_rejects_changed_without_base_ref(self):
         with self.assertRaises(SystemExit):
             ap.main(

@@ -6315,7 +6315,7 @@ def _repository_error_reports(
             final_classification="AUDIT_ERROR",
             completion_status="incomplete",
             error_scope="repository",
-            errors=[f"Repository identity validation failed: {error['reason']}"],
+            errors=[f"Repository worklist preparation failed: {error['reason']}"],
         )
         for error in repository_errors
     ]

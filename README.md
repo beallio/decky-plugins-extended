@@ -251,7 +251,7 @@ does not certify a plugin.
 | `PASS_WITH_WARNINGS` | Minor issues such as low/medium vulnerabilities, ordinary network usage, or an unavailable optional scanner. |
 | `MANUAL_REVIEW` | Root flag, sudo, native binaries, systemd changes, obfuscated code, or a high-severity dependency vulnerability. |
 | `BLOCK` | A structural artifact fact: a malware signature; archive traversal or an escaping symlink; a compression-ratio, total-size, file-count, or single-file-size archive bomb limit; a setuid/setgid member; a device file; or a named pipe. |
-| `AUDIT_ERROR` | This release attempt could not reach a conclusion because of a bounded-download failure, corrupt ZIP, required-scanner failure, or other release-local error. |
+| `AUDIT_ERROR` | This release attempt or repository worklist-preparation outcome could not reach a conclusion because of a bounded-download failure, corrupt ZIP, required-scanner failure, repository-local upstream failure, or other local error. |
 
 `BLOCK` is restricted by `security-policy.yml` to the structural facts listed
 above. Behavioural findings such as privileged commands, shell downloads,
@@ -406,12 +406,15 @@ evidence or updates the verdict store. A valid empty selection still supplies
 fourteen empty triples. This is deliberately stronger than counting uploaded
 artifacts.
 
-If upstream repository metadata identifies a different repository than the URL
-configured in `additional_plugins.txt`, preparation records a per-repository
-`AUDIT_ERROR` and continues auditing the rest of the corpus. The audit never
-follows a repository rename redirect: adopting a renamed upstream is an
-explicit, reviewed edit to `additional_plugins.txt`, which prevents a
-re-registered former name from being audited under the old identity.
+If upstream repository metadata no longer identifies the URL configured in
+`additional_plugins.txt`, or that repository's tags or releases cannot be
+resolved, or it has no catalog-eligible release, preparation records a
+per-repository `AUDIT_ERROR` and continues auditing the rest of the corpus.
+If every selected repository has such an error, preparation instead fails
+run-globally and writes no worklist. The audit never follows a repository
+rename redirect: adopting a renamed upstream is an explicit, reviewed edit to
+`additional_plugins.txt`, which prevents a re-registered former name from being
+audited under the old identity.
 
 An uncached release materializes one immutable `codeload.github.com` source
 archive at its resolved commit, safely extracts it once, and shares that

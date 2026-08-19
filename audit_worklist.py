@@ -289,6 +289,16 @@ def _repository_metadata_error(repository: str, metadata: Any) -> Optional[str]:
     return None
 
 
+def _record_repository_error(
+    repository_errors: list[dict[str, str]],
+    repository: str,
+    reason: str,
+) -> None:
+    """Record and name one bounded repository-local preparation failure."""
+    repository_errors.append({"repository": repository, "reason": reason})
+    log.warning("Repository error for %s: %s", repository, reason)
+
+
 def _parse_asset_from_release(
     repository: str, release: Mapping[str, Any]
 ) -> Mapping[str, Any]:
@@ -997,42 +1007,61 @@ def prepare_audit_worklist(
                 owner, repo = plugin_release_utils.parse_github_repository_url(
                     repository
                 )
-                tag_timeout_seconds = api_deadline_seconds
-                if api_budget is not None:
-                    remaining = api_budget.remaining_seconds()
-                    if remaining <= 0:
-                        raise plugin_release_utils.ApiDeadlineExceeded(
-                            "Cannot start git ls-remote: no remaining API deadline"
-                        )
-                    tag_timeout_seconds = min(float(api_deadline_seconds), remaining)
-                tag_map = _normalise_tag_map(
-                    tag_resolver(owner, repo, tag_timeout_seconds)
-                )
+
                 try:
                     metadata = metadata_fetcher(owner, repo)
+                except plugin_release_utils.ApiDeadlineExceeded:
+                    raise
                 except Exception:
-                    repository_errors.append(
-                        {
-                            "repository": repository,
-                            "reason": "repository-metadata-fetch-failed",
-                        }
-                    )
-                    log.warning(
-                        "Repository error for %s: repository-metadata-fetch-failed",
+                    _record_repository_error(
+                        repository_errors,
                         repository,
+                        "repository-metadata-fetch-failed",
                     )
                     continue
                 metadata_error = _repository_metadata_error(repository, metadata)
                 if metadata_error is not None:
-                    repository_errors.append(
-                        {"repository": repository, "reason": metadata_error}
-                    )
-                    log.warning(
-                        "Repository error for %s: %s", repository, metadata_error
+                    _record_repository_error(
+                        repository_errors, repository, metadata_error
                     )
                     continue
 
-                releases = release_fetcher(owner, repo)
+                tag_timeout_seconds = api_deadline_seconds
+                try:
+                    if api_budget is not None:
+                        remaining = api_budget.remaining_seconds()
+                        if remaining <= 0:
+                            raise plugin_release_utils.ApiDeadlineExceeded(
+                                "Cannot start git ls-remote: no remaining API deadline"
+                            )
+                        tag_timeout_seconds = min(
+                            float(api_deadline_seconds), remaining
+                        )
+                    tag_map = _normalise_tag_map(
+                        tag_resolver(owner, repo, tag_timeout_seconds)
+                    )
+                except plugin_release_utils.ApiDeadlineExceeded:
+                    raise
+                except Exception:
+                    _record_repository_error(
+                        repository_errors,
+                        repository,
+                        "repository-tags-unresolvable",
+                    )
+                    continue
+
+                try:
+                    releases = release_fetcher(owner, repo)
+                except plugin_release_utils.ApiDeadlineExceeded:
+                    raise
+                except Exception:
+                    _record_repository_error(
+                        repository_errors,
+                        repository,
+                        "repository-releases-unavailable",
+                    )
+                    continue
+
                 if not isinstance(releases, list):
                     raise ValueError(f"Invalid release list for {repository}")
                 eligible = plugin_release_utils.ordered_eligible_releases(
@@ -1041,13 +1070,21 @@ def prepare_audit_worklist(
                 if latest_only:
                     eligible = eligible[:1]
                 if not eligible:
-                    raise ValueError(
-                        f"No eligible release found for repository {repository}"
+                    _record_repository_error(
+                        repository_errors,
+                        repository,
+                        "repository-no-eligible-release",
                     )
+                    continue
                 for release in eligible:
                     items.append(
                         _normalise_worklist_item(repository, release, tag_map, metadata)
                     )
+
+            if repositories and len(repository_errors) == len(repositories):
+                raise RuntimeError(
+                    "All selected repositories failed during worklist preparation"
+                )
 
         prepared_payload = {
             "selection_mode": selection_mode,

@@ -849,9 +849,9 @@ def test_worklist_prepare_changed_empty_keeps_resolved_base_commit(tmp_path):
     assert loaded["payload"]["items"] == []
 
 
-def test_worklist_prepare_rejects_changed_mode_without_eligible_release(tmp_path):
+def test_worklist_prepare_rejects_changed_mode_when_every_repository_fails(tmp_path):
     output = tmp_path / "changed-no-eligible.json"
-    with pytest.raises(ValueError, match="No eligible release found"):
+    with pytest.raises(RuntimeError, match="All selected repositories failed"):
         worklist.prepare_audit_worklist(
             output,
             source_revision=SOURCE_REVISION,
@@ -880,9 +880,11 @@ def test_worklist_prepare_rejects_changed_mode_without_eligible_release(tmp_path
     assert not output.exists()
 
 
-def test_worklist_prepare_rejects_repository_mode_without_eligible_release(tmp_path):
+def test_worklist_prepare_rejects_repository_mode_when_every_repository_fails(
+    tmp_path,
+):
     output = tmp_path / "repository-no-eligible.json"
-    with pytest.raises(ValueError, match="No eligible release found"):
+    with pytest.raises(RuntimeError, match="All selected repositories failed"):
         worklist.prepare_audit_worklist(
             output,
             source_revision=SOURCE_REVISION,
@@ -1013,20 +1015,22 @@ def test_worklist_prepare_rejects_changed_mode_without_base_ref(tmp_path):
         )
 
 
-def test_worklist_prepare_records_metadata_identity_mismatch_without_adopting_redirect(
+def test_worklist_prepare_reproduces_run_32219524259_rename_redirect(
     tmp_path,
 ):
+    """Run 32219524259: a rename redirect must not reach tag resolution."""
     configured_repository = "https://github.com/danielcopper/decky-romm-sync"
     redirect_target = "https://github.com/danielcopper/romm-tender"
     healthy_repository = "https://github.com/owner/healthy"
     output = tmp_path / "metadata-mismatch.json"
+    release_calls: list[tuple[str, str]] = []
+    tag_calls: list[tuple[str, str]] = []
 
     def release_fetcher(owner: str, repo: str) -> list[dict]:
-        repository = (
-            redirect_target
-            if (owner, repo) == ("danielcopper", "decky-romm-sync")
-            else f"https://github.com/{owner}/{repo}"
-        )
+        release_calls.append((owner, repo))
+        if (owner, repo) == ("danielcopper", "decky-romm-sync"):
+            raise AssertionError("renamed repository must not enumerate releases")
+        repository = f"https://github.com/{owner}/{repo}"
         return [
             _with_digest(
                 _with_asset_urls(
@@ -1050,7 +1054,9 @@ def test_worklist_prepare_records_metadata_identity_mismatch_without_adopting_re
         latest_only=False,
         release_fetcher=release_fetcher,
         metadata_fetcher=metadata_fetcher,
-        tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
+        tag_resolver=lambda owner, repo, *_args: (
+            tag_calls.append((owner, repo)) or {"v1": "a" * 40}
+        ),
         api_deadline_seconds=7,
     )
 
@@ -1064,6 +1070,8 @@ def test_worklist_prepare_records_metadata_identity_mismatch_without_adopting_re
     assert [item["repository"] for item in payload["items"]] == [healthy_repository]
     assert redirect_target not in json.dumps(payload, sort_keys=True)
     assert all(item["repository"] != redirect_target for item in payload["items"])
+    assert release_calls == [("owner", "healthy")]
+    assert tag_calls == [("owner", "healthy")]
     assert fingerprint == worklist.compute_worklist_fingerprint(payload)
     assert worklist.load_worklist_document(output) == document
 
@@ -1078,43 +1086,149 @@ def test_worklist_prepare_records_metadata_identity_mismatch_without_adopting_re
 def test_worklist_prepare_records_per_repository_metadata_outcomes(
     tmp_path, metadata_mode, expected_reason
 ):
-    repository = "https://github.com/owner/repo"
+    repository = "https://github.com/owner/broken"
+    healthy_repository = "https://github.com/owner/healthy"
 
-    def metadata_fetcher(*_args):
-        if metadata_mode == "fetch-failure":
+    def metadata_fetcher(owner, repo):
+        if repo == "broken" and metadata_mode == "fetch-failure":
             raise RuntimeError("upstream metadata request failed")
-        return {"archived": False}
+        if repo == "broken":
+            return {"archived": False}
+        return _release_metadata(owner, repo)
 
-    _fingerprint, document = worklist.prepare_audit_worklist(
-        tmp_path / f"metadata-{metadata_mode}.json",
-        source_revision=SOURCE_REVISION,
-        selection_mode="repository",
-        repository_urls=[repository],
-        shard_count=14,
-        latest_only=False,
-        release_fetcher=lambda *_args: [
+    def release_fetcher(owner, repo):
+        repository_url = f"https://github.com/{owner}/{repo}"
+        return [
             _with_digest(
                 _with_asset_urls(
                     _release(
                         "v1",
                         1,
                         10,
-                        repository_url=repository,
+                        repository_url=repository_url,
                     ),
-                    repository,
+                    repository_url,
                 ),
                 "a" * 64,
             )
-        ],
+        ]
+
+    _fingerprint, document = worklist.prepare_audit_worklist(
+        tmp_path / f"metadata-{metadata_mode}.json",
+        source_revision=SOURCE_REVISION,
+        selection_mode="all",
+        repository_urls=[repository, healthy_repository],
+        shard_count=14,
+        latest_only=False,
+        release_fetcher=release_fetcher,
         metadata_fetcher=metadata_fetcher,
         tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
         api_deadline_seconds=7,
     )
 
-    assert document["payload"]["items"] == []
+    assert [item["repository"] for item in document["payload"]["items"]] == [
+        healthy_repository
+    ]
     assert document["payload"]["repository_errors"] == [
         {"repository": repository, "reason": expected_reason}
     ]
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "expected_reason"),
+    [
+        ("tags", "repository-tags-unresolvable"),
+        ("releases", "repository-releases-unavailable"),
+        ("no-eligible-release", "repository-no-eligible-release"),
+    ],
+)
+def test_worklist_prepare_isolates_repository_local_upstream_failures(
+    tmp_path, failure_mode, expected_reason
+):
+    broken_repository = "https://github.com/owner/broken"
+    healthy_repository = "https://github.com/owner/healthy"
+
+    def tag_resolver(owner, repo, *_args):
+        if repo == "broken" and failure_mode == "tags":
+            raise RuntimeError("git ls-remote failed")
+        return {"v1": "a" * 40}
+
+    def release_fetcher(owner, repo):
+        repository_url = f"https://github.com/{owner}/{repo}"
+        if repo == "broken" and failure_mode == "releases":
+            raise RuntimeError("release enumeration failed")
+        if repo == "broken" and failure_mode == "no-eligible-release":
+            return [
+                _release(
+                    "v0",
+                    1,
+                    10,
+                    "2026-01-01T00:00:00Z",
+                    zip_count=0,
+                    repository_url=repository_url,
+                )
+            ]
+        return [
+            _with_digest(
+                _with_asset_urls(
+                    _release(
+                        "v1",
+                        1,
+                        10,
+                        repository_url=repository_url,
+                    ),
+                    repository_url,
+                ),
+                "a" * 64,
+            )
+        ]
+
+    _fingerprint, document = worklist.prepare_audit_worklist(
+        tmp_path / f"{failure_mode}.json",
+        source_revision=SOURCE_REVISION,
+        selection_mode="all",
+        repository_urls=[broken_repository, healthy_repository],
+        shard_count=14,
+        latest_only=False,
+        release_fetcher=release_fetcher,
+        metadata_fetcher=lambda owner, repo: _release_metadata(owner, repo),
+        tag_resolver=tag_resolver,
+        api_deadline_seconds=7,
+    )
+
+    assert document["payload"]["repository_errors"] == [
+        {"repository": broken_repository, "reason": expected_reason}
+    ]
+    assert [item["repository"] for item in document["payload"]["items"]] == [
+        healthy_repository
+    ]
+
+
+def test_worklist_prepare_rejects_when_every_selected_repository_fails(tmp_path):
+    output = tmp_path / "all-repositories-failed.json"
+
+    with pytest.raises(RuntimeError, match="All selected repositories failed"):
+        worklist.prepare_audit_worklist(
+            output,
+            source_revision=SOURCE_REVISION,
+            selection_mode="all",
+            repository_urls=[
+                "https://github.com/owner/broken-a",
+                "https://github.com/owner/broken-b",
+            ],
+            shard_count=14,
+            latest_only=False,
+            release_fetcher=lambda *_args: (_ for _ in ()).throw(
+                AssertionError("release enumeration must not run after tag failure")
+            ),
+            metadata_fetcher=lambda owner, repo: _release_metadata(owner, repo),
+            tag_resolver=lambda *_args: (_ for _ in ()).throw(
+                RuntimeError("git ls-remote failed")
+            ),
+            api_deadline_seconds=7,
+        )
+
+    assert not output.exists()
 
 
 def test_worklist_rejects_tampered_repository_errors_without_a_new_fingerprint(
@@ -1123,6 +1237,7 @@ def test_worklist_rejects_tampered_repository_errors_without_a_new_fingerprint(
     repositories = [
         "https://github.com/owner/a",
         "https://github.com/owner/b",
+        "https://github.com/owner/healthy",
     ]
     output = tmp_path / "repository-errors.json"
 
@@ -1133,9 +1248,24 @@ def test_worklist_rejects_tampered_repository_errors_without_a_new_fingerprint(
         repository_urls=repositories,
         shard_count=14,
         latest_only=False,
-        release_fetcher=lambda *_args: [],
-        metadata_fetcher=lambda owner, _repo: {
-            "full_name": f"{owner}/redirected",
+        release_fetcher=lambda owner, repo: [
+            _with_digest(
+                _with_asset_urls(
+                    _release(
+                        "v1",
+                        1,
+                        10,
+                        repository_url=f"https://github.com/{owner}/{repo}",
+                    ),
+                    f"https://github.com/{owner}/{repo}",
+                ),
+                "a" * 64,
+            )
+        ],
+        metadata_fetcher=lambda owner, repo: {
+            "full_name": (
+                f"{owner}/{repo}" if repo == "healthy" else f"{owner}/redirected"
+            ),
             "archived": False,
         },
         tag_resolver=lambda *_args, **_kwargs: {},
@@ -1144,7 +1274,7 @@ def test_worklist_rejects_tampered_repository_errors_without_a_new_fingerprint(
 
     assert [
         entry["repository"] for entry in document["payload"]["repository_errors"]
-    ] == repositories
+    ] == repositories[:2]
     cases = {
         "reordered": list(reversed(document["payload"]["repository_errors"])),
         "duplicated": [
@@ -1482,9 +1612,11 @@ def test_resolve_base_ref_to_commit_rejects_nonzero_exit():
         worklist._resolve_base_ref_to_commit("HEAD~1", run=run, timeout_seconds=5)
 
 
-def test_prepare_worklist_rejects_non_eligible_repositories_with_no_items(tmp_path):
+def test_prepare_worklist_rejects_when_all_repositories_have_no_eligible_release(
+    tmp_path,
+):
     output = tmp_path / "no-eligible.json"
-    with pytest.raises(ValueError, match="No eligible release found"):
+    with pytest.raises(RuntimeError, match="All selected repositories failed"):
         worklist.prepare_audit_worklist(
             output,
             source_revision=SOURCE_REVISION,
