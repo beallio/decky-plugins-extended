@@ -48,9 +48,14 @@ the time those sub-plans landed. The current authoritative behavior is:
   `codeload` archive and reuses its safely extracted source snapshot for all
   source consumers.
 - The shared scanner bootstrap replaces three inline workflow bodies. It logs
-  named bounded phases, verifies Trivy's signing-key fingerprint, retries only
-  safe APT/key-fetch work, and fails closed for ClamAV, Trivy, or exact Semgrep
-  `1.132.0` setup failures.
+  named bounded phases, tears down a timed-out phase's whole process group with
+  a short grace period before force-killing residue, and bounds the complete
+  bootstrap to 600 seconds. Before each retryable APT attempt it separately
+  logs a bounded wait for the dpkg frontend lock, then uses a longer APT retry
+  backoff. It verifies Trivy's signing-key fingerprint, retries only safe
+  APT/key-fetch work, and fails closed for ClamAV, Trivy, or exact Semgrep
+  `1.132.0` setup failures. External package-mirror availability is not
+  guaranteed; a shard that cannot install its scanners blocks publication.
 - CI selects changed repositories only for a plugin-list-only diff. Security
   pipeline, policy, verdict, dependency, quality-gate, test, or audit-workflow
   changes select the fourteen-shard corpus. Local and CI gates use Ruff, pytest,
