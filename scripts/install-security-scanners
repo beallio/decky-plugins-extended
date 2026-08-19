@@ -3,29 +3,124 @@
 set -Eeuo pipefail
 
 # The bootstrap has a hard 600-second total budget, leaving two minutes below
-# the calling workflow's unchanged twelve-minute step cap. Each named phase is
-# clipped to the time remaining after its 5-second forced-kill grace and an
-# equal 5-second timeout-supervisor cleanup margin; the budget therefore
-# includes the two 15-second dpkg-lock waits per APT retry, 10-second APT retry
-# backoffs, 4-second key/Semgrep retry backoffs, every timeout grace period,
-# and a 1-second clock-boundary guard. The normal cold-install APT budgets are
-# 90 seconds each.
+# the calling workflow's unchanged twelve-minute step cap. Each phase draws
+# from time that remains after reserving the declared minimums and teardown
+# margins for the phases still required on a cold path. That lets a slow APT
+# phase consume unused bootstrap time without starving later required work. A
+# retryable phase splits its available time across its remaining attempts, so a
+# full-length first attempt cannot consume its retry's useful allocation.
 BOOTSTRAP_TIMEOUT_SECONDS=600
+CLOCK_BOUNDARY_GUARD_SECONDS=1
 NETWORK_ATTEMPTS=2
 RETRY_BACKOFF_SECONDS=4
 APT_RETRY_BACKOFF_SECONDS=10
 PHASE_TIMEOUT_KILL_GRACE_SECONDS=5
-DPKG_FRONTEND_LOCK_WAIT_TIMEOUT_SECONDS=15
+PHASE_TIMEOUT_TEARDOWN_SECONDS=$((PHASE_TIMEOUT_KILL_GRACE_SECONDS * 2))
 DPKG_FRONTEND_LOCK_POLL_SECONDS=1
 DPKG_FRONTEND_LOCK_PATH="/var/lib/dpkg/lock-frontend"
-BASE_APT_TIMEOUT_SECONDS=90
-KEY_DOWNLOAD_TIMEOUT_SECONDS=30
-KEY_INSTALL_TIMEOUT_SECONDS=30
-TRIVY_APT_TIMEOUT_SECONDS=90
-SEMGREP_INSTALL_TIMEOUT_SECONDS=60
-VERIFY_TIMEOUT_SECONDS=30
-FRESHCLAM_TIMEOUT_SECONDS=90
-SERVICE_STOP_TIMEOUT_SECONDS=15
+BUDGET_EXHAUSTED_STATUS=125
+
+# Minimums are fail-closed admission thresholds; maximums cap a phase when
+# earlier work was fast. Every phase in PHASE_ORDER has both declarations.
+WAIT_FOR_DPKG_FRONTEND_LOCK_MINIMUM_SECONDS=15
+WAIT_FOR_DPKG_FRONTEND_LOCK_MAXIMUM_SECONDS=15
+BASE_INDEX_MINIMUM_SECONDS=30
+BASE_INDEX_MAXIMUM_SECONDS=240
+BASE_APT_MINIMUM_SECONDS=30
+BASE_APT_MAXIMUM_SECONDS=240
+KEY_DOWNLOAD_MINIMUM_SECONDS=15
+KEY_DOWNLOAD_MAXIMUM_SECONDS=120
+KEY_INSPECTION_MINIMUM_SECONDS=5
+KEY_INSPECTION_MAXIMUM_SECONDS=30
+KEY_VALIDATION_MINIMUM_SECONDS=5
+KEY_VALIDATION_MAXIMUM_SECONDS=30
+KEY_DEARMOR_MINIMUM_SECONDS=5
+KEY_DEARMOR_MAXIMUM_SECONDS=30
+KEY_INSTALLATION_MINIMUM_SECONDS=5
+KEY_INSTALLATION_MAXIMUM_SECONDS=30
+REPOSITORY_CONFIGURATION_MINIMUM_SECONDS=5
+REPOSITORY_CONFIGURATION_MAXIMUM_SECONDS=30
+TRIVY_APT_MINIMUM_SECONDS=30
+TRIVY_APT_MAXIMUM_SECONDS=240
+SEMGREP_INSTALL_MINIMUM_SECONDS=30
+SEMGREP_INSTALL_MAXIMUM_SECONDS=120
+TRIVY_VERIFICATION_MINIMUM_SECONDS=5
+TRIVY_VERIFICATION_MAXIMUM_SECONDS=30
+SEMGREP_VERIFICATION_MINIMUM_SECONDS=5
+SEMGREP_VERIFICATION_MAXIMUM_SECONDS=30
+SERVICE_STOP_MINIMUM_SECONDS=5
+SERVICE_STOP_MAXIMUM_SECONDS=15
+FRESHCLAM_MINIMUM_SECONDS=30
+FRESHCLAM_MAXIMUM_SECONDS=150
+CLAMAV_VERSION_VERIFICATION_MINIMUM_SECONDS=5
+CLAMAV_VERSION_VERIFICATION_MAXIMUM_SECONDS=30
+CLAMAV_DATABASE_VERIFICATION_MINIMUM_SECONDS=5
+CLAMAV_DATABASE_VERIFICATION_MAXIMUM_SECONDS=30
+
+declare -a PHASE_ORDER=(
+  "wait-dpkg-before-base-index"
+  "refresh-base-package-index"
+  "wait-dpkg-before-base"
+  "install-base-packages"
+  "download-trivy-signing-key"
+  "inspect-trivy-signing-key"
+  "validate-trivy-signing-key"
+  "dearmor-trivy-signing-key"
+  "install-trivy-signing-key"
+  "configure-trivy-repository"
+  "wait-dpkg-before-trivy"
+  "install-trivy"
+  "install-semgrep"
+  "verify-trivy"
+  "verify-semgrep-version"
+  "stop-clamav-freshclam-service"
+  "refresh-clamav-database"
+  "verify-clamav-version"
+  "verify-clamav-database"
+)
+declare -A PHASE_MINIMUM_SECONDS=(
+  ["wait-dpkg-before-base-index"]="$WAIT_FOR_DPKG_FRONTEND_LOCK_MINIMUM_SECONDS"
+  ["refresh-base-package-index"]="$BASE_INDEX_MINIMUM_SECONDS"
+  ["wait-dpkg-before-base"]="$WAIT_FOR_DPKG_FRONTEND_LOCK_MINIMUM_SECONDS"
+  ["install-base-packages"]="$BASE_APT_MINIMUM_SECONDS"
+  ["download-trivy-signing-key"]="$KEY_DOWNLOAD_MINIMUM_SECONDS"
+  ["inspect-trivy-signing-key"]="$KEY_INSPECTION_MINIMUM_SECONDS"
+  ["validate-trivy-signing-key"]="$KEY_VALIDATION_MINIMUM_SECONDS"
+  ["dearmor-trivy-signing-key"]="$KEY_DEARMOR_MINIMUM_SECONDS"
+  ["install-trivy-signing-key"]="$KEY_INSTALLATION_MINIMUM_SECONDS"
+  ["configure-trivy-repository"]="$REPOSITORY_CONFIGURATION_MINIMUM_SECONDS"
+  ["wait-dpkg-before-trivy"]="$WAIT_FOR_DPKG_FRONTEND_LOCK_MINIMUM_SECONDS"
+  ["install-trivy"]="$TRIVY_APT_MINIMUM_SECONDS"
+  ["install-semgrep"]="$SEMGREP_INSTALL_MINIMUM_SECONDS"
+  ["verify-trivy"]="$TRIVY_VERIFICATION_MINIMUM_SECONDS"
+  ["verify-semgrep-version"]="$SEMGREP_VERIFICATION_MINIMUM_SECONDS"
+  ["stop-clamav-freshclam-service"]="$SERVICE_STOP_MINIMUM_SECONDS"
+  ["refresh-clamav-database"]="$FRESHCLAM_MINIMUM_SECONDS"
+  ["verify-clamav-version"]="$CLAMAV_VERSION_VERIFICATION_MINIMUM_SECONDS"
+  ["verify-clamav-database"]="$CLAMAV_DATABASE_VERIFICATION_MINIMUM_SECONDS"
+)
+declare -A PHASE_MAXIMUM_SECONDS=(
+  ["wait-dpkg-before-base-index"]="$WAIT_FOR_DPKG_FRONTEND_LOCK_MAXIMUM_SECONDS"
+  ["refresh-base-package-index"]="$BASE_INDEX_MAXIMUM_SECONDS"
+  ["wait-dpkg-before-base"]="$WAIT_FOR_DPKG_FRONTEND_LOCK_MAXIMUM_SECONDS"
+  ["install-base-packages"]="$BASE_APT_MAXIMUM_SECONDS"
+  ["download-trivy-signing-key"]="$KEY_DOWNLOAD_MAXIMUM_SECONDS"
+  ["inspect-trivy-signing-key"]="$KEY_INSPECTION_MAXIMUM_SECONDS"
+  ["validate-trivy-signing-key"]="$KEY_VALIDATION_MAXIMUM_SECONDS"
+  ["dearmor-trivy-signing-key"]="$KEY_DEARMOR_MAXIMUM_SECONDS"
+  ["install-trivy-signing-key"]="$KEY_INSTALLATION_MAXIMUM_SECONDS"
+  ["configure-trivy-repository"]="$REPOSITORY_CONFIGURATION_MAXIMUM_SECONDS"
+  ["wait-dpkg-before-trivy"]="$WAIT_FOR_DPKG_FRONTEND_LOCK_MAXIMUM_SECONDS"
+  ["install-trivy"]="$TRIVY_APT_MAXIMUM_SECONDS"
+  ["install-semgrep"]="$SEMGREP_INSTALL_MAXIMUM_SECONDS"
+  ["verify-trivy"]="$TRIVY_VERIFICATION_MAXIMUM_SECONDS"
+  ["verify-semgrep-version"]="$SEMGREP_VERIFICATION_MAXIMUM_SECONDS"
+  ["stop-clamav-freshclam-service"]="$SERVICE_STOP_MAXIMUM_SECONDS"
+  ["refresh-clamav-database"]="$FRESHCLAM_MAXIMUM_SECONDS"
+  ["verify-clamav-version"]="$CLAMAV_VERSION_VERIFICATION_MAXIMUM_SECONDS"
+  ["verify-clamav-database"]="$CLAMAV_DATABASE_VERIFICATION_MAXIMUM_SECONDS"
+)
+declare -A PHASE_RESERVE_SECONDS=()
 
 TRIVY_KEY_URL="https://aquasecurity.github.io/trivy-repo/deb/public.key"
 TRIVY_KEY_FINGERPRINT="825AD9036F7C850E6A6FED4935B8ACA44FD9CA9F"
@@ -43,40 +138,112 @@ bootstrap_started_seconds="$SECONDS"
 
 remaining_bootstrap_seconds() {
   printf '%s\n' "$((
-    BOOTSTRAP_TIMEOUT_SECONDS - (SECONDS - bootstrap_started_seconds) - 1
+    BOOTSTRAP_TIMEOUT_SECONDS - (SECONDS - bootstrap_started_seconds) -
+      CLOCK_BOUNDARY_GUARD_SECONDS
   ))"
+}
+
+validate_phase_budget_table() {
+  local phase_id minimum_seconds maximum_seconds
+  local reserve_seconds=0
+  local full_cold_path_seconds=0
+  local fixed_overhead_seconds="$CLOCK_BOUNDARY_GUARD_SECONDS"
+  local total_seconds index
+
+  for (( index = ${#PHASE_ORDER[@]} - 1; index >= 0; index-- )); do
+    phase_id="${PHASE_ORDER[index]}"
+    minimum_seconds="${PHASE_MINIMUM_SECONDS[$phase_id]:-}"
+    maximum_seconds="${PHASE_MAXIMUM_SECONDS[$phase_id]:-}"
+    if [[ ! "$minimum_seconds" =~ ^[1-9][0-9]*$ ]] ||
+      [[ ! "$maximum_seconds" =~ ^[1-9][0-9]*$ ]] ||
+      (( maximum_seconds < minimum_seconds )); then
+      printf 'invalid scanner phase budget declaration: phase=%s minimum=%s maximum=%s\n' \
+        "$phase_id" "$minimum_seconds" "$maximum_seconds" >&2
+      exit 1
+    fi
+    PHASE_RESERVE_SECONDS["$phase_id"]="$reserve_seconds"
+    reserve_seconds=$((reserve_seconds + minimum_seconds + PHASE_TIMEOUT_TEARDOWN_SECONDS))
+    full_cold_path_seconds=$((full_cold_path_seconds + minimum_seconds + PHASE_TIMEOUT_TEARDOWN_SECONDS))
+  done
+
+  total_seconds=$((full_cold_path_seconds + fixed_overhead_seconds))
+  if (( total_seconds > BOOTSTRAP_TIMEOUT_SECONDS )); then
+    printf 'invalid scanner phase budget table: full cold path exceeds bootstrap budget (%ss > %ss)\n' \
+      "$total_seconds" "$BOOTSTRAP_TIMEOUT_SECONDS" >&2
+    exit 1
+  fi
+  printf 'bootstrap-budget full-cold-path=%s fixed-overhead=%s total=%s budget=%s\n' \
+    "$full_cold_path_seconds" "$fixed_overhead_seconds" "$total_seconds" \
+    "$BOOTSTRAP_TIMEOUT_SECONDS"
+}
+
+allocated_phase_timeout_seconds() {
+  local phase_id="$1"
+  local remaining_seconds="$2"
+  local attempts_remaining="$3"
+  local minimum_seconds="${PHASE_MINIMUM_SECONDS[$phase_id]}"
+  local maximum_seconds="${PHASE_MAXIMUM_SECONDS[$phase_id]}"
+  local reserve_seconds="${PHASE_RESERVE_SECONDS[$phase_id]}"
+  local allocated_seconds=$((remaining_seconds - reserve_seconds - PHASE_TIMEOUT_TEARDOWN_SECONDS))
+
+  if (( attempts_remaining < 1 )); then
+    printf 'invalid scanner phase attempt count: phase=%s attempts-remaining=%s\n' \
+      "$phase_id" "$attempts_remaining" >&2
+    return 1
+  fi
+  allocated_seconds=$((allocated_seconds / attempts_remaining))
+  if (( allocated_seconds < minimum_seconds )); then
+    return "$BUDGET_EXHAUSTED_STATUS"
+  fi
+  if (( allocated_seconds > maximum_seconds )); then
+    allocated_seconds="$maximum_seconds"
+  fi
+  printf '%s\n' "$allocated_seconds"
+}
+
+budget_exhausted_diagnostic() {
+  local phase="$1"
+  local phase_id="$2"
+  local remaining_seconds="$3"
+  printf 'phase=%s status=%s failed: bootstrap budget exhausted (remaining=%ss minimum=%ss reserve=%ss teardown=%ss)\n' \
+    "$phase" "$BUDGET_EXHAUSTED_STATUS" "$remaining_seconds" \
+    "${PHASE_MINIMUM_SECONDS[$phase_id]}" "${PHASE_RESERVE_SECONDS[$phase_id]}" \
+    "$PHASE_TIMEOUT_TEARDOWN_SECONDS" >&2
 }
 
 retry_backoff() {
   local phase="$1"
-  local backoff_seconds="$2"
-  local remaining_seconds
+  local phase_id="$2"
+  local backoff_seconds="$3"
+  local remaining_seconds required_seconds
   remaining_seconds="$(remaining_bootstrap_seconds)"
-  if (( remaining_seconds <= backoff_seconds )); then
-    printf 'phase=%s status=124 failed: bootstrap deadline exhausted before retry\n' \
-      "$phase" >&2
-    return 124
+  required_seconds=$((backoff_seconds + PHASE_MINIMUM_SECONDS[$phase_id] + PHASE_RESERVE_SECONDS[$phase_id] + PHASE_TIMEOUT_TEARDOWN_SECONDS))
+  if (( remaining_seconds < required_seconds )); then
+    budget_exhausted_diagnostic "$phase" "$phase_id" "$remaining_seconds"
+    return "$BUDGET_EXHAUSTED_STATUS"
   fi
   sleep "$backoff_seconds"
 }
 
 phase_run() {
-  local phase="$1"
-  local timeout_seconds="$2"
-  shift 2
+  local phase_id="$1"
+  local phase="$2"
+  local attempts_remaining="$3"
+  shift 3
   local started ended status remaining_seconds
   started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf 'phase=%s start=%s\n' "$phase" "$started"
   remaining_seconds="$(remaining_bootstrap_seconds)"
-  local timeout_teardown_seconds=$((PHASE_TIMEOUT_KILL_GRACE_SECONDS * 2))
-  if (( remaining_seconds <= timeout_teardown_seconds )); then
-    status=124
+  local timeout_seconds
+  if ! timeout_seconds="$(allocated_phase_timeout_seconds \
+    "$phase_id" "$remaining_seconds" "$attempts_remaining")"; then
+    status="$BUDGET_EXHAUSTED_STATUS"
+    printf 'phase=%s start=%s status=%s\n' "$phase" "$started" "$status"
   else
-    if (( timeout_seconds + timeout_teardown_seconds > remaining_seconds )); then
-      timeout_seconds=$((remaining_seconds - timeout_teardown_seconds))
-    fi
+    printf 'phase=%s start=%s timeout=%ss remaining=%ss reserve=%ss attempts-remaining=%s\n' \
+      "$phase" "$started" "$timeout_seconds" "$remaining_seconds" \
+      "${PHASE_RESERVE_SECONDS[$phase_id]}" "$attempts_remaining"
     set +e
-    timeout --kill-after="$((timeout_teardown_seconds))s" "$timeout_seconds" \
+    timeout --kill-after="$PHASE_TIMEOUT_TEARDOWN_SECONDS"s "$timeout_seconds" \
       bash -c '
         grace_seconds="$1"
         shift
@@ -101,49 +268,54 @@ phase_run() {
   fi
   ended="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'phase=%s end=%s status=%s\n' "$phase" "$ended" "$status"
-  if (( status != 0 )); then
+  if (( status == BUDGET_EXHAUSTED_STATUS )); then
+    budget_exhausted_diagnostic "$phase" "$phase_id" "$remaining_seconds"
+  elif (( status != 0 )); then
     printf 'phase=%s status=%s failed\n' "$phase" "$status" >&2
   fi
   return "$status"
 }
 
 require_phase() {
-  local phase="$1"
-  local timeout_seconds="$2"
+  local phase_id="$1"
+  local phase="$2"
   shift 2
-  phase_run "$phase" "$timeout_seconds" "$@" || exit $?
+  phase_run "$phase_id" "$phase" 1 "$@" || exit $?
 }
 
 retry_phase() {
-  local phase="$1"
-  local timeout_seconds="$2"
+  local phase_id="$1"
+  local phase="$2"
   shift 2
   local attempt status=1
   for (( attempt = 1; attempt <= NETWORK_ATTEMPTS; attempt++ )); do
-    if phase_run "$phase" "$timeout_seconds" "$@"; then
+    if phase_run "$phase_id" "$phase" "$((NETWORK_ATTEMPTS - attempt + 1))" "$@"; then
       return 0
     else
       status=$?
     fi
+    if (( status == BUDGET_EXHAUSTED_STATUS )); then
+      return "$status"
+    fi
     if (( attempt < NETWORK_ATTEMPTS )); then
       printf 'phase=%s retry=%s/%s backoff=%ss\n' \
         "$phase" "$attempt" "$NETWORK_ATTEMPTS" "$RETRY_BACKOFF_SECONDS" >&2
-      retry_backoff "$phase" "$RETRY_BACKOFF_SECONDS" || return $?
+      retry_backoff "$phase" "$phase_id" "$RETRY_BACKOFF_SECONDS" || return $?
     fi
   done
   return "$status"
 }
 
 require_retry_phase() {
-  local phase="$1"
-  local timeout_seconds="$2"
+  local phase_id="$1"
+  local phase="$2"
   shift 2
-  retry_phase "$phase" "$timeout_seconds" "$@" || exit $?
+  retry_phase "$phase_id" "$phase" "$@" || exit $?
 }
 
 wait_for_dpkg_frontend_lock() {
-  phase_run "wait for dpkg frontend lock (${DPKG_FRONTEND_LOCK_PATH})" \
-    "$DPKG_FRONTEND_LOCK_WAIT_TIMEOUT_SECONDS" \
+  local phase_id="$1"
+  phase_run "$phase_id" "wait for dpkg frontend lock ($DPKG_FRONTEND_LOCK_PATH)" 1 \
     bash -c '
       lock_path="$1"
       poll_seconds="$2"
@@ -169,67 +341,98 @@ wait_for_dpkg_frontend_lock() {
 }
 
 retry_apt_phase() {
-  local phase="$1"
-  local timeout_seconds="$2"
-  shift 2
+  local lock_phase_id="$1"
+  local phase_id="$2"
+  local phase="$3"
+  shift 3
   local attempt status=1
   for (( attempt = 1; attempt <= NETWORK_ATTEMPTS; attempt++ )); do
-    wait_for_dpkg_frontend_lock || return $?
-    if phase_run "$phase" "$timeout_seconds" "$@"; then
+    wait_for_dpkg_frontend_lock "$lock_phase_id" || return $?
+    if phase_run "$phase_id" "$phase" "$((NETWORK_ATTEMPTS - attempt + 1))" "$@"; then
       return 0
     else
       status=$?
     fi
+    if (( status == BUDGET_EXHAUSTED_STATUS )); then
+      return "$status"
+    fi
     if (( attempt < NETWORK_ATTEMPTS )); then
       printf 'phase=%s retry=%s/%s backoff=%ss\n' \
         "$phase" "$attempt" "$NETWORK_ATTEMPTS" "$APT_RETRY_BACKOFF_SECONDS" >&2
-      retry_backoff "$phase" "$APT_RETRY_BACKOFF_SECONDS" || return $?
+      retry_backoff "$phase" "$phase_id" "$APT_RETRY_BACKOFF_SECONDS" || return $?
     fi
   done
   return "$status"
 }
 
 require_retry_apt_phase() {
-  local phase="$1"
-  local timeout_seconds="$2"
-  shift 2
-  retry_apt_phase "$phase" "$timeout_seconds" "$@" || exit $?
+  local lock_phase_id="$1"
+  local phase_id="$2"
+  local phase="$3"
+  shift 3
+  retry_apt_phase "$lock_phase_id" "$phase_id" "$phase" "$@" || exit $?
 }
+
+validate_phase_budget_table
 
 [[ -n "${GITHUB_PATH:-}" ]] || {
   printf '%s\n' 'GITHUB_PATH is required for the Semgrep executable' >&2
   exit 1
 }
 
-require_retry_apt_phase "install base packages" "$BASE_APT_TIMEOUT_SECONDS" \
-  bash -o pipefail -c '
-    sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 update
-    sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 install -y --no-install-recommends wget apt-transport-https gnupg lsb-release clamav
-  '
+base_packages=(wget apt-transport-https gnupg lsb-release clamav)
+missing_base_packages=()
+for package in "${base_packages[@]}"; do
+  if ! dpkg-query -W -f='${db:Status-Status}\n' "$package" 2>/dev/null \
+    | grep -Fxq installed; then
+    missing_base_packages+=("$package")
+  fi
+done
 
-require_retry_phase "download Trivy signing key" "$KEY_DOWNLOAD_TIMEOUT_SECONDS" \
+require_retry_apt_phase \
+  "wait-dpkg-before-base-index" "refresh-base-package-index" "refresh base package index" \
+  sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 update
+
+if (( ${#missing_base_packages[@]} == 0 )); then
+  printf 'phase=install base packages outcome=skipped reason=all-packages-present status=0\n'
+else
+  require_retry_apt_phase \
+    "wait-dpkg-before-base" "install-base-packages" "install base packages" \
+    bash -o pipefail -c '
+      sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 install -y --no-install-recommends "$@"
+    ' -- "${missing_base_packages[@]}"
+fi
+
+require_retry_phase "download-trivy-signing-key" "download Trivy signing key" \
   wget --https-only --tries=1 --timeout=20 -O "$trivy_key" "$TRIVY_KEY_URL"
-require_phase "inspect Trivy signing key" "$KEY_INSTALL_TIMEOUT_SECONDS" \
+require_phase "inspect-trivy-signing-key" "inspect Trivy signing key" \
   bash -c 'gpg --show-keys --with-colons "$1" > "$2"' -- "$trivy_key" "$trivy_key_details"
-require_phase "validate Trivy signing key" "$VERIFY_TIMEOUT_SECONDS" \
+require_phase "validate-trivy-signing-key" "validate Trivy signing key" \
   grep -Fq "fpr:::::::::${TRIVY_KEY_FINGERPRINT}:" "$trivy_key_details"
-require_phase "dearmor Trivy signing key" "$KEY_INSTALL_TIMEOUT_SECONDS" \
+require_phase "dearmor-trivy-signing-key" "dearmor Trivy signing key" \
   gpg --dearmor --yes --output "$trivy_keyring" "$trivy_key"
-require_phase "install Trivy signing key" "$KEY_INSTALL_TIMEOUT_SECONDS" \
+require_phase "install-trivy-signing-key" "install Trivy signing key" \
   sudo -n install -m 0644 "$trivy_keyring" "$TRIVY_KEYRING_PATH"
-require_phase "configure Trivy repository" "$VERIFY_TIMEOUT_SECONDS" \
+require_phase "configure-trivy-repository" "configure Trivy repository" \
   bash -o pipefail -c '
     distro="$(lsb_release -sc)"
     [[ -n "$distro" ]] || exit 1
     printf "deb [signed-by=%s] https://aquasecurity.github.io/trivy-repo/deb %s main\\n" "$1" "$distro" \
       | sudo -n tee "$2" > /dev/null
   ' -- "$TRIVY_KEYRING_PATH" "$TRIVY_SOURCE_LIST_PATH"
-require_retry_apt_phase "install Trivy" "$TRIVY_APT_TIMEOUT_SECONDS" \
+require_retry_apt_phase \
+  "wait-dpkg-before-trivy" "install-trivy" "install Trivy" \
   bash -o pipefail -c '
-    sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 update
+    source_list="$1"
+    sudo -n apt-get \
+      -o Acquire::Retries=1 \
+      -o Acquire::http::Timeout=20 \
+      -o Dir::Etc::sourcelist="$source_list" \
+      -o Dir::Etc::sourceparts="-" \
+      update
     sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 install -y --no-install-recommends trivy
-  '
-require_retry_phase "install Semgrep" "$SEMGREP_INSTALL_TIMEOUT_SECONDS" \
+  ' -- "$TRIVY_SOURCE_LIST_PATH"
+require_retry_phase "install-semgrep" "install Semgrep" \
   uv tool install --python 3.12 --with setuptools==70.3.0 semgrep==1.132.0
 
 SEMGREP_BIN_DIR="$(uv tool dir --bin)"
@@ -240,8 +443,8 @@ SEMGREP_BIN_DIR="$(uv tool dir --bin)"
 printf '%s\n' "$SEMGREP_BIN_DIR" >> "$GITHUB_PATH"
 export PATH="$SEMGREP_BIN_DIR:$PATH"
 
-require_phase "verify Trivy" "$VERIFY_TIMEOUT_SECONDS" trivy --version
-require_phase "verify Semgrep version" "$VERIFY_TIMEOUT_SECONDS" \
+require_phase "verify-trivy" "verify Trivy" trivy --version
+require_phase "verify-semgrep-version" "verify Semgrep version" \
   bash -c '
     semgrep_version="$(semgrep --version --disable-version-check)"
     [[ "$semgrep_version" == "1.132.0" ]] || {
@@ -249,11 +452,11 @@ require_phase "verify Semgrep version" "$VERIFY_TIMEOUT_SECONDS" \
       exit 1
     }
   '
-if ! phase_run "stop clamav-freshclam service" "$SERVICE_STOP_TIMEOUT_SECONDS" \
+if ! phase_run "stop-clamav-freshclam-service" "stop clamav-freshclam service" 1 \
   sudo -n systemctl stop clamav-freshclam; then
   printf '%s\n' 'warning: could not stop clamav-freshclam; continuing with explicit refresh' >&2
 fi
-require_phase "refresh ClamAV database" "$FRESHCLAM_TIMEOUT_SECONDS" sudo -n freshclam
-require_phase "verify ClamAV version" "$VERIFY_TIMEOUT_SECONDS" clamscan --version
-require_phase "verify ClamAV database" "$VERIFY_TIMEOUT_SECONDS" \
+require_phase "refresh-clamav-database" "refresh ClamAV database" sudo -n freshclam
+require_phase "verify-clamav-version" "verify ClamAV version" clamscan --version
+require_phase "verify-clamav-database" "verify ClamAV database" \
   bash -c 'compgen -G "$1" > /dev/null' -- "$CLAMAV_DB_GLOB"

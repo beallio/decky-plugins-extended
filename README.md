@@ -433,11 +433,19 @@ bootstrap script with named, bounded phases. A timed-out phase terminates its
 whole process group, allows a short grace period, then force-kills any residue.
 APT retries first wait in a separately logged, bounded phase for the dpkg
 frontend lock and use a longer APT-specific backoff; the full bootstrap has a
-600-second budget below the unchanged twelve-minute setup-step cap. Retry
-remains limited to idempotent APT/key-fetch work, with a verified Trivy
-signing-key fingerprint and hard ClamAV, Trivy, and exact Semgrep `1.132.0`
-checks. External package-mirror availability is still not guaranteed: a shard
-that cannot install its scanners fails closed and blocks publication.
+fixed 600-second budget below the unchanged twelve-minute setup-step cap. Each
+phase derives its timeout from the budget still available after reserving
+minimum time for later mandatory phases, rather than using a fixed per-phase
+cap. A retryable phase splits that allocation across its attempts so a
+full-length first try keeps useful time for its retry. The bootstrap refreshes
+the configured package indexes even when its installed-package query lets it
+skip the base-package install; after configuring Trivy, the second index
+refresh is restricted to the Trivy source list. This redistributes a fixed
+budget and reduces repeat mirror exposure; it does not guarantee a sufficiently
+slow or unavailable mirror will succeed. Retry remains limited to idempotent APT/key-fetch work, with a
+verified Trivy signing-key fingerprint and hard ClamAV, Trivy, and exact
+Semgrep `1.132.0` checks. A shard that cannot install its scanners fails closed
+and blocks publication.
 
 Production capacity is measured against the maximum fourteen-shard wall-time
 estimate, not against a sequential unsharded scan. The preserved 579-release

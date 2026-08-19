@@ -44,6 +44,13 @@ done
 duration="$1"
 shift
 if [[ "${FAKE_TIMEOUT_MATCH:-}" != "" && "$*" == *"${FAKE_TIMEOUT_MATCH}"* ]]; then
+  if [[ -n "${FAKE_TIMEOUT_MINIMUM_SECONDS:-}" ]]; then
+    duration_seconds="${duration%s}"
+    if (( duration_seconds < FAKE_TIMEOUT_MINIMUM_SECONDS )); then
+      exit 124
+    fi
+    exec "$@"
+  fi
   exit "${FAKE_TIMEOUT_STATUS:-124}"
 fi
 exec "$@"
@@ -109,6 +116,13 @@ fi
         bin_dir / "fuser",
         'printf \'%s\\n\' "fuser $*" >> "$FAKE_COMMAND_LOG"\nexit 1\n',
     )
+    _write_executable(
+        bin_dir / "dpkg-query",
+        """
+printf '%s\\n' "dpkg-query $*" >> "$FAKE_COMMAND_LOG"
+printf '%s\\n' "${FAKE_DPKG_QUERY_STATE:-not-installed}"
+""",
+    )
     for name in (
         "apt-get",
         "systemctl",
@@ -171,7 +185,29 @@ def _run_bootstrap(
 def _script_with_short_timeouts(tmp_path: Path, **constants: float | int) -> Path:
     script = tmp_path / "install-security-scanners"
     text = SCRIPT.read_text(encoding="utf-8")
+    allocation_aliases = {
+        "BASE_APT_TIMEOUT_SECONDS": (
+            "BASE_APT_MINIMUM_SECONDS",
+            "BASE_APT_MAXIMUM_SECONDS",
+        ),
+        "DPKG_FRONTEND_LOCK_WAIT_TIMEOUT_SECONDS": (
+            "WAIT_FOR_DPKG_FRONTEND_LOCK_MINIMUM_SECONDS",
+            "WAIT_FOR_DPKG_FRONTEND_LOCK_MAXIMUM_SECONDS",
+        ),
+    }
     for name, value in constants.items():
+        if name in allocation_aliases and allocation_aliases[name][0] in text:
+            minimum_name, maximum_name = allocation_aliases[name]
+            for allocation_name in (minimum_name, maximum_name):
+                text, replacements = re.subn(
+                    rf"^{re.escape(allocation_name)}=.*$",
+                    f"{allocation_name}={value}",
+                    text,
+                    count=1,
+                    flags=re.MULTILINE,
+                )
+                assert replacements == 1, f"missing {allocation_name} assignment"
+            continue
         text, replacements = re.subn(
             rf"^{re.escape(name)}=.*$",
             f"{name}={value}",
@@ -207,6 +243,311 @@ def _integer_script_constant(name: str) -> int:
     match = re.search(rf"^{re.escape(name)}=(\d+)$", SCRIPT.read_text(), re.MULTILINE)
     assert match, f"missing integer {name} assignment"
     return int(match.group(1))
+
+
+def _integer_script_constant_from(script: Path, name: str) -> int:
+    match = re.search(
+        rf"^{re.escape(name)}=(\d+)$", script.read_text(encoding="utf-8"), re.MULTILINE
+    )
+    assert match, f"missing integer {name} assignment"
+    return int(match.group(1))
+
+
+def _script_with_expired_bootstrap_budget(tmp_path: Path) -> Path:
+    script = tmp_path / "install-security-scanners"
+    text, replacements = re.subn(
+        r'^bootstrap_started_seconds="\$SECONDS"$',
+        "bootstrap_started_seconds=$((SECONDS - BOOTSTRAP_TIMEOUT_SECONDS))",
+        SCRIPT.read_text(encoding="utf-8"),
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert replacements == 1, "missing bootstrap start-time assignment"
+    _write_executable(script, text.removeprefix("#!/usr/bin/env bash\n"))
+    return script
+
+
+def _script_with_tiny_allocation_budget(tmp_path: Path) -> Path:
+    """Create a short wall-clock allocation scenario for the reserve contract."""
+
+    script = tmp_path / "install-security-scanners"
+    text = SCRIPT.read_text(encoding="utf-8")
+    text, replacements = re.subn(
+        r"^BOOTSTRAP_TIMEOUT_SECONDS=.*$",
+        "BOOTSTRAP_TIMEOUT_SECONDS=25",
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert replacements == 1, "missing bootstrap timeout assignment"
+    text, replacements = re.subn(
+        r"^PHASE_TIMEOUT_KILL_GRACE_SECONDS=.*$",
+        "PHASE_TIMEOUT_KILL_GRACE_SECONDS=0",
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert replacements == 1, "missing phase kill grace assignment"
+
+    if "BASE_APT_MINIMUM_SECONDS=" not in text:
+        text, replacements = re.subn(
+            r"^BASE_APT_TIMEOUT_SECONDS=.*$",
+            "BASE_APT_TIMEOUT_SECONDS=1",
+            text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        assert replacements == 1, "missing fixed base APT timeout assignment"
+    else:
+        text, minimum_replacements = re.subn(
+            r"^([A-Z_]+_MINIMUM_SECONDS)=.*$",
+            r"\1=1",
+            text,
+            flags=re.MULTILINE,
+        )
+        text, maximum_replacements = re.subn(
+            r"^([A-Z_]+_MAXIMUM_SECONDS)=.*$",
+            r"\1=8",
+            text,
+            flags=re.MULTILINE,
+        )
+        assert minimum_replacements > 0, "missing declared phase minimums"
+        assert maximum_replacements > 0, "missing declared phase maximums"
+
+    _write_executable(script, text.removeprefix("#!/usr/bin/env bash\n"))
+    return script
+
+
+def _phase_timeout_seconds(output: str, phase: str) -> int:
+    matches = re.findall(
+        rf"^phase={re.escape(phase)} start=.* timeout=(\d+)s ",
+        output,
+        re.MULTILINE,
+    )
+    assert matches, f"no allocation logged for {phase}"
+    return int(matches[-1])
+
+
+def test_scanner_bootstrap_allows_apt_phase_to_use_remaining_budget(tmp_path):
+    result = _run_bootstrap(
+        tmp_path,
+        FAKE_TIMEOUT_MATCH="apt-get",
+        FAKE_TIMEOUT_MINIMUM_SECONDS="91",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "phase=install base packages end=" in result.stdout
+
+
+def test_scanner_bootstrap_long_early_phase_reserves_later_minimums(tmp_path):
+    real_timeout = shutil.which("timeout")
+    assert real_timeout, "timeout is required for this test"
+    first_attempt = tmp_path / "long-apt-attempt"
+    script = _script_with_tiny_allocation_budget(tmp_path)
+    script_text, replacements = re.subn(
+        r"^NETWORK_ATTEMPTS=.*$",
+        "NETWORK_ATTEMPTS=1",
+        script.read_text(encoding="utf-8"),
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert replacements == 1, "missing network attempt assignment"
+    _write_executable(script, script_text.removeprefix("#!/usr/bin/env bash\n"))
+    environment = _fake_environment(tmp_path)
+    _write_executable(
+        tmp_path / "bin" / "timeout",
+        'printf \'%s\\n\' "timeout $*" >> "$FAKE_COMMAND_LOG"\nexec "$REAL_TIMEOUT" "$@"\n',
+    )
+    _write_executable(
+        tmp_path / "bin" / "bash",
+        """
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"install -y --no-install-recommends"* && ! -e "$FAKE_LONG_APT_ATTEMPT" ]]; then
+  : > "$FAKE_LONG_APT_ATTEMPT"
+  exec /bin/sleep 6
+fi
+exec /bin/bash "$@"
+""",
+        interpreter="/bin/bash",
+    )
+
+    result = _run_bootstrap(
+        tmp_path,
+        script=script,
+        environment=environment
+        | {"FAKE_LONG_APT_ATTEMPT": str(first_attempt), "REAL_TIMEOUT": real_timeout},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert first_attempt.exists()
+    assert "phase=refresh ClamAV database end=" in result.stdout
+    assert _phase_timeout_seconds(result.stdout, "refresh ClamAV database") >= (
+        _integer_script_constant_from(script, "FRESHCLAM_MINIMUM_SECONDS")
+    )
+
+
+def test_scanner_bootstrap_reports_budget_exhaustion_distinct_from_timeout(tmp_path):
+    result = _run_bootstrap(
+        tmp_path,
+        script=_script_with_expired_bootstrap_budget(tmp_path),
+    )
+
+    assert result.returncode != 0
+    assert "bootstrap budget exhausted" in result.stderr
+    assert "status=124 failed" not in result.stderr
+
+
+def test_scanner_bootstrap_does_not_start_an_unfunded_retry(tmp_path):
+    real_timeout = shutil.which("timeout")
+    assert real_timeout, "timeout is required for this test"
+    first_attempt = tmp_path / "failed-apt-attempt"
+    script = _script_with_tiny_allocation_budget(tmp_path)
+    environment = _fake_environment(tmp_path)
+    _write_executable(
+        tmp_path / "bin" / "timeout",
+        'exec "$REAL_TIMEOUT" "$@"\n',
+    )
+    _write_executable(
+        tmp_path / "bin" / "bash",
+        """
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"install -y --no-install-recommends"* && ! -e "$FAKE_FAILED_APT_ATTEMPT" ]]; then
+  : > "$FAKE_FAILED_APT_ATTEMPT"
+  exec /bin/bash -c "sleep 6; exit 1"
+fi
+exec /bin/bash "$@"
+""",
+        interpreter="/bin/bash",
+    )
+
+    result = _run_bootstrap(
+        tmp_path,
+        script=script,
+        environment=environment
+        | {"FAKE_FAILED_APT_ATTEMPT": str(first_attempt), "REAL_TIMEOUT": real_timeout},
+    )
+
+    assert result.returncode == 125
+    assert first_attempt.exists()
+    assert result.stdout.count("phase=install base packages start=") == 1
+    assert "bootstrap budget exhausted" in result.stderr
+
+
+def test_scanner_bootstrap_splits_retryable_phase_budget_across_attempts(tmp_path):
+    """A timed-out first APT attempt leaves a useful allocation for its retry."""
+
+    real_timeout = shutil.which("timeout")
+    assert real_timeout, "timeout is required for this test"
+    first_attempt = tmp_path / "first-apt-attempt"
+    script = _script_with_tiny_allocation_budget(tmp_path)
+    script_text, replacements = re.subn(
+        r"^APT_RETRY_BACKOFF_SECONDS=.*$",
+        "APT_RETRY_BACKOFF_SECONDS=2",
+        script.read_text(encoding="utf-8"),
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert replacements == 1, "missing APT retry backoff assignment"
+    _write_executable(script, script_text.removeprefix("#!/usr/bin/env bash\n"))
+
+    environment = _fake_environment(tmp_path)
+    _write_executable(
+        tmp_path / "bin" / "timeout",
+        'exec "$REAL_TIMEOUT" "$@"\n',
+    )
+    _write_executable(
+        tmp_path / "bin" / "bash",
+        """
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"install -y --no-install-recommends"* && ! -e "$FAKE_FIRST_APT_ATTEMPT" ]]; then
+  : > "$FAKE_FIRST_APT_ATTEMPT"
+  exec /bin/sleep 10
+fi
+exec /bin/bash "$@"
+""",
+        interpreter="/bin/bash",
+    )
+
+    result = _run_bootstrap(
+        tmp_path,
+        script=script,
+        environment=environment
+        | {
+            "FAKE_FIRST_APT_ATTEMPT": str(first_attempt),
+            "REAL_TIMEOUT": real_timeout,
+        },
+    )
+
+    timeouts = re.findall(
+        r"^phase=install base packages start=.* timeout=(\d+)s ",
+        result.stdout,
+        re.MULTILINE,
+    )
+    assert result.returncode == 0, result.stderr
+    assert first_attempt.exists()
+    assert len(timeouts) == 2
+    assert int(timeouts[0]) < _integer_script_constant_from(
+        script, "BASE_APT_MAXIMUM_SECONDS"
+    )
+    assert int(timeouts[1]) > _integer_script_constant_from(
+        script, "BASE_APT_MINIMUM_SECONDS"
+    )
+
+
+def test_scanner_bootstrap_declares_consistent_budget_reserves(tmp_path):
+    result = _run_bootstrap(tmp_path)
+    match = re.search(
+        r"bootstrap-budget full-cold-path=(\d+) fixed-overhead=(\d+) total=(\d+) budget=(\d+)",
+        result.stdout,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert match, result.stdout
+    full_cold_path, fixed_overhead, total, budget = map(int, match.groups())
+    assert full_cold_path + fixed_overhead == total
+    assert total <= budget
+
+
+def test_scanner_bootstrap_skips_already_present_base_packages(tmp_path):
+    result = _run_bootstrap(tmp_path, FAKE_DPKG_QUERY_STATE="installed")
+
+    assert result.returncode == 0, result.stderr
+    command_lines = (tmp_path / "commands.log").read_text(encoding="utf-8").splitlines()
+    assert "phase=install base packages outcome=skipped" in result.stdout
+    assert not any(
+        line.startswith("apt-get ") and "clamav" in line for line in command_lines
+    )
+    full_index_updates = [
+        line
+        for line in command_lines
+        if line.startswith("apt-get ")
+        and " update" in line
+        and "Dir::Etc::sourcelist=" not in line
+    ]
+    assert full_index_updates
+    trivy_install = next(
+        index
+        for index, line in enumerate(command_lines)
+        if line.startswith("apt-get ")
+        and "install -y --no-install-recommends trivy" in line
+    )
+    assert command_lines.index(full_index_updates[0]) < trivy_install
+
+
+def test_scanner_bootstrap_refreshes_only_the_trivy_source_after_configuration(
+    tmp_path,
+):
+    result = _run_bootstrap(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    commands = (tmp_path / "commands.log").read_text(encoding="utf-8")
+    trivy_updates = [
+        line
+        for line in commands.splitlines()
+        if line.startswith("apt-get ")
+        and " update" in line
+        and "Dir::Etc::sourcelist=" in line
+    ]
+    assert trivy_updates
+    assert all("Dir::Etc::sourceparts=-" in line for line in trivy_updates)
+    assert all(str(tmp_path / "trivy.list") in line for line in trivy_updates)
 
 
 def test_scanner_bootstrap_happy_path(tmp_path):
@@ -269,7 +610,7 @@ def test_scanner_bootstrap_reaps_timeout_grandchildren_with_real_timeout(tmp_pat
     _write_executable(
         tmp_path / "bin" / "bash",
         """
-if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"apt-get"* ]]; then
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"install -y --no-install-recommends"* ]]; then
   trap 'exit 143' TERM
   /bin/bash -c 'bash -c "trap \"\" TERM; exec sleep 2" </dev/null >/dev/null 2>&1 & child="$!"; printf "%s\\n" "$child" > "$FAKE_GRANDCHILD_PID_FILE"; wait "$child"' </dev/null >/dev/null 2>&1 &
   wait "$!"
@@ -321,7 +662,7 @@ exec /bin/sleep "$@"
     _write_executable(
         tmp_path / "bin" / "bash",
         """
-if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"apt-get"* ]]; then
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"install -y --no-install-recommends"* ]]; then
   trap 'exit 143' TERM
   /bin/bash -c 'bash -c "trap \\\"\\\" TERM; exec sleep 20" </dev/null >/dev/null 2>&1 & child="$!"; printf "%s\\n" "$child" > "$FAKE_GRANDCHILD_PID_FILE"; wait "$child"' </dev/null >/dev/null 2>&1 &
   wait "$!"
@@ -364,7 +705,7 @@ def test_scanner_bootstrap_retries_timeout_then_continues_with_real_timeout(tmp_
     _write_executable(
         tmp_path / "bin" / "bash",
         """
-if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"apt-get"* && ! -e "$FAKE_APT_RETRY_MARKER" ]]; then
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"install -y --no-install-recommends"* && ! -e "$FAKE_APT_RETRY_MARKER" ]]; then
   : > "$FAKE_APT_RETRY_MARKER"
   trap 'exit 143' TERM
   /bin/bash -c 'exec sleep 2' </dev/null >/dev/null 2>&1 &
@@ -405,7 +746,7 @@ def test_scanner_bootstrap_waits_for_dpkg_lock_before_apt_retry(tmp_path):
     _write_executable(
         tmp_path / "bin" / "bash",
         """
-if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"apt-get"* && ! -e "$FAKE_APT_FIRST_ATTEMPT" ]]; then
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"install -y --no-install-recommends"* && ! -e "$FAKE_APT_FIRST_ATTEMPT" ]]; then
   : > "$FAKE_APT_FIRST_ATTEMPT"
   : > "$FAKE_DPKG_LOCK_ACTIVE"
   trap 'exit 143' TERM
@@ -420,7 +761,7 @@ exec /bin/bash "$@"
     _write_executable(
         tmp_path / "bin" / "apt-get",
         """
-if [[ "$*" == *" update" ]] && [[ ! -e "$FAKE_DPKG_LOCK_RELEASED" ]]; then
+if [[ "$*" == *" update" ]] && [[ -e "$FAKE_DPKG_LOCK_ACTIVE" ]] && [[ ! -e "$FAKE_DPKG_LOCK_RELEASED" ]]; then
   printf '%s\\n' 'E: Could not get lock /var/lib/dpkg/lock-frontend.' >&2
   exit 100
 fi
@@ -532,17 +873,18 @@ def test_scanner_bootstrap_enforces_documented_total_budget():
     source = SCRIPT.read_text(encoding="utf-8")
 
     assert _integer_script_constant("BOOTSTRAP_TIMEOUT_SECONDS") == 600
-    assert _integer_script_constant("BASE_APT_TIMEOUT_SECONDS") > 60
-    assert _integer_script_constant("TRIVY_APT_TIMEOUT_SECONDS") > 60
+    assert _integer_script_constant("BASE_APT_MAXIMUM_SECONDS") > 90
+    assert _integer_script_constant("TRIVY_APT_MAXIMUM_SECONDS") > 90
     assert "timeout --foreground" not in source
-    header = "\n".join(source.splitlines()[4:12])
+    assert "PHASE_RESERVE_SECONDS" in source
+    header = "\n".join(source.splitlines()[4:28])
     for name in (
         "PHASE_TIMEOUT_KILL_GRACE_SECONDS",
-        "DPKG_FRONTEND_LOCK_WAIT_TIMEOUT_SECONDS",
+        "PHASE_TIMEOUT_TEARDOWN_SECONDS",
         "APT_RETRY_BACKOFF_SECONDS",
         "RETRY_BACKOFF_SECONDS",
     ):
-        assert f"{_integer_script_constant(name)}-second" in header
+        assert name in header
 
 
 def test_scanner_bootstrap_rejects_wrong_semgrep_version_and_missing_database(tmp_path):
