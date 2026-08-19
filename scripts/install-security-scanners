@@ -6,7 +6,9 @@ set -Eeuo pipefail
 # the calling workflow's unchanged twelve-minute step cap. Each phase draws
 # from time that remains after reserving the declared minimums and teardown
 # margins for the phases still required on a cold path. That lets a slow APT
-# phase consume unused bootstrap time without starving later required work.
+# phase consume unused bootstrap time without starving later required work. A
+# retryable phase splits its available time across its remaining attempts, so a
+# full-length first attempt cannot consume its retry's useful allocation.
 BOOTSTRAP_TIMEOUT_SECONDS=600
 CLOCK_BOUNDARY_GUARD_SECONDS=1
 NETWORK_ATTEMPTS=2
@@ -22,6 +24,8 @@ BUDGET_EXHAUSTED_STATUS=125
 # earlier work was fast. Every phase in PHASE_ORDER has both declarations.
 WAIT_FOR_DPKG_FRONTEND_LOCK_MINIMUM_SECONDS=15
 WAIT_FOR_DPKG_FRONTEND_LOCK_MAXIMUM_SECONDS=15
+BASE_INDEX_MINIMUM_SECONDS=30
+BASE_INDEX_MAXIMUM_SECONDS=240
 BASE_APT_MINIMUM_SECONDS=30
 BASE_APT_MAXIMUM_SECONDS=240
 KEY_DOWNLOAD_MINIMUM_SECONDS=15
@@ -54,6 +58,8 @@ CLAMAV_DATABASE_VERIFICATION_MINIMUM_SECONDS=5
 CLAMAV_DATABASE_VERIFICATION_MAXIMUM_SECONDS=30
 
 declare -a PHASE_ORDER=(
+  "wait-dpkg-before-base-index"
+  "refresh-base-package-index"
   "wait-dpkg-before-base"
   "install-base-packages"
   "download-trivy-signing-key"
@@ -73,6 +79,8 @@ declare -a PHASE_ORDER=(
   "verify-clamav-database"
 )
 declare -A PHASE_MINIMUM_SECONDS=(
+  ["wait-dpkg-before-base-index"]="$WAIT_FOR_DPKG_FRONTEND_LOCK_MINIMUM_SECONDS"
+  ["refresh-base-package-index"]="$BASE_INDEX_MINIMUM_SECONDS"
   ["wait-dpkg-before-base"]="$WAIT_FOR_DPKG_FRONTEND_LOCK_MINIMUM_SECONDS"
   ["install-base-packages"]="$BASE_APT_MINIMUM_SECONDS"
   ["download-trivy-signing-key"]="$KEY_DOWNLOAD_MINIMUM_SECONDS"
@@ -92,6 +100,8 @@ declare -A PHASE_MINIMUM_SECONDS=(
   ["verify-clamav-database"]="$CLAMAV_DATABASE_VERIFICATION_MINIMUM_SECONDS"
 )
 declare -A PHASE_MAXIMUM_SECONDS=(
+  ["wait-dpkg-before-base-index"]="$WAIT_FOR_DPKG_FRONTEND_LOCK_MAXIMUM_SECONDS"
+  ["refresh-base-package-index"]="$BASE_INDEX_MAXIMUM_SECONDS"
   ["wait-dpkg-before-base"]="$WAIT_FOR_DPKG_FRONTEND_LOCK_MAXIMUM_SECONDS"
   ["install-base-packages"]="$BASE_APT_MAXIMUM_SECONDS"
   ["download-trivy-signing-key"]="$KEY_DOWNLOAD_MAXIMUM_SECONDS"
@@ -170,11 +180,18 @@ validate_phase_budget_table() {
 allocated_phase_timeout_seconds() {
   local phase_id="$1"
   local remaining_seconds="$2"
+  local attempts_remaining="$3"
   local minimum_seconds="${PHASE_MINIMUM_SECONDS[$phase_id]}"
   local maximum_seconds="${PHASE_MAXIMUM_SECONDS[$phase_id]}"
   local reserve_seconds="${PHASE_RESERVE_SECONDS[$phase_id]}"
   local allocated_seconds=$((remaining_seconds - reserve_seconds - PHASE_TIMEOUT_TEARDOWN_SECONDS))
 
+  if (( attempts_remaining < 1 )); then
+    printf 'invalid scanner phase attempt count: phase=%s attempts-remaining=%s\n' \
+      "$phase_id" "$attempts_remaining" >&2
+    return 1
+  fi
+  allocated_seconds=$((allocated_seconds / attempts_remaining))
   if (( allocated_seconds < minimum_seconds )); then
     return "$BUDGET_EXHAUSTED_STATUS"
   fi
@@ -211,18 +228,20 @@ retry_backoff() {
 phase_run() {
   local phase_id="$1"
   local phase="$2"
-  shift 2
+  local attempts_remaining="$3"
+  shift 3
   local started ended status remaining_seconds
   started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   remaining_seconds="$(remaining_bootstrap_seconds)"
   local timeout_seconds
-  if ! timeout_seconds="$(allocated_phase_timeout_seconds "$phase_id" "$remaining_seconds")"; then
+  if ! timeout_seconds="$(allocated_phase_timeout_seconds \
+    "$phase_id" "$remaining_seconds" "$attempts_remaining")"; then
     status="$BUDGET_EXHAUSTED_STATUS"
     printf 'phase=%s start=%s status=%s\n' "$phase" "$started" "$status"
   else
-    printf 'phase=%s start=%s timeout=%ss remaining=%ss reserve=%ss\n' \
+    printf 'phase=%s start=%s timeout=%ss remaining=%ss reserve=%ss attempts-remaining=%s\n' \
       "$phase" "$started" "$timeout_seconds" "$remaining_seconds" \
-      "${PHASE_RESERVE_SECONDS[$phase_id]}"
+      "${PHASE_RESERVE_SECONDS[$phase_id]}" "$attempts_remaining"
     set +e
     timeout --kill-after="$PHASE_TIMEOUT_TEARDOWN_SECONDS"s "$timeout_seconds" \
       bash -c '
@@ -261,7 +280,7 @@ require_phase() {
   local phase_id="$1"
   local phase="$2"
   shift 2
-  phase_run "$phase_id" "$phase" "$@" || exit $?
+  phase_run "$phase_id" "$phase" 1 "$@" || exit $?
 }
 
 retry_phase() {
@@ -270,7 +289,7 @@ retry_phase() {
   shift 2
   local attempt status=1
   for (( attempt = 1; attempt <= NETWORK_ATTEMPTS; attempt++ )); do
-    if phase_run "$phase_id" "$phase" "$@"; then
+    if phase_run "$phase_id" "$phase" "$((NETWORK_ATTEMPTS - attempt + 1))" "$@"; then
       return 0
     else
       status=$?
@@ -296,7 +315,7 @@ require_retry_phase() {
 
 wait_for_dpkg_frontend_lock() {
   local phase_id="$1"
-  phase_run "$phase_id" "wait for dpkg frontend lock ($DPKG_FRONTEND_LOCK_PATH)" \
+  phase_run "$phase_id" "wait for dpkg frontend lock ($DPKG_FRONTEND_LOCK_PATH)" 1 \
     bash -c '
       lock_path="$1"
       poll_seconds="$2"
@@ -329,7 +348,7 @@ retry_apt_phase() {
   local attempt status=1
   for (( attempt = 1; attempt <= NETWORK_ATTEMPTS; attempt++ )); do
     wait_for_dpkg_frontend_lock "$lock_phase_id" || return $?
-    if phase_run "$phase_id" "$phase" "$@"; then
+    if phase_run "$phase_id" "$phase" "$((NETWORK_ATTEMPTS - attempt + 1))" "$@"; then
       return 0
     else
       status=$?
@@ -370,13 +389,16 @@ for package in "${base_packages[@]}"; do
   fi
 done
 
+require_retry_apt_phase \
+  "wait-dpkg-before-base-index" "refresh-base-package-index" "refresh base package index" \
+  sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 update
+
 if (( ${#missing_base_packages[@]} == 0 )); then
   printf 'phase=install base packages outcome=skipped reason=all-packages-present status=0\n'
 else
   require_retry_apt_phase \
     "wait-dpkg-before-base" "install-base-packages" "install base packages" \
     bash -o pipefail -c '
-      sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 update
       sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 install -y --no-install-recommends "$@"
     ' -- "${missing_base_packages[@]}"
 fi
@@ -430,7 +452,7 @@ require_phase "verify-semgrep-version" "verify Semgrep version" \
       exit 1
     }
   '
-if ! phase_run "stop-clamav-freshclam-service" "stop clamav-freshclam service" \
+if ! phase_run "stop-clamav-freshclam-service" "stop clamav-freshclam service" 1 \
   sudo -n systemctl stop clamav-freshclam; then
   printf '%s\n' 'warning: could not stop clamav-freshclam; continuing with explicit refresh' >&2
 fi

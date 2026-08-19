@@ -344,6 +344,15 @@ def test_scanner_bootstrap_long_early_phase_reserves_later_minimums(tmp_path):
     assert real_timeout, "timeout is required for this test"
     first_attempt = tmp_path / "long-apt-attempt"
     script = _script_with_tiny_allocation_budget(tmp_path)
+    script_text, replacements = re.subn(
+        r"^NETWORK_ATTEMPTS=.*$",
+        "NETWORK_ATTEMPTS=1",
+        script.read_text(encoding="utf-8"),
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert replacements == 1, "missing network attempt assignment"
+    _write_executable(script, script_text.removeprefix("#!/usr/bin/env bash\n"))
     environment = _fake_environment(tmp_path)
     _write_executable(
         tmp_path / "bin" / "timeout",
@@ -352,7 +361,7 @@ def test_scanner_bootstrap_long_early_phase_reserves_later_minimums(tmp_path):
     _write_executable(
         tmp_path / "bin" / "bash",
         """
-if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"apt-get"* && ! -e "$FAKE_LONG_APT_ATTEMPT" ]]; then
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"install -y --no-install-recommends"* && ! -e "$FAKE_LONG_APT_ATTEMPT" ]]; then
   : > "$FAKE_LONG_APT_ATTEMPT"
   exec /bin/sleep 6
 fi
@@ -400,7 +409,7 @@ def test_scanner_bootstrap_does_not_start_an_unfunded_retry(tmp_path):
     _write_executable(
         tmp_path / "bin" / "bash",
         """
-if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"apt-get"* && ! -e "$FAKE_FAILED_APT_ATTEMPT" ]]; then
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"install -y --no-install-recommends"* && ! -e "$FAKE_FAILED_APT_ATTEMPT" ]]; then
   : > "$FAKE_FAILED_APT_ATTEMPT"
   exec /bin/bash -c "sleep 6; exit 1"
 fi
@@ -422,6 +431,66 @@ exec /bin/bash "$@"
     assert "bootstrap budget exhausted" in result.stderr
 
 
+def test_scanner_bootstrap_splits_retryable_phase_budget_across_attempts(tmp_path):
+    """A timed-out first APT attempt leaves a useful allocation for its retry."""
+
+    real_timeout = shutil.which("timeout")
+    assert real_timeout, "timeout is required for this test"
+    first_attempt = tmp_path / "first-apt-attempt"
+    script = _script_with_tiny_allocation_budget(tmp_path)
+    script_text, replacements = re.subn(
+        r"^APT_RETRY_BACKOFF_SECONDS=.*$",
+        "APT_RETRY_BACKOFF_SECONDS=2",
+        script.read_text(encoding="utf-8"),
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert replacements == 1, "missing APT retry backoff assignment"
+    _write_executable(script, script_text.removeprefix("#!/usr/bin/env bash\n"))
+
+    environment = _fake_environment(tmp_path)
+    _write_executable(
+        tmp_path / "bin" / "timeout",
+        'exec "$REAL_TIMEOUT" "$@"\n',
+    )
+    _write_executable(
+        tmp_path / "bin" / "bash",
+        """
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"install -y --no-install-recommends"* && ! -e "$FAKE_FIRST_APT_ATTEMPT" ]]; then
+  : > "$FAKE_FIRST_APT_ATTEMPT"
+  exec /bin/sleep 10
+fi
+exec /bin/bash "$@"
+""",
+        interpreter="/bin/bash",
+    )
+
+    result = _run_bootstrap(
+        tmp_path,
+        script=script,
+        environment=environment
+        | {
+            "FAKE_FIRST_APT_ATTEMPT": str(first_attempt),
+            "REAL_TIMEOUT": real_timeout,
+        },
+    )
+
+    timeouts = re.findall(
+        r"^phase=install base packages start=.* timeout=(\d+)s ",
+        result.stdout,
+        re.MULTILINE,
+    )
+    assert result.returncode == 0, result.stderr
+    assert first_attempt.exists()
+    assert len(timeouts) == 2
+    assert int(timeouts[0]) < _integer_script_constant_from(
+        script, "BASE_APT_MAXIMUM_SECONDS"
+    )
+    assert int(timeouts[1]) > _integer_script_constant_from(
+        script, "BASE_APT_MINIMUM_SECONDS"
+    )
+
+
 def test_scanner_bootstrap_declares_consistent_budget_reserves(tmp_path):
     result = _run_bootstrap(tmp_path)
     match = re.search(
@@ -440,12 +509,26 @@ def test_scanner_bootstrap_skips_already_present_base_packages(tmp_path):
     result = _run_bootstrap(tmp_path, FAKE_DPKG_QUERY_STATE="installed")
 
     assert result.returncode == 0, result.stderr
-    commands = (tmp_path / "commands.log").read_text(encoding="utf-8")
+    command_lines = (tmp_path / "commands.log").read_text(encoding="utf-8").splitlines()
     assert "phase=install base packages outcome=skipped" in result.stdout
     assert not any(
-        line.startswith("apt-get ") and "clamav" in line
-        for line in commands.splitlines()
+        line.startswith("apt-get ") and "clamav" in line for line in command_lines
     )
+    full_index_updates = [
+        line
+        for line in command_lines
+        if line.startswith("apt-get ")
+        and " update" in line
+        and "Dir::Etc::sourcelist=" not in line
+    ]
+    assert full_index_updates
+    trivy_install = next(
+        index
+        for index, line in enumerate(command_lines)
+        if line.startswith("apt-get ")
+        and "install -y --no-install-recommends trivy" in line
+    )
+    assert command_lines.index(full_index_updates[0]) < trivy_install
 
 
 def test_scanner_bootstrap_refreshes_only_the_trivy_source_after_configuration(
@@ -527,7 +610,7 @@ def test_scanner_bootstrap_reaps_timeout_grandchildren_with_real_timeout(tmp_pat
     _write_executable(
         tmp_path / "bin" / "bash",
         """
-if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"apt-get"* ]]; then
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"install -y --no-install-recommends"* ]]; then
   trap 'exit 143' TERM
   /bin/bash -c 'bash -c "trap \"\" TERM; exec sleep 2" </dev/null >/dev/null 2>&1 & child="$!"; printf "%s\\n" "$child" > "$FAKE_GRANDCHILD_PID_FILE"; wait "$child"' </dev/null >/dev/null 2>&1 &
   wait "$!"
@@ -579,7 +662,7 @@ exec /bin/sleep "$@"
     _write_executable(
         tmp_path / "bin" / "bash",
         """
-if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"apt-get"* ]]; then
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"install -y --no-install-recommends"* ]]; then
   trap 'exit 143' TERM
   /bin/bash -c 'bash -c "trap \\\"\\\" TERM; exec sleep 20" </dev/null >/dev/null 2>&1 & child="$!"; printf "%s\\n" "$child" > "$FAKE_GRANDCHILD_PID_FILE"; wait "$child"' </dev/null >/dev/null 2>&1 &
   wait "$!"
@@ -622,7 +705,7 @@ def test_scanner_bootstrap_retries_timeout_then_continues_with_real_timeout(tmp_
     _write_executable(
         tmp_path / "bin" / "bash",
         """
-if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"apt-get"* && ! -e "$FAKE_APT_RETRY_MARKER" ]]; then
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"install -y --no-install-recommends"* && ! -e "$FAKE_APT_RETRY_MARKER" ]]; then
   : > "$FAKE_APT_RETRY_MARKER"
   trap 'exit 143' TERM
   /bin/bash -c 'exec sleep 2' </dev/null >/dev/null 2>&1 &
@@ -663,7 +746,7 @@ def test_scanner_bootstrap_waits_for_dpkg_lock_before_apt_retry(tmp_path):
     _write_executable(
         tmp_path / "bin" / "bash",
         """
-if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"apt-get"* && ! -e "$FAKE_APT_FIRST_ATTEMPT" ]]; then
+if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"install -y --no-install-recommends"* && ! -e "$FAKE_APT_FIRST_ATTEMPT" ]]; then
   : > "$FAKE_APT_FIRST_ATTEMPT"
   : > "$FAKE_DPKG_LOCK_ACTIVE"
   trap 'exit 143' TERM
@@ -678,7 +761,7 @@ exec /bin/bash "$@"
     _write_executable(
         tmp_path / "bin" / "apt-get",
         """
-if [[ "$*" == *" update" ]] && [[ ! -e "$FAKE_DPKG_LOCK_RELEASED" ]]; then
+if [[ "$*" == *" update" ]] && [[ -e "$FAKE_DPKG_LOCK_ACTIVE" ]] && [[ ! -e "$FAKE_DPKG_LOCK_RELEASED" ]]; then
   printf '%s\\n' 'E: Could not get lock /var/lib/dpkg/lock-frontend.' >&2
   exit 100
 fi

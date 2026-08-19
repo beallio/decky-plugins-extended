@@ -50,15 +50,17 @@ the time those sub-plans landed. The current authoritative behavior is:
 - The shared scanner bootstrap replaces three inline workflow bodies. It logs
   named bounded phases, tears down a timed-out phase's whole process group with
   a short grace period before force-killing residue, and bounds the complete
-  bootstrap to a fixed 600 seconds. Each phase allocates from time remaining
-  after reserves for later mandatory phases instead of using a fixed
-  per-phase cap. Before each retryable APT attempt it separately logs a
-  bounded wait for the dpkg frontend lock, then uses a longer APT retry
-  backoff. It skips base-package installation when local package state shows
-  nothing is missing and restricts the post-configuration Trivy index refresh
-  to the Trivy source list. This redistributes the fixed budget and reduces
-  mirror exposure; it does not make an unavailable or sufficiently slow mirror
-  reliable. It verifies Trivy's signing-key fingerprint, retries only safe
+bootstrap to a fixed 600 seconds. Each phase allocates from time remaining
+after reserves for later mandatory phases instead of using a fixed
+per-phase cap, and retryable phases split their allocation across the attempts
+still available so a full-length first attempt leaves useful time for a retry.
+Before each retryable APT attempt it separately logs a bounded wait for the
+dpkg frontend lock, then uses a longer APT retry backoff. It refreshes the
+configured package indexes even when local package state allows the
+base-package install to be skipped, and restricts the post-configuration Trivy
+index refresh to the Trivy source list. This redistributes the fixed budget and
+reduces repeat mirror exposure; it does not make an unavailable or sufficiently
+slow mirror reliable. It verifies Trivy's signing-key fingerprint, retries only safe
   APT/key-fetch work, and fails closed for ClamAV, Trivy, or exact Semgrep
   `1.132.0` setup failures. A shard that cannot install its scanners blocks
   publication.

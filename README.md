@@ -436,11 +436,13 @@ frontend lock and use a longer APT-specific backoff; the full bootstrap has a
 fixed 600-second budget below the unchanged twelve-minute setup-step cap. Each
 phase derives its timeout from the budget still available after reserving
 minimum time for later mandatory phases, rather than using a fixed per-phase
-cap. The bootstrap queries installed base packages and skips an unnecessary
-install; after configuring Trivy, its second index refresh is restricted to
-the Trivy source list. This redistributes a fixed budget and reduces mirror
-exposure; it does not guarantee a sufficiently slow or unavailable mirror will
-succeed. Retry remains limited to idempotent APT/key-fetch work, with a
+cap. A retryable phase splits that allocation across its attempts so a
+full-length first try keeps useful time for its retry. The bootstrap refreshes
+the configured package indexes even when its installed-package query lets it
+skip the base-package install; after configuring Trivy, the second index
+refresh is restricted to the Trivy source list. This redistributes a fixed
+budget and reduces repeat mirror exposure; it does not guarantee a sufficiently
+slow or unavailable mirror will succeed. Retry remains limited to idempotent APT/key-fetch work, with a
 verified Trivy signing-key fingerprint and hard ClamAV, Trivy, and exact
 Semgrep `1.132.0` checks. A shard that cannot install its scanners fails closed
 and blocks publication.
