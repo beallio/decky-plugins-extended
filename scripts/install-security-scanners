@@ -446,11 +446,15 @@ else
           exit 0
         fi
         if grep -Fq "Hash Sum mismatch" "$apt_output"; then
-          # A cached archive with bytes that do not match the signed package
-          # index is untrusted input. Never turn that into a mirror fallback.
-          exit "$warm_status"
+          printf "base package cache verification failed; discarding cached archives before cold install:\n" >&2
+        else
+          printf "base package cache warm install failed; discarding cached archives before cold install:\n" >&2
         fi
-        printf "base package cache was incomplete; falling back to a cold install\n" >&2
+        # APT rejected the warm archives before installation. Remove every
+        # restored archive so the cold path obtains and verifies replacements
+        # against the signed package index rather than reusing this cache.
+        printf "base package cache discard=%s\n" "$archive_dir"/*.deb >&2
+        rm -f -- "$archive_dir"/*.deb
       fi
 
       run_apt_install 2>&1 | tee "$apt_output"

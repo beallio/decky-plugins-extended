@@ -675,14 +675,14 @@ def test_scanner_bootstrap_cold_cache_downloads_and_preserves_base_archive(tmp_p
     assert "cache-download" in commands
 
 
-def test_scanner_bootstrap_rejects_tampered_cached_base_package_before_install(
+def test_scanner_bootstrap_discards_tampered_cached_base_package_before_cold_install(
     tmp_path,
 ):
     archive_dir = tmp_path / "apt-archives"
     archive_dir.mkdir()
     archive = archive_dir / "fake-clamav_1.0_all.deb"
     archive.write_text("tampered archive bytes", encoding="utf-8")
-    install_marker = tmp_path / "must-not-be-installed"
+    install_marker = tmp_path / "installed-after-cache-discard"
     environment = _fake_environment(
         tmp_path,
         FAKE_APT_PACKAGE_CACHE="1",
@@ -693,10 +693,16 @@ def test_scanner_bootstrap_rejects_tampered_cached_base_package_before_install(
     result = _run_bootstrap(tmp_path, environment=environment)
 
     assert archive.exists(), "the integrity case must exercise a present archive"
-    assert result.returncode != 0
+    assert result.returncode == 0, result.stderr
     assert "Hash Sum mismatch for cached archive" in result.stdout + result.stderr
-    assert "phase=install base packages status=100 failed" in result.stderr
-    assert not install_marker.exists()
+    assert (
+        "base package cache verification failed; discarding cached archives"
+        in result.stderr
+    )
+    assert str(archive) in result.stderr
+    assert install_marker.exists()
+    assert archive.read_text(encoding="utf-8") == "signed-indexed-archive"
+    assert "cache=cold downloaded=true" in result.stdout
     assert "dpkg -i" not in SCRIPT.read_text(encoding="utf-8")
 
 
