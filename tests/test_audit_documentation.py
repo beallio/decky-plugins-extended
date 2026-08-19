@@ -349,10 +349,29 @@ def test_source_inventory_proof_is_complete_and_self_consistent():
 def test_current_gating_overview_supersedes_historical_rollout_text():
     overview = OVERVIEW_PATH.read_text(encoding="utf-8")
 
-    assert "Current implementation state (2026-08-08)" in overview
+    assert "Current implementation state (2026-08-18)" in overview
     assert "supported but inactive" in overview
-    assert "fourteen disjoint shards" in overview
+    assert "fourteen disjoint API-free shard workers" in overview
     assert "Safe sibling outputs publish before exit 4" in overview
+
+
+def test_current_docs_describe_the_quota_safe_worklist_data_plane():
+    readme = README_PATH.read_text(encoding="utf-8")
+    overview = OVERVIEW_PATH.read_text(encoding="utf-8")
+
+    for text in (readme, overview):
+        for required_statement in (
+            "immutable run-global worklist",
+            "API-free shard",
+            "exact coverage",
+            "codeload",
+            "eight-minute",
+            "shared scanner bootstrap",
+            "hosted-runner quota behavior",
+        ):
+            assert required_statement in text
+
+    assert "Fourteen shards repeat the 83-request baseline enumeration" not in readme
 
 
 def test_capacity_contract_uses_fourteen_shard_projection_and_preserves_blocker():

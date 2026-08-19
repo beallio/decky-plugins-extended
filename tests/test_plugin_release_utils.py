@@ -255,13 +255,23 @@ def test_normalize_github_sha256_digest_rejects_malformed_values(value):
 
 class _FakeResponse:
     def __init__(
-        self, *, payload=None, links=None, headers=None, chunks=(), error=None
+        self,
+        *,
+        payload=None,
+        links=None,
+        headers=None,
+        chunks=(),
+        error=None,
+        status_code=200,
+        text="",
     ):
         self._payload = payload
         self.links = links or {}
         self.headers = headers or {}
         self._chunks = chunks
         self._error = error
+        self.status_code = status_code
+        self.text = text
         self.iterated = False
         self.closed = False
         self.requested_chunk_size = None
@@ -293,6 +303,24 @@ class _FakeSession:
     def get(self, url, **kwargs):
         self.calls.append((url, kwargs))
         return next(self._responses)
+
+
+class _BudgetClock:
+    def __init__(self, *, monotonic=0.0, wall_time=1_000.0):
+        self.monotonic_value = monotonic
+        self.wall_time_value = wall_time
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.monotonic_value
+
+    def wall_time(self):
+        return self.wall_time_value
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.monotonic_value += seconds
+        self.wall_time_value += seconds
 
 
 def test_get_releases_consumes_every_pagination_link():
@@ -331,6 +359,128 @@ def test_get_releases_rejects_a_repeated_next_link():
 
     with pytest.raises(pru.ReleasePaginationError, match="cyclic"):
         pru.get_releases("owner", "repo", session=_FakeSession([first, second]))
+
+
+def test_api_budget_retries_a_rate_limit_reset_that_fits_and_closes_response():
+    clock = _BudgetClock()
+    limited = _FakeResponse(
+        status_code=429,
+        headers={"X-RateLimit-Reset": "1003"},
+        text="API rate limit exceeded",
+    )
+    success = _FakeResponse(payload=[])
+    session = _FakeSession([limited, success])
+    budget = pru.ApiRequestBudget(
+        10,
+        monotonic=clock.monotonic,
+        wall_time=clock.wall_time,
+        sleep=clock.sleep,
+    )
+
+    assert pru.get_releases("owner", "repo", session=session, api_budget=budget) == []
+    assert clock.sleeps == [3]
+    assert limited.closed and success.closed
+    assert session.calls[0][1]["timeout"] == 10
+    assert session.calls[1][1]["timeout"] == 7
+
+
+def test_api_budget_rejects_a_rate_limit_wait_that_exceeds_deadline_without_sleeping():
+    clock = _BudgetClock()
+    limited = _FakeResponse(
+        status_code=403,
+        headers={"Retry-After": "11"},
+        text="secondary rate limit",
+    )
+    budget = pru.ApiRequestBudget(
+        10,
+        monotonic=clock.monotonic,
+        wall_time=clock.wall_time,
+        sleep=clock.sleep,
+    )
+
+    with pytest.raises(pru.ApiDeadlineExceeded, match="remaining API deadline"):
+        pru.get_releases(
+            "owner", "repo", session=_FakeSession([limited]), api_budget=budget
+        )
+
+    assert clock.sleeps == []
+    assert limited.closed
+
+
+def test_api_budget_uses_a_bounded_fallback_for_malformed_rate_limit_headers():
+    clock = _BudgetClock()
+    limited = _FakeResponse(
+        status_code=429,
+        headers={"Retry-After": "later", "X-RateLimit-Reset": "not-a-time"},
+        text="rate limit",
+    )
+    budget = pru.ApiRequestBudget(
+        30,
+        monotonic=clock.monotonic,
+        wall_time=clock.wall_time,
+        sleep=clock.sleep,
+    )
+
+    with pytest.raises(pru.ApiDeadlineExceeded, match="remaining API deadline"):
+        pru.get_releases(
+            "owner", "repo", session=_FakeSession([limited]), api_budget=budget
+        )
+
+    assert clock.sleeps == []
+    assert limited.closed
+
+
+def test_api_budget_shares_one_deadline_across_release_pagination():
+    clock = _BudgetClock()
+    second_url = "https://api.github.com/repos/owner/repo/releases?page=2"
+    first = _FakeResponse(payload=[{"id": 1}], links={"next": {"url": second_url}})
+    second = _FakeResponse(payload=[{"id": 2}])
+
+    class _TimingSession(_FakeSession):
+        def get(self, url, **kwargs):
+            response = super().get(url, **kwargs)
+            clock.monotonic_value += 2
+            return response
+
+    session = _TimingSession([first, second])
+    budget = pru.ApiRequestBudget(
+        5,
+        monotonic=clock.monotonic,
+        wall_time=clock.wall_time,
+        sleep=clock.sleep,
+    )
+
+    assert pru.get_releases("owner", "repo", session=session, api_budget=budget) == [
+        {"id": 1},
+        {"id": 2},
+    ]
+    assert session.calls[0][1]["timeout"] == 5
+    assert session.calls[1][1]["timeout"] == 3
+    assert first.closed and second.closed
+
+
+def test_api_budget_exhausts_normal_retries_without_leaking_responses():
+    clock = _BudgetClock()
+    first = _FakeResponse(error=RuntimeError("transient API failure"))
+    second = _FakeResponse(error=RuntimeError("persistent API failure"))
+    budget = pru.ApiRequestBudget(
+        10,
+        monotonic=clock.monotonic,
+        wall_time=clock.wall_time,
+        sleep=clock.sleep,
+        max_retries=1,
+    )
+
+    with pytest.raises(pru.ReleasePaginationError, match="page 1"):
+        pru.get_releases(
+            "owner",
+            "repo",
+            session=_FakeSession([first, second]),
+            api_budget=budget,
+        )
+
+    assert clock.sleeps == [1]
+    assert first.closed and second.closed
 
 
 def test_download_policy_defaults_are_explicit_and_validated():
@@ -498,6 +648,7 @@ def test_bounded_stream_download_rejects_unknown_kind_without_request(tmp_path):
         "uv.lock",
         "tests/test_catalog_gate.py",
         "scripts/orchestration/run-quality-gates",
+        "scripts/install-security-scanners",
         ".github/workflows/plugin-security-audit.yml",
         ".github/workflows/scheduled-security-audit.yml",
         ".github/workflows/future-audit-contract.yml",
