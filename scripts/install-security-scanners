@@ -104,14 +104,13 @@ require_phase "dearmor Trivy signing key" "$KEY_INSTALL_TIMEOUT_SECONDS" \
   gpg --dearmor --yes --output "$trivy_keyring" "$trivy_key"
 require_phase "install Trivy signing key" "$KEY_INSTALL_TIMEOUT_SECONDS" \
   sudo -n install -m 0644 "$trivy_keyring" "$TRIVY_KEYRING_PATH"
-export TRIVY_SOURCE_LIST_PATH
 require_phase "configure Trivy repository" "$VERIFY_TIMEOUT_SECONDS" \
   bash -o pipefail -c '
     distro="$(lsb_release -sc)"
-    [[ -n "$distro" ]]
-    printf "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb %s main\\n" "$distro" \
-      | sudo -n tee "$TRIVY_SOURCE_LIST_PATH" > /dev/null
-  '
+    [[ -n "$distro" ]] || exit 1
+    printf "deb [signed-by=%s] https://aquasecurity.github.io/trivy-repo/deb %s main\\n" "$1" "$distro" \
+      | sudo -n tee "$2" > /dev/null
+  ' -- "$TRIVY_KEYRING_PATH" "$TRIVY_SOURCE_LIST_PATH"
 require_retry_phase "install Trivy" "$TRIVY_APT_TIMEOUT_SECONDS" \
   bash -o pipefail -c '
     sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 update
@@ -143,4 +142,5 @@ if ! phase_run "stop clamav-freshclam service" "$SERVICE_STOP_TIMEOUT_SECONDS" \
 fi
 require_phase "refresh ClamAV database" "$FRESHCLAM_TIMEOUT_SECONDS" sudo -n freshclam
 require_phase "verify ClamAV version" "$VERIFY_TIMEOUT_SECONDS" clamscan --version
-require_phase "verify ClamAV database" "$VERIFY_TIMEOUT_SECONDS" ls "$CLAMAV_DB_GLOB"
+require_phase "verify ClamAV database" "$VERIFY_TIMEOUT_SECONDS" \
+  bash -c 'compgen -G "$1" > /dev/null' -- "$CLAMAV_DB_GLOB"

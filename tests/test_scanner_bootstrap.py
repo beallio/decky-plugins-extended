@@ -101,17 +101,13 @@ fi
         "clamscan",
         "lsb_release",
     ):
+        output = f'printf \'%s\\n\' "{name} $*" >> "$FAKE_COMMAND_LOG"\n'
+        if name == "lsb_release":
+            output += "printf '%s\\n' 'jammy'\n"
         _write_executable(
             bin_dir / name,
-            f'printf \'%s\\n\' "{name} $*" >> "$FAKE_COMMAND_LOG"\n',
+            output,
         )
-    _write_executable(
-        bin_dir / "ls",
-        """
-[[ "${FAKE_CLAMAV_DB_MISSING:-0}" == 0 ]] || exit 2
-printf '%s\\n' "$*" >> "$FAKE_COMMAND_LOG"
-""",
-    )
     _write_executable(
         bin_dir / "install",
         'source="${@: -2:1}"\ndestination="${@: -1}"\ncp "$source" "$destination"\n',
@@ -124,9 +120,11 @@ printf '%s\\n' "$*" >> "$FAKE_COMMAND_LOG"
         "GITHUB_PATH": str(tmp_path / "github-path"),
         "TRIVY_KEYRING_PATH": str(tmp_path / "trivy.gpg"),
         "TRIVY_SOURCE_LIST_PATH": str(tmp_path / "trivy.list"),
-        "CLAMAV_DB_GLOB": str(clamav_db),
+        "CLAMAV_DB_GLOB": str(clamav_db.parent / "*.c?d"),
     }
     environment.update(overrides)
+    if overrides.get("FAKE_CLAMAV_DB_MISSING") == "1":
+        clamav_db.unlink()
     return environment
 
 
@@ -151,6 +149,9 @@ def test_scanner_bootstrap_happy_path(tmp_path):
     assert "phase=install base packages start=" in result.stdout
     assert "phase=verify Semgrep version end=" in result.stdout
     assert (tmp_path / "github-path").read_text(encoding="utf-8").strip()
+    assert f"signed-by={tmp_path / 'trivy.gpg'}" in (tmp_path / "trivy.list").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_scanner_bootstrap_timeout_fails_named_phase(tmp_path):
