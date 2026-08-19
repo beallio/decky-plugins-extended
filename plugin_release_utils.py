@@ -14,12 +14,13 @@ import os
 import re
 import sys
 import tempfile
+import time
 import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import unquote, urlsplit
 
 # ---------------------------------------------------------------------------
@@ -32,6 +33,154 @@ _GITHUB_SHA256_DIGEST = re.compile(r"sha256:([0-9a-fA-F]{64})")
 
 class ReleasePaginationError(RuntimeError):
     """A repository's complete GitHub release history could not be loaded."""
+
+
+class ApiDeadlineExceeded(RuntimeError):
+    """A producer request cannot complete within its shared API deadline."""
+
+
+class ApiRequestBudget:
+    """One monotonic deadline shared by every producer GitHub API request.
+
+    Retry-After takes precedence when GitHub supplies it.  Otherwise a valid
+    X-RateLimit-Reset value is converted from wall-clock time; malformed or
+    absent rate-limit headers use the documented 60-second fallback.  Every
+    request timeout, retry backoff, and rate-limit wait is clipped to this one
+    budget, so a worker cannot sleep past its surrounding Actions deadline.
+    """
+
+    malformed_rate_limit_fallback_seconds = 60.0
+
+    def __init__(
+        self,
+        deadline_seconds: float,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+        wall_time: Callable[[], float] = time.time,
+        sleep: Callable[[float], None] = time.sleep,
+        max_retries: int = 3,
+    ) -> None:
+        if (
+            isinstance(deadline_seconds, bool)
+            or not isinstance(deadline_seconds, (int, float))
+            or deadline_seconds <= 0
+        ):
+            raise ValueError("API deadline must be greater than zero")
+        if isinstance(max_retries, bool) or not isinstance(max_retries, int):
+            raise ValueError("max_retries must be a non-negative integer")
+        if max_retries < 0:
+            raise ValueError("max_retries must be a non-negative integer")
+        self._monotonic = monotonic
+        self._wall_time = wall_time
+        self._sleep = sleep
+        self._deadline = monotonic() + float(deadline_seconds)
+        self.max_retries = max_retries
+
+    def remaining_seconds(self) -> float:
+        return self._deadline - self._monotonic()
+
+    def _require_remaining(self, action: str) -> float:
+        remaining = self.remaining_seconds()
+        if remaining <= 0:
+            raise ApiDeadlineExceeded(f"Cannot {action}: no remaining API deadline")
+        return remaining
+
+    def clip_timeout(self, timeout: int | float | tuple[float, float]):
+        """Clip a request's connect/read timeout to the remaining budget."""
+        remaining = self._require_remaining("start GitHub API request")
+        if isinstance(timeout, tuple):
+            if len(timeout) != 2:
+                raise ValueError(
+                    "API timeout tuple must contain connect and read values"
+                )
+            return tuple(min(float(value), remaining) for value in timeout)
+        return min(float(timeout), remaining)
+
+    def sleep_within_budget(self, seconds: float, reason: str) -> None:
+        if seconds < 0:
+            raise ValueError("API retry delay must not be negative")
+        remaining = self._require_remaining(reason)
+        if seconds > remaining:
+            raise ApiDeadlineExceeded(
+                f"Cannot {reason}: {seconds:g}s wait exceeds the remaining API deadline "
+                f"({remaining:.3f}s)"
+            )
+        self._sleep(seconds)
+
+    def _rate_limit_wait(self, headers: Any) -> float:
+        if isinstance(headers, Mapping):
+            retry_after = headers.get("Retry-After")
+            if isinstance(retry_after, str):
+                try:
+                    parsed_retry_after = float(retry_after)
+                except ValueError:
+                    parsed_retry_after = None
+                if parsed_retry_after is not None and parsed_retry_after >= 0:
+                    return parsed_retry_after
+
+            reset = headers.get("X-RateLimit-Reset")
+            if isinstance(reset, str):
+                try:
+                    return max(0.0, float(reset) - self._wall_time())
+                except ValueError:
+                    pass
+        return self.malformed_rate_limit_fallback_seconds
+
+    @staticmethod
+    def _is_rate_limited(response: Any) -> bool:
+        status = getattr(response, "status_code", None)
+        text = getattr(response, "text", "")
+        return status == 429 or (
+            status == 403 and isinstance(text, str) and "rate limit" in text.lower()
+        )
+
+    @staticmethod
+    def _close_response(response: Any) -> None:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+
+    def get_response(
+        self,
+        session: Any,
+        url: str,
+        *,
+        timeout: int | float | tuple[float, float],
+        params: Optional[dict[str, Any]] = None,
+    ) -> Any:
+        """Fetch one API response, closing every discarded retry response."""
+        last_error: Optional[BaseException] = None
+        for attempt in range(self.max_retries + 1):
+            response = None
+            try:
+                kwargs: dict[str, Any] = {"timeout": self.clip_timeout(timeout)}
+                if params is not None:
+                    kwargs["params"] = params
+                response = session.get(url, **kwargs)
+                if self._is_rate_limited(response):
+                    wait = self._rate_limit_wait(getattr(response, "headers", {}))
+                    self._close_response(response)
+                    response = None
+                    if attempt == self.max_retries:
+                        raise ApiDeadlineExceeded(
+                            "GitHub API rate limit persisted through the bounded retry budget"
+                        )
+                    self.sleep_within_budget(wait, "wait for GitHub API rate limit")
+                    continue
+                response.raise_for_status()
+                return response
+            except ApiDeadlineExceeded:
+                if response is not None:
+                    self._close_response(response)
+                raise
+            except Exception as exc:
+                last_error = exc
+                if response is not None:
+                    self._close_response(response)
+                if attempt == self.max_retries:
+                    raise
+                self.sleep_within_budget(2**attempt, "retry GitHub API request")
+        raise RuntimeError(f"GitHub API retry loop exhausted: {last_error}")
 
 
 def _parse_github_repository_atoms(
@@ -68,6 +217,7 @@ def get_releases(
     *,
     session: Any,
     timeout: int | tuple[int, int] = 10,
+    api_budget: Optional[ApiRequestBudget] = None,
 ) -> list[dict[str, Any]]:
     """Fetch every GitHub release page using an injected HTTP transport.
 
@@ -94,8 +244,15 @@ def get_releases(
         page_number += 1
         response = None
         try:
-            response = session.get(next_url, timeout=timeout)
-            response.raise_for_status()
+            if api_budget is None:
+                response = session.get(next_url, timeout=timeout)
+                response.raise_for_status()
+            else:
+                response = api_budget.get_response(
+                    session,
+                    next_url,
+                    timeout=timeout,
+                )
             page = response.json()
             if not isinstance(page, list) or not all(
                 isinstance(release, dict) for release in page
@@ -126,7 +283,7 @@ def get_releases(
                         "GitHub release pagination is cyclic for "
                         f"{canonical_owner}/{canonical_repo}"
                     )
-        except ReleasePaginationError:
+        except (ApiDeadlineExceeded, ReleasePaginationError):
             raise
         except Exception as exc:
             raise ReleasePaginationError(
@@ -487,6 +644,7 @@ _FULL_AUDIT_PATHS = frozenset(
         "pyproject.toml",
         "uv.lock",
         "scripts/orchestration/run-quality-gates",
+        "scripts/install-security-scanners",
         ".github/workflows/plugin-security-audit.yml",
         ".github/workflows/scheduled-security-audit.yml",
     }

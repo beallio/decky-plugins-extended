@@ -3,6 +3,7 @@ import json
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -50,10 +51,16 @@ def _configure_successful_audit(monkeypatch, zip_data: bytes) -> None:
     monkeypatch.setattr(
         ap,
         "_resolve_ref_to_commit_and_tree_sha",
-        lambda _owner, _repo, ref: (f"commit-{ref}", f"tree-{ref}", None),
+        lambda _owner, _repo, _ref: ("a" * 40, "tree-000", None),
     )
     monkeypatch.setattr(ap, "get_repo_metadata", lambda *_args: {"archived": False})
-    monkeypatch.setattr(ap, "get_repo_file_raw", lambda *_args: None)
+    monkeypatch.setattr(
+        ap.audit_source_snapshot,
+        "materialize_source_snapshot",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            source_root="/", plugin_json=None, package_json=None
+        ),
+    )
 
     def download(_url: str, destination: str, policy=None) -> str:
         del policy
@@ -81,7 +88,7 @@ def _configure_successful_audit(monkeypatch, zip_data: bytes) -> None:
     )
     monkeypatch.setattr(
         ap,
-        "compare_source_and_artifact",
+        "compare_source_and_artifact_from_snapshot",
         lambda *_args: (
             {"checked": True},
             [],
@@ -298,7 +305,7 @@ def test_archive_inspection_oserror_returns_identity_complete_audit_error(
     assert report.asset_id == "1"
     assert report.artifact_url == "https://example.com/v1.0.0.zip"
     assert report.artifact_sha256 == hashlib.sha256(_zip_bytes()).hexdigest()
-    assert report.resolved_tag_commit_sha == "commit-v1.0.0"
+    assert report.resolved_tag_commit_sha == "a" * 40
     assert report.audit_context_hash
     assert report.identity_status == "CURRENT"
     assert report.scanner_statuses == [
@@ -374,7 +381,6 @@ def test_bounded_release_failure_preserves_cache_and_verdict_bytes(
         lambda _owner, _repo, ref: (f"commit-{ref}", f"tree-{ref}", None),
     )
     monkeypatch.setattr(ap, "get_repo_metadata", lambda *_args: {"archived": False})
-    monkeypatch.setattr(ap, "get_repo_file_raw", lambda *_args: None)
     monkeypatch.setattr(ap._gh_session, "get", lambda *_args, **_kwargs: response)
     monkeypatch.setattr(ap.tempfile, "mkdtemp", lambda **_kwargs: str(audit_tmp))
     for downstream in ("inspect_zip", "run_clamav", "run_trivy", "run_semgrep"):

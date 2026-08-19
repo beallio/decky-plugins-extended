@@ -391,20 +391,51 @@ build or install step compromises the CI runner.
 
 `scheduled-security-audit.yml` runs every six hours and audits every eligible
 stable or prerelease release of every configured repository in fourteen isolated,
-deterministic shards, then rejects duplicate identities while aggregating their
-reports and verdict deltas. Its workflow cache covers policy, allowlist,
-Semgrep rules, implementation, and dependency inputs; runtime database
-freshness decides whether report-cache reuse is safe. It never modifies the
-allowlist or automatically approves a finding.
+deterministic shards. Each run starts with one immutable run-global worklist:
+the preparation job alone enumerates repositories/releases and resolves source
+commits, validates a fingerprinted canonical JSON snapshot, and uploads it only
+for that run. The fourteen workers download that exact snapshot and are an
+API-free shard data plane: they receive no GitHub credential and do not repeat
+repository, release, ref, tree, raw-file, or source-tarball REST requests.
+
+Each worker records its assigned identities and byte bindings for its report and
+verdict delta in `shard-manifest.json`. Aggregation requires the prepared
+worklist, fourteen report/delta/manifest triples, their common fingerprint, and
+exact coverage of every assigned release identity before it writes aggregate
+evidence or updates the verdict store. A valid empty selection still supplies
+fourteen empty triples. This is deliberately stronger than counting uploaded
+artifacts.
+
+An uncached release materializes one immutable `codeload.github.com` source
+archive at its resolved commit, safely extracts it once, and shares that
+snapshot between metadata checks, Trivy, and source/artifact comparison. Cache
+eligibility is checked before source acquisition. Its workflow cache covers
+policy, allowlist, Semgrep rules, implementation, dependency inputs, and the
+shared scanner bootstrap; runtime database freshness decides whether
+report-cache reuse is safe. The workflows never modify the allowlist or
+automatically approve a finding.
+
+The producer has an eight-minute monotonic GitHub API budget inside its
+ten-minute job. Connect/read attempts, pagination, retries, and rate-limit
+waits are clipped to that deadline; an over-budget reset fails run-global
+instead of sleeping into a worker timeout. Scanner setup is one shared scanner
+bootstrap script with named, bounded phases, retry only for idempotent APT/key
+fetch work, a verified Trivy signing-key fingerprint, and hard ClamAV, Trivy,
+and exact Semgrep `1.132.0` checks. External package availability is not
+guaranteed; failure is observable and fail-closed before the unchanged
+twelve-minute setup-step cap.
 
 Production capacity is measured against the maximum fourteen-shard wall-time
 estimate, not against a sequential unsharded scan. The preserved 579-release
 snapshot assigns 30–52 releases per shard. A 161-release cold sample observed a
 14.797-second mean and 18.541-second p95 per release; including enumeration, the
 largest shard projects to 16.58 minutes at p95, leaving 5.42 minutes of headroom
-inside the PR audit step's unchanged 22-minute limit. Fourteen shards repeat the
-83-request baseline enumeration 1,162 times. Hosted-runner concurrency and API
-behavior remain deferred until a reviewed workflow run is authorized.
+inside the PR audit step's unchanged 22-minute limit. Its 83-request-per-worker,
+1,162-request repetition is historical capacity evidence for the prior design,
+not a measurement of the worklist data plane. Local tests prove topology,
+integrity, and bounded failure; hosted-runner quota behavior and resilience to
+an external scanner mirror outage remain deferred until a reviewed workflow run
+is authorized.
 
 The scheduled audit clones and scans every configured repository on each run.
 That is the principal Actions-minutes cost; widen the cron interval if the

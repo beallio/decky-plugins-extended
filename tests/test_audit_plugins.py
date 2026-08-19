@@ -10,16 +10,18 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import stat
 import sys
 import tarfile
 import tempfile
 import unittest
 import zipfile
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import requests
+import audit_source_snapshot
 
 # Ensure the module is importable
 os.environ.setdefault("GITHUB_TOKEN", "test-token")
@@ -71,6 +73,101 @@ def _make_temp_zip(data: bytes) -> str:
 def _regular(name: str, content: str | bytes = "") -> tuple[str, bytes | str, int]:
     """Helper: regular file member with no special attributes."""
     return (name, content, 0)
+
+
+def test_producer_api_budget_is_shared_by_metadata_rest_calls():
+    class Clock:
+        def __init__(self):
+            self.now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+        @staticmethod
+        def wall_time():
+            return 1_000.0
+
+        def sleep(self, seconds):
+            self.now += seconds
+
+    class Response:
+        status_code = 200
+        text = ""
+        headers = {}
+
+        def __init__(self):
+            self.closed = False
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {"full_name": "owner/repo", "archived": False}
+
+        def close(self):
+            self.closed = True
+
+    class Session:
+        def __init__(self, response):
+            self.response = response
+            self.calls = []
+
+        def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            return self.response
+
+    clock = Clock()
+    response = Response()
+    session = Session(response)
+    budget = pru.ApiRequestBudget(
+        7,
+        monotonic=clock.monotonic,
+        wall_time=clock.wall_time,
+        sleep=clock.sleep,
+    )
+    token = ap._producer_api_budget.set(budget)
+    try:
+        with patch.object(ap, "_gh_session", new=session):
+            assert ap.get_repo_metadata("owner", "repo") == {
+                "full_name": "owner/repo",
+                "archived": False,
+            }
+    finally:
+        ap._producer_api_budget.reset(token)
+
+    assert session.calls == [
+        (
+            "https://api.github.com/repos/owner/repo",
+            {"timeout": 7},
+        )
+    ]
+    assert response.closed
+
+
+def test_worker_download_session_retries_transient_http_failures():
+    """Worker artifact/codeload downloads retain the established retry policy."""
+    retry = ap._make_github_session().get_adapter("https://example.invalid").max_retries
+
+    assert retry.total == ap.MAX_RETRIES
+    assert set(retry.status_forcelist) == {429, 500, 502, 503, 504}
+    assert retry.respect_retry_after_header
+
+
+def test_producer_api_session_has_no_transport_retry_delay():
+    """Only the explicit ApiRequestBudget controls producer retry timing."""
+    with ap._producer_api_budget_scope(5):
+        retry = (
+            ap._active_github_session()
+            .get_adapter("https://api.github.com")
+            .max_retries
+        )
+
+        assert retry.total == 0
+        assert retry.connect == 0
+        assert retry.read == 0
+        assert retry.status == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1437,479 +1534,14 @@ class TestSemgrepSeverityMapping(unittest.TestCase):
         self.assertEqual(findings[0].classification, "MANUAL_REVIEW")
 
 
-class TestSourceArtifactDiff(unittest.TestCase):
-    def _policy(self, required: bool = True, enabled: bool = True) -> dict:
-        p = ap._default_policy()
-        p["scanners"]["source_artifact_diff"] = {
-            "enabled": enabled,
-            "required": required,
-        }
-        p["scanners"]["semgrep"] = {"enabled": False, "required": False}
-        return p
-
-    def _mk_extract(
-        self, files: dict[str, bytes | str], executable_paths: set[str] | None = None
-    ) -> str:
-        td = tempfile.TemporaryDirectory()
-        executable_paths = executable_paths or set()
-        for rel, content in files.items():
-            p = Path(td.name) / rel
-            p.parent.mkdir(parents=True, exist_ok=True)
-            if isinstance(content, str):
-                content = content.encode("utf-8")
-            p.write_bytes(content)
-            if rel in executable_paths:
-                p.chmod(p.stat().st_mode | stat.S_IXUSR)
-        self.addCleanup(td.cleanup)
-        return td.name
-
-    def _patch_tree(self, *, tag_type: str = "commit", truncated: bool = False):
-        def side_effect(url, params=None):
-            if "/git/ref/tags/" in url:
-                return {"object": {"type": tag_type, "sha": "sha-tag"}}
-            if "/git/tags/" in url:
-                return {"object": {"type": "commit", "sha": "sha-commit"}}
-            if "/git/commits/" in url:
-                return {"tree": {"sha": "sha-tree"}}
-            if "/git/trees/" in url:
-                return {
-                    "truncated": truncated,
-                    "tree": [{"path": "plugin/main.py"}],
-                }
-            raise AssertionError(f"Unexpected URL {url}")
-
-        return patch.object(ap, "_gh_get", side_effect=side_effect)
-
-    def test_zip_only_python_script(self):
-        extract = self._mk_extract({"plugin/extra.py": "print('x')"})
-        with self._patch_tree():
-            summary, findings, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertEqual(status.status, "found_issue")
-        self.assertIn("plugin/extra.py", summary["zip_only_scripts"])
-        self.assertIn("ZIP_ONLY_SCRIPT", {f.rule_id for f in findings})
-
-    def test_zip_only_shebang_script(self):
-        extract = self._mk_extract({"plugin/run": "#!/bin/sh\necho ok\n"})
-        with self._patch_tree():
-            summary, findings, _ = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertIn("plugin/run", summary["zip_only_scripts"])
-        self.assertIn("ZIP_ONLY_SCRIPT", {f.rule_id for f in findings})
-
-    def test_zip_only_executable_text_file(self):
-        extract = self._mk_extract(
-            {"plugin/tool": "echo hi\n"}, executable_paths={"plugin/tool"}
-        )
-        with self._patch_tree():
-            summary, findings, _ = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertIn("plugin/tool", summary["zip_only_scripts"])
-        self.assertIn("ZIP_ONLY_SCRIPT", {f.rule_id for f in findings})
-
-    def test_script_in_source_not_flagged(self):
-        extract = self._mk_extract({"plugin/main.py": "print('x')"})
-        with self._patch_tree():
-            summary, findings, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertEqual(status.status, "passed")
-        self.assertEqual(summary["zip_only_scripts"], [])
-        self.assertFalse(any(f.rule_id == "ZIP_ONLY_SCRIPT" for f in findings))
-
-    def test_modified_same_path_file_detected(self):
-        source_data = b"print('original')"
-        header = f"blob {len(source_data)}\x00".encode("ascii")
-        source_sha = hashlib.sha1(header + source_data).hexdigest()
-
-        extract = self._mk_extract({"plugin/main.py": "print('modified')"})
-
-        def side_effect(url, params=None):
-            if "/git/ref/tags/" in url:
-                return {"object": {"type": "commit", "sha": "sha-commit"}}
-            if "/git/commits/" in url:
-                return {"tree": {"sha": "sha-tree"}}
-            if "/git/trees/" in url:
-                return {
-                    "truncated": False,
-                    "tree": [
-                        {"path": "plugin/main.py", "type": "blob", "sha": source_sha}
-                    ],
-                }
-            raise AssertionError(f"Unexpected URL {url}")
-
-        with patch.object(ap, "_gh_get", side_effect=side_effect):
-            summary, findings, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertEqual(status.status, "found_issue")
-        self.assertIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
-
-    def _compare_metadata_files(
-        self, source_files, artifact_files, ref="v1.0.1-dev.gabc"
-    ):
-        extract = self._mk_extract(
-            {f"plugin/{path}": content for path, content in artifact_files.items()}
-        )
-        tree = []
-        for path, content in source_files.items():
-            source_raw = content if isinstance(content, bytes) else content.encode()
-            tree.append(
-                {
-                    "path": path,
-                    "type": "blob",
-                    "sha": ap.git_blob_sha1(source_raw),
-                }
-            )
-
-        def get_source(_owner, _repo, _ref, path):
-            content = source_files.get(path)
-            if content is None:
-                return None
-            return content if isinstance(content, bytes) else content.encode()
-
-        with (
-            patch.object(
-                ap, "_resolve_ref_to_tree_sha", return_value=("sha-tree", None)
-            ),
-            patch.object(
-                ap,
-                "_gh_get",
-                return_value={"truncated": False, "tree": tree},
-            ),
-            patch.object(ap, "get_repo_file_raw", side_effect=get_source),
-        ):
-            return ap.compare_source_and_artifact(extract, "o", "r", ref)
-
-    def _build_stamp(self, path, source, artifact, version="1.0.1-dev.gabc"):
-        return ap._metadata_diff_is_build_stamped(
-            path,
-            json.dumps(source).encode(),
-            json.dumps(artifact).encode(),
-            version,
-        )
-
-    def test_exact_package_version_build_stamp_is_allowed(self):
-        self.assertTrue(
-            self._build_stamp(
-                "package.json",
-                {"name": "plugin", "version": "1.0.0"},
-                {"name": "plugin", "version": "1.0.1-dev.gabc"},
-            )
-        )
-
-    def test_exact_debug_flag_removal_build_stamp_is_allowed(self):
-        self.assertTrue(
-            self._build_stamp(
-                "plugin.json",
-                {
-                    "name": "Plugin",
-                    "version": "1.0.1-dev.gabc",
-                    "flags": ["debug", "root"],
-                },
-                {"name": "Plugin", "version": "1.0.1-dev.gabc", "flags": ["root"]},
-            )
-        )
-
-    def test_exact_publish_image_build_stamp_is_allowed(self):
-        self.assertTrue(
-            self._build_stamp(
-                "plugin.json",
-                {
-                    "name": "Plugin",
-                    "version": "1.0.1-dev.gabc",
-                    "publish": {
-                        "image": "https://raw.githubusercontent.com/o/r/main/icon.png"
-                    },
-                },
-                {
-                    "name": "Plugin",
-                    "version": "1.0.1-dev.gabc",
-                    "publish": {
-                        "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/icon.png"
-                    },
-                },
-            )
-        )
-
-    def test_arbitrary_version_build_stamp_is_rejected(self):
-        self.assertFalse(
-            self._build_stamp(
-                "package.json",
-                {"name": "plugin", "version": "1.0.0"},
-                {"name": "plugin", "version": "999.0.0"},
-            )
-        )
-
-    def test_combined_unrelated_build_drift_is_rejected(self):
-        self.assertFalse(
-            self._build_stamp(
-                "plugin.json",
-                {"name": "Plugin", "version": "1.0.0", "flags": ["debug"]},
-                {"name": "Renamed", "version": "1.0.1-dev.gabc", "flags": []},
-            )
-        )
-
-    def test_reordered_flags_build_stamp_is_rejected(self):
-        self.assertFalse(
-            self._build_stamp(
-                "plugin.json",
-                {
-                    "name": "Plugin",
-                    "version": "1.0.1-dev.gabc",
-                    "flags": ["root", "debug", "network"],
-                },
-                {
-                    "name": "Plugin",
-                    "version": "1.0.1-dev.gabc",
-                    "flags": ["network", "root"],
-                },
-            )
-        )
-
-    def test_near_match_publish_image_build_stamp_is_rejected(self):
-        self.assertFalse(
-            self._build_stamp(
-                "plugin.json",
-                {
-                    "name": "Plugin",
-                    "version": "1.0.1-dev.gabc",
-                    "publish": {
-                        "image": "https://raw.githubusercontent.com/o/r/mainly/icon.png"
-                    },
-                },
-                {
-                    "name": "Plugin",
-                    "version": "1.0.1-dev.gabc",
-                    "publish": {
-                        "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/icon.png"
-                    },
-                },
-            )
-        )
-
-    def test_version_only_metadata_drift_is_allowed(self):
-        source_files = {
-            "plugin.json": json.dumps(
-                {"name": "Syncthing", "version": "1.0.0", "flags": []}
-            ),
-            "package.json": json.dumps(
-                {"name": "syncthing", "version": "1.0.0", "private": True}
-            ),
-        }
-        artifact_files = {
-            "plugin.json": json.dumps(
-                {"name": "Syncthing", "version": "1.0.1-dev.gabc", "flags": []}
-            ),
-            "package.json": json.dumps(
-                {
-                    "name": "syncthing",
-                    "version": "1.0.1-dev.gabc",
-                    "private": True,
-                }
-            ),
-        }
-        summary, findings, status = self._compare_metadata_files(
-            source_files, artifact_files
-        )
-        self.assertEqual(status.status, "passed")
-        self.assertEqual(summary["modified_source_files"], [])
-        self.assertNotIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
-
-    def test_decky_stamped_plugin_metadata_is_allowed(self):
-        source = json.dumps(
-            {
-                "name": "Syncthing",
-                "version": "1.0.0",
-                "flags": ["debug"],
-                "publish": {
-                    "image": "https://raw.githubusercontent.com/o/r/main/assets/icon.png"
-                },
-            }
-        )
-        artifact = json.dumps(
-            {
-                "name": "Syncthing",
-                "version": "1.0.1-dev.gabc",
-                "flags": [],
-                "publish": {
-                    "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/assets/icon.png"
-                },
-            }
-        )
-        summary, findings, status = self._compare_metadata_files(
-            {"plugin.json": source}, {"plugin.json": artifact}
-        )
-        self.assertEqual(status.status, "passed")
-        self.assertEqual(summary["modified_source_files"], [])
-        self.assertNotIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
-
-    def test_plugin_flags_drift_is_not_allowed(self):
-        source = json.dumps({"name": "Syncthing", "version": "1.0.0", "flags": []})
-        artifact = json.dumps(
-            {"name": "Syncthing", "version": "1.0.0", "flags": ["root"]}
-        )
-        summary, findings, status = self._compare_metadata_files(
-            {"plugin.json": source}, {"plugin.json": artifact}
-        )
-        self.assertEqual(status.status, "found_issue")
-        self.assertEqual(summary["modified_source_files"], ["plugin/plugin.json"])
-        self.assertIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
-
-    def test_malformed_metadata_drift_is_not_allowed(self):
-        source = json.dumps({"name": "Syncthing", "version": "1.0.0", "flags": []})
-        summary, findings, status = self._compare_metadata_files(
-            {"plugin.json": source}, {"plugin.json": "{not-json"}
-        )
-        self.assertEqual(status.status, "found_issue")
-        self.assertEqual(summary["modified_source_files"], ["plugin/plugin.json"])
-        self.assertIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
-
-    def test_shannon_entropy_removed(self):
-        self.assertFalse(hasattr(ap, "_shannon_entropy"))
-
-    def test_normal_plugin_compiled_assets_no_false_positives(self):
-        extract = self._mk_extract(
-            {
-                "plugin/dist/index.js": "var a=1; /* minified bundle */",
-                "plugin/dist/index.js.map": '{"version":3}',
-                "plugin/assets/logo.png": b"\x89PNG\r\n\x1a\n",
-                "plugin/main.py": "print('ok')",
-            }
-        )
-        source_data = b"print('ok')"
-        header = f"blob {len(source_data)}\x00".encode("ascii")
-        source_sha = hashlib.sha1(header + source_data).hexdigest()
-
-        def side_effect(url, params=None):
-            if "/git/ref/tags/" in url:
-                return {"object": {"type": "commit", "sha": "sha-commit"}}
-            if "/git/commits/" in url:
-                return {"tree": {"sha": "sha-tree"}}
-            if "/git/trees/" in url:
-                return {
-                    "truncated": False,
-                    "tree": [
-                        {"path": "plugin/main.py", "type": "blob", "sha": source_sha}
-                    ],
-                }
-            raise AssertionError(f"Unexpected URL {url}")
-
-        with patch.object(ap, "_gh_get", side_effect=side_effect):
-            summary, findings, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertEqual(status.status, "passed")
-        self.assertEqual(summary["modified_source_files"], [])
-        self.assertEqual(summary["zip_only_scripts"], [])
-        self.assertEqual(findings, [])
-
-    def test_native_binary_is_executable_not_script(self):
-        extract = self._mk_extract({"plugin/helper": b"\x7fELF\x02\x01\x01\x00abc"})
-        with self._patch_tree():
-            summary, findings, _ = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertIn("plugin/helper", summary["zip_only_executables"])
-        self.assertNotIn("plugin/helper", summary["zip_only_scripts"])
-        self.assertIn("ZIP_ONLY_EXECUTABLE", {f.rule_id for f in findings})
-        self.assertNotIn("ZIP_ONLY_SCRIPT", {f.rule_id for f in findings})
-
-    def test_non_script_data_not_flagged(self):
-        extract = self._mk_extract(
-            {
-                "plugin/data.json": '{"k":1}',
-                "plugin/style.css": "body{}",
-                "plugin/image.png": b"\x89PNG\r\n\x1a\n",
-                "plugin/app.min.js": "var a=1;",
-            }
-        )
-        with self._patch_tree():
-            summary, findings, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1"
-            )
-        self.assertEqual(status.status, "passed")
-        self.assertEqual(summary["zip_only_scripts"], [])
-        self.assertEqual(findings, [])
-
-    def test_lightweight_tag_resolution(self):
-        extract = self._mk_extract({"plugin/main.py": "print('x')"})
-        with self._patch_tree(tag_type="commit"):
-            summary, _, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1.0.0"
-            )
-        self.assertTrue(summary["checked"])
-        self.assertEqual(status.status, "passed")
-
-    def test_annotated_tag_resolution(self):
-        extract = self._mk_extract({"plugin/main.py": "print('x')"})
-        with self._patch_tree(tag_type="tag"):
-            summary, _, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "v1.0.0"
-            )
-        self.assertTrue(summary["checked"])
-        self.assertEqual(status.status, "passed")
-
-    def test_missing_tag_returns_failed_status(self):
-        extract = self._mk_extract({"plugin/main.py": "print('x')"})
-        with patch.object(
-            ap,
-            "_gh_get",
-            side_effect=requests.HTTPError(response=MagicMock(status_code=404)),
-        ):
-            summary, _, status = ap.compare_source_and_artifact(
-                extract, "o", "r", "missing-tag"
-            )
-        self.assertFalse(summary["checked"])
-        self.assertEqual(status.status, "failed")
-
-    def test_api_failure_returns_failed_status(self):
-        extract = self._mk_extract({"plugin/main.py": "print('x')"})
-        with patch.object(ap, "_gh_get", side_effect=RuntimeError("boom")):
-            summary, _, status = ap.compare_source_and_artifact(extract, "o", "r", "v1")
-        self.assertFalse(summary["checked"])
-        self.assertEqual(status.status, "failed")
-
-    def test_truncated_tree_is_failed(self):
-        extract = self._mk_extract({"plugin/main.py": "print('x')"})
-        with self._patch_tree(truncated=True):
-            summary, _, status = ap.compare_source_and_artifact(extract, "o", "r", "v1")
-        self.assertFalse(summary["checked"])
-        self.assertEqual(status.status, "failed")
-
-    def test_required_failure_becomes_audit_error(self):
-        policy = self._policy(required=True, enabled=True)
-        statuses = [ap.ScannerStatus(name="source-artifact-diff", status="failed")]
-        cls, _ = ap.classify_findings([], scanner_statuses=statuses, policy=policy)
-        self.assertEqual(cls, "AUDIT_ERROR")
-
-    def test_optional_failure_becomes_pass_with_warnings(self):
-        policy = self._policy(required=False, enabled=True)
-        findings = [
-            ap.Finding(
-                rule_id="SOURCE_ARTIFACT_DIFF_INCOMPLETE",
-                severity="low",
-                classification="PASS_WITH_WARNINGS",
-                path="",
-                line=0,
-                message="incomplete",
-                evidence="",
-                scanner="source-artifact-diff",
-            )
-        ]
-        statuses = [ap.ScannerStatus(name="source-artifact-diff", status="failed")]
-        cls, _ = ap.classify_findings(
-            findings, scanner_statuses=statuses, policy=policy
-        )
-        self.assertEqual(cls, "PASS_WITH_WARNINGS")
-
-
-# ---------------------------------------------------------------------------
-# Safe extraction
-# ---------------------------------------------------------------------------
+class TestLegacySourceArtifactDiffRemoved(unittest.TestCase):
+    def test_removed_legacy_source_artifact_entrypoints_are_absent(self):
+        self.assertFalse(hasattr(ap, "compare_source_and_artifact"))
+        self.assertFalse(hasattr(ap, "_resolve_ref_to_tree_sha"))
+        self.assertFalse(hasattr(ap, "_fetch_source_tree"))
+        self.assertFalse(hasattr(ap, "_download_source_archive"))
+        self.assertFalse(hasattr(ap, "get_repo_file_raw"))
+        self.assertNotIn("source_repo", ap.run_trivy.__code__.co_varnames)
 
 
 class TestSafeExtraction(unittest.TestCase):
@@ -1950,7 +1582,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         self.resolve_patcher = patch.object(
             ap,
             "_resolve_ref_to_commit_and_tree_sha",
-            return_value=("commit123", "tree123", None),
+            return_value=("a" * 40, "tree123", None),
         )
         self.resolve_patcher.start()
 
@@ -2041,22 +1673,22 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 }
             ],
         }
-        tree = [
-            {
-                "path": path,
-                "type": "blob",
-                "sha": ap.git_blob_sha1(content),
-            }
-            for path, content in source_files.items()
-        ]
 
         def fake_download(_url, dest_path, policy=None):
             del policy
             Path(dest_path).write_bytes(zip_data)
             return hashlib.sha256(zip_data).hexdigest()
 
-        def fake_get_repo_file_raw(_owner, _repo, _ref, path):
-            return source_files.get(path)
+        source_snapshot = self._build_source_snapshot(
+            plugin_json=source_files["plugin.json"].encode("utf-8")
+            if isinstance(source_files["plugin.json"], str)
+            else source_files["plugin.json"],
+            package_json=source_files["package.json"].encode("utf-8")
+            if isinstance(source_files["package.json"], str)
+            else source_files["package.json"],
+            commit_sha="commit123",
+            repository="https://github.com/owner/syncthing",
+        )
 
         with (
             patch.object(
@@ -2065,8 +1697,12 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 return_value={"default_branch": "main", "archived": False},
             ),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(ap, "get_repo_file_raw", side_effect=fake_get_repo_file_raw),
             patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(
+                ap.audit_source_snapshot,
+                "materialize_source_snapshot",
+                return_value=source_snapshot,
+            ),
             patch.object(
                 ap,
                 "run_clamav",
@@ -2084,8 +1720,12 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ),
             patch.object(
                 ap,
-                "_gh_get",
-                return_value={"truncated": False, "tree": tree},
+                "compare_source_and_artifact_from_snapshot",
+                return_value=(
+                    {"ref": "v1.0.1-dev.gabc", "checked": True},
+                    [],
+                    ap.ScannerStatus(name="source-artifact-diff", status="passed"),
+                ),
             ),
         ):
             return ap.audit_repository(
@@ -2094,6 +1734,835 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 exceptions=[],
                 skip_cache=True,
             )
+
+    def _build_source_snapshot(
+        self,
+        *,
+        plugin_json: bytes | None,
+        package_json: bytes | None,
+        repository: str = "https://github.com/owner/repo",
+        commit_sha: str = "commit123",
+        source_root: str | None = None,
+    ) -> audit_source_snapshot.SourceSnapshot:
+        snapshot_root = (
+            Path(source_root)
+            if source_root is not None
+            else Path(tempfile.mkdtemp(prefix="audit-source-snapshot-"))
+        )
+        if source_root is None:
+            self.addCleanup(lambda: shutil.rmtree(snapshot_root, ignore_errors=True))
+        return audit_source_snapshot.SourceSnapshot(
+            repository=repository,
+            commit_sha=commit_sha,
+            source_url=f"https://codeload.github.com/owner/repo/tar.gz/{commit_sha}",
+            archive_sha256="0" * 64,
+            archive_size_bytes=0,
+            source_root=str(snapshot_root),
+            inventory=tuple(),
+            plugin_json=plugin_json,
+            package_json=package_json,
+        )
+
+    def test_source_snapshot_is_used_for_trivy_and_diff_without_legacy_calls(self):
+        release = {
+            "tag_name": "v1.0.0",
+            "assets": [
+                {
+                    "name": "plugin.zip",
+                    "id": 1,
+                    "browser_download_url": "https://example.com/my-plugin.zip",
+                }
+            ],
+        }
+        artifact_zip = _make_zip(
+            [
+                _regular(
+                    "my-plugin/plugin.json",
+                    json.dumps({"name": "ZipOnlyPlugin", "flags": []}),
+                ),
+                _regular(
+                    "my-plugin/package.json",
+                    json.dumps({"name": "zip-only-plugin"}),
+                ),
+                _regular("my-plugin/main.py", "# hello\n"),
+            ]
+        )
+        source_file_payloads = {
+            "plugin.json": json.dumps(
+                {"name": "SourcePlugin", "version": "1.0.0", "flags": ["source-bound"]}
+            ).encode(),
+            "package.json": json.dumps({"name": "source-package"}).encode(),
+            "plugin/main.py": b'print("source")\n',
+        }
+        meta = {"default_branch": "main", "archived": False}
+
+        for label, commit_sha in (("lightweight", "a" * 40), ("annotated", "b" * 40)):
+            with self.subTest(commit_type=label):
+                source_top_dir = f"owner-my-plugin-{commit_sha[:8]}"
+                source_archive = io.BytesIO()
+                with tarfile.open(fileobj=source_archive, mode="w:gz") as tf:
+                    for name, payload in source_file_payloads.items():
+                        member_name = f"{source_top_dir}/{name}"
+                        info = tarfile.TarInfo(member_name)
+                        info.size = len(payload)
+                        tf.addfile(info, io.BytesIO(payload))
+                source_archive_bytes = source_archive.getvalue()
+                policy = ap._default_policy()
+
+                observed: dict[str, object] = {}
+                download_calls: list[str] = []
+                codeload_calls: list[tuple[str, dict[str, object]]] = []
+                observed_paths: dict[str, str] = {}
+
+                expected_source_url = (
+                    f"https://codeload.github.com/owner/my-plugin/tar.gz/{commit_sha}"
+                )
+
+                class FakeResponse:
+                    def __init__(self, payload: bytes):
+                        self._payload = payload
+                        self.headers = {"Content-Length": str(len(payload))}
+                        self.status_code = 200
+
+                    def raise_for_status(self):
+                        return None
+
+                    def iter_content(self, chunk_size: int = 8192):
+                        for offset in range(0, len(self._payload), chunk_size):
+                            yield self._payload[offset : offset + chunk_size]
+
+                    def close(self):
+                        return None
+
+                class FakeSession:
+                    def __init__(self):
+                        self.headers: dict[str, str] = {}
+                        self.auth = None
+
+                    def get(self, url: str, **kwargs: object) -> FakeResponse:
+                        codeload_calls.append((url, dict(kwargs)))
+                        return FakeResponse(source_archive_bytes)
+
+                fake_session = FakeSession()
+
+                def fake_download(download_url, destination, policy=None):
+                    del policy
+                    download_calls.append(download_url)
+                    Path(destination).write_bytes(artifact_zip)
+                    return hashlib.sha256(artifact_zip).hexdigest()
+
+                def fake_trivy(_artifact_root, _policy, source_root=None):
+                    observed["trivy_root"] = source_root
+                    return ap.ScannerStatus(name="trivy", status="passed"), []
+
+                def fake_compare(extract_root, source_snapshot, ref):
+                    del extract_root
+                    observed["diff_root"] = source_snapshot.source_root
+                    observed["diff_snapshot"] = source_snapshot
+                    observed["diff_snapshot_id"] = id(source_snapshot)
+                    observed["diff_ref"] = ref
+                    return (
+                        {"ref": ref, "checked": True},
+                        [],
+                        ap.ScannerStatus(name="source-artifact-diff", status="passed"),
+                    )
+
+                real_materialize = ap.audit_source_snapshot.materialize_source_snapshot
+
+                def capture_materialize(
+                    repository_url: str,
+                    commit_sha: str,
+                    destination: str,
+                    **kwargs: object,
+                ) -> audit_source_snapshot.SourceSnapshot:
+                    snapshot = real_materialize(
+                        repository_url, commit_sha, destination, **kwargs
+                    )
+                    observed["snapshot"] = snapshot
+                    return snapshot
+
+                real_check_plugin_json = ap.check_plugin_json
+
+                def capture_plugin_json(data: bytes | None, path: str = "plugin.json"):
+                    observed_paths["plugin"] = path
+                    return real_check_plugin_json(data, path)
+
+                real_check_package_json = ap.check_package_json
+
+                def capture_package_json(
+                    data: bytes | None, path: str = "package.json"
+                ):
+                    observed_paths["package"] = path
+                    return real_check_package_json(data, path)
+
+                with tempfile.TemporaryDirectory() as td:
+                    with (
+                        patch.object(
+                            ap,
+                            "_gh_get",
+                            side_effect=AssertionError("legacy repository API used"),
+                        ),
+                        patch.object(
+                            ap,
+                            "_resolve_ref_to_commit_and_tree_sha",
+                            return_value=(commit_sha, "tree123", None),
+                        ) as resolve_commit,
+                        patch.object(
+                            ap,
+                            "get_repo_metadata",
+                            return_value=meta,
+                        ),
+                        patch.object(ap, "get_releases", return_value=[release]),
+                        patch.object(ap, "download_zip", side_effect=fake_download),
+                        patch.object(
+                            ap,
+                            "_gh_session",
+                            new=fake_session,
+                        ),
+                        patch.object(
+                            ap,
+                            "run_clamav",
+                            return_value=(
+                                ap.ScannerStatus(name="clamav", status="passed"),
+                                [],
+                            ),
+                        ),
+                        patch.object(ap, "run_trivy", side_effect=fake_trivy),
+                        patch.object(
+                            ap,
+                            "run_semgrep",
+                            return_value=(
+                                ap.ScannerStatus(name="semgrep", status="skipped"),
+                                [],
+                            ),
+                        ),
+                        patch.object(
+                            ap,
+                            "compare_source_and_artifact_from_snapshot",
+                            side_effect=fake_compare,
+                        ),
+                        patch.object(
+                            ap,
+                            "check_plugin_json",
+                            side_effect=capture_plugin_json,
+                        ),
+                        patch.object(
+                            ap,
+                            "check_package_json",
+                            side_effect=capture_package_json,
+                        ),
+                    ):
+                        with ExitStack() as materialization_stubs:
+                            extract_archive = materialization_stubs.enter_context(
+                                patch.object(
+                                    ap.audit_source_snapshot,
+                                    "_extract_source_archive",
+                                    wraps=ap.audit_source_snapshot._extract_source_archive,
+                                )
+                            )
+                            materialization_stubs.enter_context(
+                                patch.object(
+                                    ap.audit_source_snapshot,
+                                    "materialize_source_snapshot",
+                                    side_effect=capture_materialize,
+                                )
+                            )
+                            report = ap.audit_repository(
+                                "https://github.com/owner/my-plugin",
+                                policy=policy,
+                                exceptions=[],
+                                cache_dir=os.path.join(td, "cache"),
+                                skip_cache=True,
+                            )
+
+                self.assertEqual(resolve_commit.call_count, 1)
+                self.assertEqual(
+                    download_calls, [release["assets"][0]["browser_download_url"]]
+                )
+                self.assertEqual(len(codeload_calls), 1)
+                self.assertEqual(codeload_calls[0][0], expected_source_url)
+                self.assertEqual(codeload_calls[0][1].get("allow_redirects"), False)
+                self.assertEqual(codeload_calls[0][1].get("stream"), True)
+                self.assertEqual(
+                    codeload_calls[0][1].get("timeout"),
+                    (10, 60),
+                )
+                self.assertEqual(len(extract_archive.call_args_list), 1)
+                self.assertEqual(observed["trivy_root"], observed["diff_root"])
+                self.assertEqual(observed["diff_ref"], "v1.0.0")
+                self.assertIsNotNone(observed["trivy_root"])
+                self.assertEqual(len(download_calls), 1)
+                snapshot = observed.get("snapshot")
+                self.assertIsNotNone(snapshot)
+                self.assertIs(snapshot, observed["diff_snapshot"])  # type: ignore[arg-type]
+                self.assertEqual(snapshot.source_root, observed["diff_root"])  # type: ignore[attr-defined]
+                self.assertEqual(report.final_classification, "PASS")
+                self.assertEqual(report.plugin_name, "SourcePlugin")
+                self.assertEqual(observed_paths["plugin"], "plugin.json@v1.0.0")
+                self.assertEqual(observed_paths["package"], "package.json@v1.0.0")
+                self.assertEqual(observed["trivy_root"], observed["diff_root"])
+
+    def _source_preparation_failure_report(
+        self,
+        *,
+        trivy_required: bool,
+        source_diff_required: bool,
+        trivy_enabled: bool = True,
+        source_diff_enabled: bool = True,
+        trivy_status: ap.ScannerStatus | None = None,
+        trivy_findings: list[ap.Finding] | None = None,
+        clamav_status: ap.ScannerStatus | None = None,
+        clamav_findings: list[ap.Finding] | None = None,
+        semgrep_status: ap.ScannerStatus | None = None,
+        semgrep_findings: list[ap.Finding] | None = None,
+        zip_data_override: bytes | None = None,
+        materialize_failure: str = "source snapshot failed",
+    ) -> tuple[ap.AuditReport, dict[str, int]]:
+        zip_data = zip_data_override or _make_zip(
+            [
+                _regular(
+                    "my-plugin/plugin.json",
+                    json.dumps({"name": "ZipOnlyPlugin", "flags": []}),
+                ),
+                _regular(
+                    "my-plugin/package.json",
+                    json.dumps({"name": "zip-only-package"}),
+                ),
+                _regular("my-plugin/main.py", "# hello\n"),
+            ]
+        )
+        release = {
+            "tag_name": "v1.0.0",
+            "assets": [
+                {
+                    "name": "plugin.zip",
+                    "id": 1,
+                    "browser_download_url": "https://example.com/my-plugin.zip",
+                }
+            ],
+        }
+        meta = {"default_branch": "main", "archived": False}
+        policy = ap._default_policy()
+        policy["scanners"]["trivy"]["required"] = trivy_required
+        policy["scanners"]["trivy"]["enabled"] = trivy_enabled
+        policy["scanners"]["source_artifact_diff"]["required"] = source_diff_required
+        policy["scanners"]["source_artifact_diff"]["enabled"] = source_diff_enabled
+
+        trivy_status = trivy_status or ap.ScannerStatus(name="trivy", status="passed")
+        trivy_findings = trivy_findings or []
+        clamav_status = clamav_status or ap.ScannerStatus(
+            name="clamav", status="passed"
+        )
+        clamav_findings = clamav_findings or []
+        semgrep_status = semgrep_status or ap.ScannerStatus(
+            name="semgrep", status="skipped"
+        )
+        semgrep_findings = semgrep_findings or []
+
+        counts = {
+            "trivy": 0,
+            "materialize": 0,
+            "compare": 0,
+            "clamav": 0,
+            "semgrep": 0,
+        }
+
+        def fake_download(url, destination, policy=None):
+            del url, policy
+            Path(destination).write_bytes(zip_data)
+            return hashlib.sha256(zip_data).hexdigest()
+
+        def fake_trivy(_artifact_root, _policy, source_root=None):
+            counts["trivy"] += 1
+            del source_root
+            if not _policy["scanners"]["trivy"].get("enabled", True):
+                return ap.ScannerStatus(name="trivy", status="skipped"), []
+            return trivy_status, trivy_findings
+
+        def fake_materialize(*_args, **_kwargs):
+            counts["materialize"] += 1
+            raise RuntimeError(materialize_failure)
+
+        def fake_compare(_extract_root, _source_snapshot, _ref):
+            counts["compare"] += 1
+            return (
+                {"ref": "v1.0.0", "checked": False},
+                [],
+                ap.ScannerStatus(name="source-artifact-diff", status="failed"),
+            )
+
+        def fake_clamav(*_args, **_kwargs):
+            counts["clamav"] += 1
+            del _args, _kwargs
+            return clamav_status, clamav_findings
+
+        def fake_semgrep(*_args, **_kwargs):
+            counts["semgrep"] += 1
+            del _args, _kwargs
+            return semgrep_status, semgrep_findings
+
+        with tempfile.TemporaryDirectory() as td:
+            with (
+                patch.object(ap, "get_repo_metadata", return_value=meta),
+                patch.object(ap, "get_releases", return_value=[release]),
+                patch.object(ap, "download_zip", side_effect=fake_download),
+                patch.object(
+                    ap.audit_source_snapshot,
+                    "materialize_source_snapshot",
+                    side_effect=fake_materialize,
+                ),
+                patch.object(ap, "run_clamav", side_effect=fake_clamav),
+                patch.object(ap, "run_trivy", side_effect=fake_trivy),
+                patch.object(ap, "run_semgrep", side_effect=fake_semgrep),
+                patch.object(
+                    ap,
+                    "compare_source_and_artifact_from_snapshot",
+                    side_effect=fake_compare,
+                ),
+            ):
+                report = ap.audit_repository(
+                    "https://github.com/owner/my-plugin",
+                    policy=policy,
+                    exceptions=[],
+                    cache_dir=os.path.join(td, "cache"),
+                    skip_cache=True,
+                )
+
+        return report, counts
+
+    def test_source_preparation_failure_with_both_sources_disabled(self):
+        source_findings = [
+            ap.Finding(
+                rule_id="CACHED_FINDING",
+                severity="medium",
+                classification="PASS_WITH_WARNINGS",
+                path="plugin.zip",
+                line=1,
+                message="artifact scan finding",
+                evidence="",
+                scanner="trivy",
+            )
+        ]
+        report, counts = self._source_preparation_failure_report(
+            trivy_required=False,
+            source_diff_required=False,
+            trivy_enabled=False,
+            source_diff_enabled=False,
+            trivy_status=ap.ScannerStatus(name="trivy", status="skipped"),
+            trivy_findings=source_findings,
+            clamav_status=ap.ScannerStatus(name="clamav", status="passed"),
+            clamav_findings=[
+                ap.Finding(
+                    rule_id="CLAM_FOUND",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="plugin/main.py",
+                    line=1,
+                    message="clamav test",
+                    evidence="",
+                    scanner="clamav",
+                )
+            ],
+        )
+        self.assertEqual(report.final_classification, "PASS_WITH_WARNINGS")
+        self.assertEqual(counts["materialize"], 1)
+        self.assertEqual(counts["trivy"], 1)
+        self.assertEqual(counts["compare"], 0)
+        self.assertEqual(report.plugin_name, "ZipOnlyPlugin")
+        self.assertTrue(
+            any(
+                status.name == "trivy" and status.status == "skipped"
+                for status in report.scanner_statuses
+            )
+        )
+        self.assertTrue(
+            any(
+                status.name == "source-artifact-diff" and status.status == "skipped"
+                for status in report.scanner_statuses
+            )
+        )
+        self.assertTrue(
+            any(
+                finding.rule_id == "SOURCE_ARTIFACT_PREPARATION_FAILED"
+                for finding in report.findings
+            )
+        )
+        self.assertTrue(any(f.rule_id == "CLAM_FOUND" for f in report.findings))
+
+    def test_source_preparation_failure_marks_required_as_audit_error(self):
+        report, counts = self._source_preparation_failure_report(
+            trivy_required=True, source_diff_required=True
+        )
+        self.assertEqual(report.final_classification, "AUDIT_ERROR")
+        self.assertEqual(report.identity_status, "CURRENT")
+        self.assertEqual(report.completion_status, "incomplete")
+        self.assertEqual(counts["materialize"], 1)
+        self.assertEqual(counts["trivy"], 1)
+        self.assertEqual(counts["compare"], 0)
+        self.assertEqual(len(report.errors), 0)
+        self.assertEqual(report.plugin_name, "ZipOnlyPlugin")
+        self.assertTrue(
+            any(
+                finding.rule_id == "SOURCE_ARTIFACT_PREPARATION_FAILED"
+                for finding in report.findings
+            )
+        )
+        self.assertTrue(
+            any(
+                status.name == "source-artifact-diff" and status.status == "failed"
+                for status in report.scanner_statuses
+            )
+        )
+
+    def test_source_preparation_failure_marks_trivy_required_as_audit_error(self):
+        report, counts = self._source_preparation_failure_report(
+            trivy_required=True,
+            source_diff_required=False,
+            source_diff_enabled=False,
+            trivy_status=ap.ScannerStatus(name="trivy", status="passed"),
+        )
+        self.assertEqual(report.final_classification, "AUDIT_ERROR")
+        self.assertEqual(report.identity_status, "CURRENT")
+        self.assertEqual(report.completion_status, "incomplete")
+        self.assertEqual(counts["materialize"], 1)
+        self.assertEqual(counts["trivy"], 1)
+        self.assertEqual(counts["compare"], 0)
+        self.assertTrue(
+            any(
+                status.name == "trivy" and status.status == "failed"
+                for status in report.scanner_statuses
+            )
+        )
+
+    def test_source_preparation_failure_marks_source_diff_required_as_audit_error(self):
+        report, counts = self._source_preparation_failure_report(
+            trivy_required=False,
+            source_diff_required=True,
+            trivy_enabled=False,
+            source_diff_enabled=True,
+            trivy_status=ap.ScannerStatus(name="trivy", status="skipped"),
+        )
+        self.assertEqual(report.final_classification, "AUDIT_ERROR")
+        self.assertEqual(report.identity_status, "CURRENT")
+        self.assertEqual(report.completion_status, "incomplete")
+        self.assertEqual(counts["materialize"], 1)
+        self.assertEqual(counts["trivy"], 1)
+        self.assertEqual(counts["compare"], 0)
+        self.assertTrue(
+            any(
+                status.name == "source-artifact-diff" and status.status == "failed"
+                for status in report.scanner_statuses
+            )
+        )
+
+    def test_source_preparation_failure_marks_optional_as_pass_with_warnings(self):
+        report, counts = self._source_preparation_failure_report(
+            trivy_required=False, source_diff_required=False
+        )
+        self.assertEqual(report.final_classification, "PASS_WITH_WARNINGS")
+        self.assertEqual(report.identity_status, "CURRENT")
+        self.assertEqual(report.completion_status, "completed")
+        self.assertEqual(counts["materialize"], 1)
+        self.assertEqual(counts["trivy"], 1)
+        self.assertEqual(counts["compare"], 0)
+        self.assertEqual(report.plugin_name, "ZipOnlyPlugin")
+        self.assertTrue(
+            any(
+                finding.rule_id == "SOURCE_ARTIFACT_PREPARATION_FAILED"
+                for finding in report.findings
+            )
+        )
+        self.assertTrue(
+            any(
+                status.name == "source-artifact-diff" and status.status == "failed"
+                for status in report.scanner_statuses
+            )
+        )
+        self.assertTrue(
+            any(
+                finding.rule_id == "SOURCE_ARTIFACT_DIFF_INCOMPLETE"
+                for finding in report.findings
+            )
+        )
+        self.assertTrue(
+            any(
+                status.name == "trivy" and status.status == "failed"
+                for status in report.scanner_statuses
+            )
+        )
+        self.assertTrue(
+            any(
+                status.name == "source-artifact-diff" and status.status == "failed"
+                for status in report.scanner_statuses
+            )
+        )
+
+    def test_source_preparation_failure_preserves_scanner_findings_and_bounds_secrets(
+        self,
+    ):
+        long_secret = 'token="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
+        report, _ = self._source_preparation_failure_report(
+            trivy_required=False,
+            source_diff_required=False,
+            materialize_failure=f"failed: {long_secret}",
+            trivy_findings=[
+                ap.Finding(
+                    rule_id="TRIVY_FINDING",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="artifact:plugin/main.py",
+                    line=1,
+                    message="artifact-only trivy detail",
+                    evidence="",
+                    scanner="trivy",
+                )
+            ],
+            trivy_status=ap.ScannerStatus(
+                name="trivy", status="failed", detail=f"failed: {long_secret}"
+            ),
+            clamav_findings=[
+                ap.Finding(
+                    rule_id="CLAMAV_FINDING",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="artifact:plugin/main.py",
+                    line=2,
+                    message="clamav finding",
+                    evidence="",
+                    scanner="clamav",
+                )
+            ],
+            semgrep_findings=[
+                ap.Finding(
+                    rule_id="SEMIGREP_FINDING",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="artifact:plugin/main.py",
+                    line=3,
+                    message="semgrep finding",
+                    evidence="",
+                    scanner="semgrep",
+                )
+            ],
+        )
+        trivy_status = next(
+            (status for status in report.scanner_statuses if status.name == "trivy"),
+            None,
+        )
+        self.assertIsNotNone(trivy_status)
+        self.assertIsNotNone(trivy_status.detail)
+        self.assertIn("source snapshot preparation failed", trivy_status.detail or "")
+        self.assertNotIn("aaaaaaaa", trivy_status.detail or "")
+        self.assertTrue(
+            any(finding.rule_id == "TRIVY_FINDING" for finding in report.findings)
+        )
+        self.assertTrue(
+            any(finding.rule_id == "CLAMAV_FINDING" for finding in report.findings)
+        )
+        self.assertTrue(
+            any(finding.rule_id == "SEMIGREP_FINDING" for finding in report.findings)
+        )
+
+    def test_source_preparation_failure_preserves_trivy_and_source_context_with_bound(
+        self,
+    ):
+        token_start = 248
+        long_secret = "ghp_" + "a" * 36
+        prefix = "source snapshot materialization failed while reading tag payload "
+        prefix_padding = "x" * (token_start - len(prefix))
+        token_end = token_start + len(long_secret) - 1
+        long_exception_detail = (
+            prefix + prefix_padding + long_secret + ("x" * 300) + ("secret-tail " * 10)
+        )
+        self.assertEqual(len(prefix_padding), token_start - len(prefix))
+        self.assertEqual(long_exception_detail.index(long_secret), token_start)
+        self.assertEqual(token_end, token_start + len(long_secret) - 1)
+        self.assertEqual(
+            long_exception_detail.index(long_secret) + len(long_secret) - 1, token_end
+        )
+        self.assertLess(token_start, ap.EVIDENCE_MAX_LEN)
+        self.assertGreater(token_end, ap.EVIDENCE_MAX_LEN)
+        self.assertGreater(len(long_exception_detail), ap.EVIDENCE_MAX_LEN)
+        long_artifact_detail = (
+            "artifact-trivy-non-secret-marker="
+            + ("x" * 420)
+            + "|nonsecret-context=true"
+        )
+        report, counts = self._source_preparation_failure_report(
+            trivy_required=False,
+            source_diff_required=False,
+            trivy_enabled=True,
+            source_diff_enabled=True,
+            materialize_failure=long_exception_detail,
+            trivy_status=ap.ScannerStatus(
+                name="trivy",
+                status="failed",
+                detail=long_artifact_detail,
+            ),
+            trivy_findings=[
+                ap.Finding(
+                    rule_id="TRIVY_FINDING",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="artifact:plugin/main.py",
+                    line=1,
+                    message="artifact-only trivy finding",
+                    evidence="",
+                    scanner="trivy",
+                )
+            ],
+            clamav_findings=[
+                ap.Finding(
+                    rule_id="CLAMAV_FINDING",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="artifact:plugin/main.py",
+                    line=2,
+                    message="clamav finding",
+                    evidence="",
+                    scanner="clamav",
+                )
+            ],
+            semgrep_findings=[
+                ap.Finding(
+                    rule_id="SEMIGREP_FINDING",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="artifact:plugin/main.py",
+                    line=3,
+                    message="semgrep finding",
+                    evidence="",
+                    scanner="semgrep",
+                )
+            ],
+        )
+
+        trivy_status = next(
+            (status for status in report.scanner_statuses if status.name == "trivy"),
+            None,
+        )
+        self.assertIsNotNone(trivy_status)
+        self.assertIsNotNone(trivy_status.detail)
+        self.assertIn("artifact-trivy-non-secret-marker", trivy_status.detail or "")
+        self.assertIn("source snapshot preparation failed", trivy_status.detail or "")
+        self.assertLessEqual(len(trivy_status.detail or ""), ap.EVIDENCE_MAX_LEN)
+        self.assertNotIn("aaaaaaaa", trivy_status.detail or "")
+        self.assertNotIn(long_secret, trivy_status.detail or "")
+        self.assertNotRegex(trivy_status.detail or "", r"ghp_[A-Za-z0-9]{20,}")
+
+        source_diff_status = next(
+            (
+                status
+                for status in report.scanner_statuses
+                if status.name == "source-artifact-diff"
+            ),
+            None,
+        )
+        self.assertIsNotNone(source_diff_status)
+        self.assertIsNotNone(source_diff_status.detail)
+        self.assertLessEqual(len(source_diff_status.detail or ""), ap.EVIDENCE_MAX_LEN)
+        self.assertNotIn("aaaaaaaa", source_diff_status.detail or "")
+        self.assertIn(
+            "source snapshot preparation failed", source_diff_status.detail or ""
+        )
+        self.assertNotIn("ghp_", source_diff_status.detail or "")
+        self.assertNotIn("aaaa", source_diff_status.detail or "")
+        self.assertNotIn(long_secret, source_diff_status.detail or "")
+        self.assertNotRegex(source_diff_status.detail or "", r"ghp_[A-Za-z0-9]{20,}")
+
+        relevant_findings = [
+            finding
+            for finding in report.findings
+            if finding.rule_id
+            in {"SOURCE_ARTIFACT_PREPARATION_FAILED", "SOURCE_ARTIFACT_DIFF_INCOMPLETE"}
+        ]
+        self.assertTrue(
+            any(
+                f.rule_id == "SOURCE_ARTIFACT_PREPARATION_FAILED"
+                for f in relevant_findings
+            )
+        )
+        self.assertTrue(
+            any(
+                f.rule_id == "SOURCE_ARTIFACT_DIFF_INCOMPLETE"
+                for f in relevant_findings
+            )
+        )
+        for finding in relevant_findings:
+            self.assertLessEqual(len(finding.evidence), ap.EVIDENCE_MAX_LEN)
+            self.assertLessEqual(len(finding.message), ap.EVIDENCE_MAX_LEN)
+            self.assertNotIn("ghp_", finding.evidence)
+            self.assertNotIn(long_secret, finding.evidence)
+            self.assertNotIn("ghp_", finding.message)
+            self.assertNotIn(long_secret, finding.message)
+
+        source_preparation_finding = next(
+            f
+            for f in relevant_findings
+            if f.rule_id == "SOURCE_ARTIFACT_PREPARATION_FAILED"
+        )
+        self.assertIn(
+            "Source snapshot could not be prepared from tag commit.",
+            source_preparation_finding.message,
+        )
+
+        source_diff_incomplete_finding = next(
+            f
+            for f in relevant_findings
+            if f.rule_id == "SOURCE_ARTIFACT_DIFF_INCOMPLETE"
+        )
+        self.assertIn(
+            "source snapshot preparation failed",
+            source_diff_incomplete_finding.message,
+        )
+        self.assertNotIn("ghp_", source_diff_incomplete_finding.message)
+        self.assertNotIn(long_secret, source_diff_incomplete_finding.message)
+        self.assertNotRegex(
+            source_diff_incomplete_finding.message, r"ghp_[A-Za-z0-9]{20,}"
+        )
+
+        self.assertNotIn("ghp_", trivy_status.detail or "")
+        self.assertNotIn(long_secret, trivy_status.detail or "")
+        self.assertIn("source snapshot preparation failed", trivy_status.detail or "")
+
+        self.assertTrue(
+            any(finding.rule_id == "TRIVY_FINDING" for finding in report.findings)
+        )
+        self.assertTrue(
+            any(finding.rule_id == "CLAMAV_FINDING" for finding in report.findings)
+        )
+        self.assertTrue(
+            any(finding.rule_id == "SEMIGREP_FINDING" for finding in report.findings)
+        )
+        self.assertEqual(counts["trivy"], 1)
+        self.assertEqual(counts["clamav"], 1)
+        self.assertEqual(counts["semgrep"], 1)
+
+    def test_source_preparation_failure_with_blocking_archive_findings_remains_block(
+        self,
+    ):
+        bad_zip_data = _make_zip(
+            [
+                _regular("../evil.py", "print('nope')"),
+                _regular(
+                    "my-plugin/plugin.json",
+                    json.dumps({"name": "ZipOnlyPlugin", "flags": []}),
+                ),
+            ]
+        )
+        report, _ = self._source_preparation_failure_report(
+            trivy_required=False,
+            source_diff_required=False,
+            zip_data_override=bad_zip_data,
+        )
+        self.assertEqual(report.final_classification, "BLOCK")
+        self.assertTrue(any(f.rule_id == "ARCHIVE_TRAVERSAL" for f in report.findings))
+        self.assertTrue(
+            any(
+                finding.rule_id == "SOURCE_ARTIFACT_PREPARATION_FAILED"
+                for finding in report.findings
+            )
+        )
 
     def test_scanner_precision_fixture_keeps_only_intended_survivors(self):
         report = self._run_scanner_precision_fixture()
@@ -2167,11 +2636,22 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 sha = hashlib.sha256(zip_data).hexdigest()
                 return sha
 
+            source_snapshot = self._build_source_snapshot(
+                plugin_json=b'{"name":"MyPlugin","flags":[]}',
+                package_json=b'{"name":"my-plugin"}',
+                commit_sha="commit123",
+                repository="https://github.com/owner/my-plugin",
+            )
+
             with (
                 patch.object(ap, "get_repo_metadata", return_value=meta),
                 patch.object(ap, "get_releases", return_value=[release]),
-                patch.object(ap, "get_repo_file_raw", return_value=None),
                 patch.object(ap, "download_zip", side_effect=fake_download),
+                patch.object(
+                    ap.audit_source_snapshot,
+                    "materialize_source_snapshot",
+                    return_value=source_snapshot,
+                ),
                 patch.object(ap, "run_clamav", return_value=_ok_clamav),
                 patch.object(ap, "run_trivy", return_value=_ok_trivy) as mocked_trivy,
                 patch.object(
@@ -2184,9 +2664,9 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 ),
                 patch.object(
                     ap,
-                    "compare_source_and_artifact",
+                    "compare_source_and_artifact_from_snapshot",
                     return_value=(
-                        {},
+                        {"ref": "v1.0.0", "checked": True},
                         [],
                         ap.ScannerStatus(name="source-artifact-diff", status="passed"),
                     ),
@@ -2202,8 +2682,8 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             self.assertNotEqual(report.final_classification, "AUDIT_ERROR")
             self.assertEqual(report.plugin_name, "MyPlugin")
             self.assertEqual(
-                mocked_trivy.call_args.kwargs["source_repo"],
-                ("owner", "my-plugin", "commit123"),
+                mocked_trivy.call_args.kwargs["source_root"],
+                source_snapshot.source_root,
             )
         finally:
             os.unlink(tf_path)
@@ -2237,6 +2717,13 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             Path(dest_path).write_bytes(zip_data)
             return hashlib.sha256(zip_data).hexdigest()
 
+        source_snapshot = self._build_source_snapshot(
+            plugin_json=b'{"name": "MyPlugin", "flags": []}',
+            package_json=b'{"name": "my-plugin", "private": true}',
+            commit_sha="commit123",
+            repository="https://github.com/owner/my-plugin",
+        )
+
         passed = ap.ScannerStatus(name="fixture", status="passed")
         with (
             patch.object(
@@ -2245,14 +2732,18 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 return_value={"default_branch": "main", "archived": False},
             ),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(ap, "get_repo_file_raw", return_value=None),
             patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(
+                ap.audit_source_snapshot,
+                "materialize_source_snapshot",
+                return_value=source_snapshot,
+            ),
             patch.object(ap, "run_clamav", return_value=(passed, [])),
             patch.object(ap, "run_trivy", return_value=(passed, [])),
             patch.object(ap, "run_semgrep", return_value=(passed, [])),
             patch.object(
                 ap,
-                "compare_source_and_artifact",
+                "compare_source_and_artifact_from_snapshot",
                 return_value=(
                     {},
                     [],
@@ -2310,7 +2801,6 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         with (
             patch.object(ap, "get_repo_metadata", return_value=meta),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(ap, "get_repo_file_raw", return_value=None),
             patch.object(ap, "download_zip", side_effect=fake_download),
         ):
             # Disable required scanners so BLOCK is not masked by AUDIT_ERROR.
@@ -2381,22 +2871,21 @@ class TestAuditRepositoryMocked(unittest.TestCase):
 
             return hashlib.sha256(zip_data).hexdigest()
 
-        def fake_get_repo_file_raw(owner, repo, ref, path):
-            if ref == "v1.0.0" and path == "plugin.json":
-                return json.dumps({"name": "TaggedPlugin", "flags": []}).encode()
-            if ref == "v1.0.0" and path == "package.json":
-                return json.dumps({"name": "tagged-package"}).encode()
-            if ref == "main" and path == "plugin.json":
-                return json.dumps({"name": "MainBranchPlugin", "flags": []}).encode()
-            return None
+        source_snapshot = self._build_source_snapshot(
+            plugin_json=json.dumps({"name": "TaggedPlugin", "flags": []}).encode(),
+            package_json=json.dumps({"name": "tagged-package"}).encode(),
+            repository="https://github.com/owner/my-plugin",
+        )
 
         with (
             patch.object(ap, "get_repo_metadata", return_value=meta),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(
-                ap, "get_repo_file_raw", side_effect=fake_get_repo_file_raw
-            ) as mocked_raw,
             patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(
+                ap.audit_source_snapshot,
+                "materialize_source_snapshot",
+                return_value=source_snapshot,
+            ),
             patch.object(
                 ap,
                 "run_clamav",
@@ -2414,7 +2903,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ),
             patch.object(
                 ap,
-                "compare_source_and_artifact",
+                "compare_source_and_artifact_from_snapshot",
                 return_value=(
                     {"ref": "v1.0.0", "checked": True},
                     [],
@@ -2429,9 +2918,6 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 skip_cache=True,
             )
         self.assertEqual(report.plugin_name, "TaggedPlugin")
-        self.assertFalse(
-            any(call.args[2] == "main" for call in mocked_raw.call_args_list)
-        )
 
     def test_zip_metadata_used_when_tag_metadata_absent(self):
         zip_data = self._make_zip_with_metadata(
@@ -2460,8 +2946,17 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         with (
             patch.object(ap, "get_repo_metadata", return_value=meta),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(ap, "get_repo_file_raw", return_value=None),
             patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(
+                ap.audit_source_snapshot,
+                "materialize_source_snapshot",
+                return_value=self._build_source_snapshot(
+                    plugin_json=None,
+                    package_json=None,
+                    commit_sha="commit123",
+                    repository="https://github.com/owner/my-plugin",
+                ),
+            ),
             patch.object(
                 ap,
                 "run_clamav",
@@ -2479,7 +2974,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ),
             patch.object(
                 ap,
-                "compare_source_and_artifact",
+                "compare_source_and_artifact_from_snapshot",
                 return_value=(
                     {"ref": "v1.0.0", "checked": True},
                     [],
@@ -2523,8 +3018,17 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         with (
             patch.object(ap, "get_repo_metadata", return_value=meta),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(ap, "get_repo_file_raw", return_value=None),
             patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(
+                ap.audit_source_snapshot,
+                "materialize_source_snapshot",
+                return_value=self._build_source_snapshot(
+                    plugin_json=None,
+                    package_json=None,
+                    commit_sha="commit123",
+                    repository="https://github.com/owner/my-plugin",
+                ),
+            ),
             patch.object(
                 ap,
                 "run_clamav",
@@ -2542,7 +3046,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ),
             patch.object(
                 ap,
-                "compare_source_and_artifact",
+                "compare_source_and_artifact_from_snapshot",
                 return_value=(
                     {"ref": "v1.0.0", "checked": True},
                     [],
@@ -2588,8 +3092,17 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         with (
             patch.object(ap, "get_repo_metadata", return_value=meta),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(ap, "get_repo_file_raw", return_value=None),
             patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(
+                ap.audit_source_snapshot,
+                "materialize_source_snapshot",
+                return_value=self._build_source_snapshot(
+                    plugin_json=None,
+                    package_json=None,
+                    commit_sha="commit123",
+                    repository="https://github.com/owner/my-plugin",
+                ),
+            ),
             patch.object(
                 ap,
                 "run_clamav",
@@ -2607,7 +3120,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ),
             patch.object(
                 ap,
-                "compare_source_and_artifact",
+                "compare_source_and_artifact_from_snapshot",
                 return_value=(
                     {"ref": "v1.0.0", "checked": False},
                     [],
@@ -2655,8 +3168,17 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         with (
             patch.object(ap, "get_repo_metadata", return_value=meta),
             patch.object(ap, "get_releases", return_value=[release]),
-            patch.object(ap, "get_repo_file_raw", return_value=None),
             patch.object(ap, "download_zip", side_effect=fake_download),
+            patch.object(
+                ap.audit_source_snapshot,
+                "materialize_source_snapshot",
+                return_value=self._build_source_snapshot(
+                    plugin_json=None,
+                    package_json=None,
+                    commit_sha="commit123",
+                    repository="https://github.com/owner/my-plugin",
+                ),
+            ),
             patch.object(
                 ap,
                 "run_clamav",
@@ -2674,7 +3196,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
             ),
             patch.object(
                 ap,
-                "compare_source_and_artifact",
+                "compare_source_and_artifact_from_snapshot",
                 return_value=(
                     {"ref": "v1.0.0", "checked": False},
                     [],
@@ -2845,6 +3367,242 @@ class TestCLI(unittest.TestCase):
                 ]
             )
         self.assertEqual(code, 0)
+
+    def test_prepare_main_valid_selector_shapes(self):
+        source_revision = "b" * 40
+        expected_fp = "f" * 64
+        valid_cases = (
+            (
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--all",
+                    "--source-revision",
+                    source_revision,
+                ],
+                "--all",
+            ),
+            (
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--changed",
+                    "--base-ref",
+                    "HEAD~1",
+                    "--source-revision",
+                    source_revision,
+                ],
+                "--changed",
+            ),
+            (
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--repository",
+                    "https://github.com/owner/repo",
+                    "--source-revision",
+                    source_revision,
+                ],
+                "--repository",
+            ),
+            (
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--repository",
+                    "https://github.com/owner/repo",
+                    "--latest-only",
+                    "--source-revision",
+                    source_revision,
+                ],
+                "--repository",
+            ),
+        )
+        for args_template, mode in valid_cases:
+            with tempfile.TemporaryDirectory() as tmp:
+                worklist_path = str(Path(tmp) / "worklist.json")
+                github_output = Path(tmp) / "github_output"
+                args = [
+                    arg if arg != "worklist.json" else worklist_path
+                    for arg in args_template
+                ]
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with (
+                    patch.object(sys, "stdout", stdout),
+                    patch.object(sys, "stderr", stderr),
+                    patch.dict(
+                        os.environ,
+                        {"GITHUB_OUTPUT": str(github_output)},
+                        clear=False,
+                    ),
+                    patch.object(
+                        ap,
+                        "read_repo_urls",
+                        return_value=["https://github.com/owner/repo"],
+                    ) as read_repo_urls,
+                    patch.object(
+                        ap,
+                        "get_changed_repos",
+                        return_value=["https://github.com/owner/repo"],
+                    ) as get_changed_repos,
+                    patch.object(
+                        ap.audit_worklist,
+                        "prepare_audit_worklist",
+                        return_value=(expected_fp, {}),
+                    ) as prepare_audit_worklist,
+                ):
+                    code = ap.main(args)
+
+                self.assertEqual(code, 0)
+                self.assertEqual(
+                    stdout.getvalue(), f"worklist_fingerprint={expected_fp}\n"
+                )
+                self.assertFalse(stderr.getvalue())
+                self.assertFalse(github_output.exists())
+                self.assertEqual(prepare_audit_worklist.call_count, 1)
+
+                if mode == "--all":
+                    read_repo_urls.assert_called_once_with("additional_plugins.txt")
+                    get_changed_repos.assert_not_called()
+                elif mode == "--changed":
+                    read_repo_urls.assert_not_called()
+                    get_changed_repos.assert_called_once_with(
+                        "additional_plugins.txt", "HEAD~1"
+                    )
+                else:
+                    read_repo_urls.assert_not_called()
+                    get_changed_repos.assert_not_called()
+
+    def test_prepare_main_rejects_missing_selector(self):
+        with self.assertRaises(SystemExit):
+            ap.main(
+                ["--prepare-worklist", "worklist.json", "--source-revision", "a" * 40]
+            )
+
+    def test_prepare_main_rejects_changed_without_base_ref(self):
+        with self.assertRaises(SystemExit):
+            ap.main(
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--changed",
+                    "--source-revision",
+                    "a" * 40,
+                ]
+            )
+
+    def test_prepare_main_rejects_latest_only_without_repository(self):
+        with self.assertRaises(SystemExit):
+            ap.main(
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--all",
+                    "--latest-only",
+                    "--source-revision",
+                    "a" * 40,
+                ]
+            )
+
+    def test_prepare_main_rejects_invalid_base_ref_combo(self):
+        with self.assertRaises(SystemExit):
+            ap.main(
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--repository",
+                    "https://github.com/owner/repo",
+                    "--base-ref",
+                    "HEAD~1",
+                    "--source-revision",
+                    "a" * 40,
+                ]
+            )
+
+    def test_prepare_main_rejects_prepare_with_other_modes(self):
+        with self.assertRaises(SystemExit):
+            ap.main(
+                [
+                    "--prepare-worklist",
+                    "worklist.json",
+                    "--all",
+                    "--aggregate-reports",
+                    "report.json",
+                    "--source-revision",
+                    "a" * 40,
+                ]
+            )
+
+    def test_prepare_main_changed_empty_is_real_main_path_no_scans(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            worklist_path = str(Path(tmp) / "worklist.json")
+            github_output = Path(tmp) / "github_output"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with (
+                patch.object(sys, "stdout", stdout),
+                patch.object(sys, "stderr", stderr),
+                patch.dict(
+                    os.environ,
+                    {"GITHUB_OUTPUT": str(github_output)},
+                    clear=False,
+                ),
+                patch.object(
+                    ap,
+                    "read_repo_urls",
+                    side_effect=AssertionError("read_repo_urls should not be called"),
+                ) as read_repo_urls,
+                patch.object(
+                    ap,
+                    "get_changed_repos",
+                    return_value=[],
+                ) as get_changed_repos,
+                patch.object(
+                    ap,
+                    "get_repo_metadata",
+                    return_value={"full_name": "owner/repo", "archived": False},
+                ) as get_repo_metadata,
+                patch.object(
+                    ap, "get_releases", return_value=[{"tag_name": "v1"}]
+                ) as get_releases,
+                patch.object(
+                    ap.audit_worklist,
+                    "resolve_repository_tags_via_ls_remote",
+                    return_value={"v1": "a" * 40},
+                ) as resolve_tags,
+                patch.object(
+                    ap.audit_worklist,
+                    "_resolve_base_ref_to_commit",
+                    return_value="d" * 40,
+                ) as resolve_base_ref,
+            ):
+                code = ap.main(
+                    [
+                        "--prepare-worklist",
+                        worklist_path,
+                        "--changed",
+                        "--base-ref",
+                        "HEAD",
+                        "--source-revision",
+                        "a" * 40,
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(Path(worklist_path).read_text(encoding="utf-8"))
+            self.assertEqual(
+                stdout.getvalue(), f"worklist_fingerprint={payload['fingerprint']}\n"
+            )
+            self.assertFalse(stderr.getvalue())
+            self.assertFalse(github_output.exists())
+            resolve_base_ref.assert_called_once_with("HEAD", 300)
+            read_repo_urls.assert_not_called()
+            self.assertEqual(get_changed_repos.call_count, 1)
+            get_changed_repos.assert_called_with("additional_plugins.txt", "HEAD")
+            get_repo_metadata.assert_not_called()
+            get_releases.assert_not_called()
+            resolve_tags.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -3250,63 +4008,73 @@ class TestTrivyStructuredFindings(unittest.TestCase):
     def test_scans_artifact_and_exact_commit_source_lockfile(self):
         scanned_paths = []
         supplied_policy = self._policy()
-        supplied_policy["downloads"]["source_max_bytes"] = 11
+        with (
+            tempfile.TemporaryDirectory() as artifact_dir,
+            tempfile.TemporaryDirectory() as source_dir,
+        ):
+            Path(artifact_dir, "package-lock.json").write_text("artifact-lock")
+            Path(source_dir, "package-lock.json").write_text("source-lock")
 
-        def fake_fetch(owner, repo, commit_sha, destination, policy=None):
-            self.assertIs(policy, supplied_policy)
-            self.assertEqual(policy["downloads"]["source_max_bytes"], 11)
-            self.assertEqual((owner, repo, commit_sha), ("owner", "plugin", "abc123"))
-            source_root = Path(destination) / "owner-plugin-abc123"
-            source_root.mkdir()
-            (source_root / "package-lock.json").write_text(
-                json.dumps(
-                    {
-                        "name": "fixture",
-                        "lockfileVersion": 3,
-                        "packages": {
-                            "": {"name": "fixture"},
-                            "node_modules/lodash": {"version": "4.17.20"},
-                        },
-                    }
-                )
-            )
-            return str(source_root)
+            def fake_scanner(args, _name, timeout=120):
+                scan_path = Path(args[-1])
+                scanned_paths.append(scan_path)
+                if any(scan_path.rglob("package-lock.json")):
+                    return True, self._trivy_json([self._vuln("high")]), ""
+                return True, self._trivy_json([]), ""
 
-        def fake_scanner(args, _name, timeout=120):
-            scan_path = Path(args[-1])
-            scanned_paths.append(scan_path)
-            if any(scan_path.rglob("package-lock.json")):
-                return True, self._trivy_json([self._vuln("high")]), ""
-            return True, self._trivy_json([]), ""
-
-        with tempfile.TemporaryDirectory() as artifact_dir:
             with (
                 patch("shutil.which", return_value="/usr/bin/trivy"),
-                patch.object(ap, "_fetch_source_tree", side_effect=fake_fetch),
                 patch.object(ap, "_run_scanner", side_effect=fake_scanner),
             ):
                 status, findings = ap.run_trivy(
                     artifact_dir,
                     supplied_policy,
-                    source_repo=("owner", "plugin", "abc123"),
+                    source_root=source_dir,
                 )
 
         self.assertEqual(len(scanned_paths), 2)
         self.assertEqual(status.status, "found_issue")
-        self.assertEqual(len(findings), 1)
-        self.assertTrue(findings[0].path.startswith("source:"))
+        self.assertEqual(len(findings), 2)
+        paths = {finding.path for finding in findings}
+        self.assertTrue(any(path.startswith("source:") for path in paths))
+        self.assertTrue(any(path.startswith("artifact:") for path in paths))
         self.assertIn("source", status.detail)
         self.assertIn("artifact", status.detail)
 
-    def test_failed_source_fetch_is_not_reported_as_passed(self):
+    def test_scans_artifact_and_prepared_source_root_without_fetch(self):
+        scanned_paths = []
+        supplied_policy = self._policy()
+        with (
+            tempfile.TemporaryDirectory() as artifact_dir,
+            tempfile.TemporaryDirectory() as source_dir,
+        ):
+            Path(artifact_dir, "package-lock.json").write_text("artifact-lock")
+            Path(source_dir, "package-lock.json").write_text("source-lock")
+
+            def fake_scanner(args, _name, timeout=120):
+                scanned_paths.append(Path(args[-1]))
+                return True, self._trivy_json([self._vuln("high")]), ""
+
+            with (
+                patch("shutil.which", return_value="/usr/bin/trivy"),
+                patch.object(ap, "_run_scanner", side_effect=fake_scanner),
+            ):
+                status, findings = ap.run_trivy(
+                    artifact_dir,
+                    supplied_policy,
+                    source_root=source_dir,
+                )
+
+        self.assertEqual(len(scanned_paths), 2)
+        self.assertEqual(scanned_paths.count(Path(artifact_dir)), 1)
+        self.assertEqual(scanned_paths.count(Path(source_dir)), 1)
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(len(findings), 2)
+
+    def test_failed_source_root_is_not_reported_as_passed(self):
         with tempfile.TemporaryDirectory() as artifact_dir:
             with (
                 patch("shutil.which", return_value="/usr/bin/trivy"),
-                patch.object(
-                    ap,
-                    "_fetch_source_tree",
-                    side_effect=RuntimeError("source fetch failed"),
-                ),
                 patch.object(
                     ap,
                     "_run_scanner",
@@ -3316,65 +4084,982 @@ class TestTrivyStructuredFindings(unittest.TestCase):
                 status, findings = ap.run_trivy(
                     artifact_dir,
                     self._policy(),
-                    source_repo=("owner", "plugin", "abc123"),
+                    source_root="/no/where",
                 )
 
         self.assertEqual(status.status, "failed")
         self.assertEqual(findings, [])
-        self.assertIn("source fetch failed", status.detail)
+        self.assertIn("source_root", status.detail)
         scanner.assert_called_once()
 
 
-class TestSourceTreeFetch(unittest.TestCase):
-    def test_source_archive_is_materialized_without_executing_hooks(self):
-        with tempfile.TemporaryDirectory() as td:
-            supplied_policy = ap._default_policy()
-            supplied_policy["downloads"]["source_max_bytes"] = 11
-            sentinel = Path(td) / "executed"
-            archive_path = Path(td) / "source.tar.gz"
-            with tarfile.open(archive_path, "w:gz") as tf:
-                files = {
-                    "owner-plugin-abc123/package.json": json.dumps(
-                        {
-                            "scripts": {
-                                "postinstall": f"touch {sentinel}",
-                            }
-                        }
-                    ),
-                    "owner-plugin-abc123/setup.py": (
-                        f"from pathlib import Path\nPath({str(sentinel)!r}).touch()\n"
-                    ),
-                }
-                for name, content in files.items():
-                    raw = content.encode()
-                    info = tarfile.TarInfo(name)
-                    info.size = len(raw)
-                    tf.addfile(info, io.BytesIO(raw))
+class TestSourceArtifactDiffSnapshot(unittest.TestCase):
+    def _mk_source_snapshot(
+        self, files: dict[str, bytes | str], *, symlinks: dict[str, str] | None = None
+    ) -> audit_source_snapshot.SourceSnapshot:
+        symlinks = {} if symlinks is None else symlinks
+        source_dir = Path(tempfile.mkdtemp(prefix="audit-source-snapshot-"))
+        self.addCleanup(lambda: source_dir.exists() and shutil.rmtree(source_dir))
 
-            archive_bytes = archive_path.read_bytes()
+        entries: list[audit_source_snapshot.SourceInventoryEntry] = []
+        for rel, payload in files.items():
+            rel_path = rel.replace("\\", "/")
+            path = source_dir / rel_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            raw = payload if isinstance(payload, bytes) else payload.encode("utf-8")
+            path.write_bytes(raw)
+            entries.append(
+                audit_source_snapshot.SourceInventoryEntry(
+                    path=rel_path,
+                    kind="file",
+                    size_bytes=len(raw),
+                    git_blob_sha1=ap.git_blob_sha1(raw),
+                    mode="100644",
+                )
+            )
 
-            def fake_download(_owner, _repo, _commit_sha, destination, policy=None):
-                self.assertIs(policy, supplied_policy)
-                self.assertEqual(policy["downloads"]["source_max_bytes"], 11)
-                Path(destination).write_bytes(archive_bytes)
+        for rel, target in symlinks.items():
+            rel_path = rel.replace("\\", "/")
+            target_raw = target.encode("utf-8", errors="surrogateescape")
+            entries.append(
+                audit_source_snapshot.SourceInventoryEntry(
+                    path=rel_path,
+                    kind="symlink",
+                    size_bytes=len(target_raw),
+                    git_blob_sha1=ap.git_blob_sha1(target_raw),
+                    mode="120000",
+                    symlink_target=target,
+                )
+            )
 
-            destination = Path(td) / "source"
-            with patch.object(
-                ap, "_download_source_archive", side_effect=fake_download
-            ):
-                source_root = Path(
-                    ap._fetch_source_tree(
-                        "owner",
-                        "plugin",
-                        "abc123",
-                        destination,
-                        policy=supplied_policy,
-                    )
+        return audit_source_snapshot.SourceSnapshot(
+            repository="https://github.com/o/r",
+            commit_sha="a" * 40,
+            source_url="https://codeload.github.com/o/r/tar.gz/" + ("a" * 40),
+            archive_sha256="0" * 64,
+            archive_size_bytes=0,
+            source_root=str(source_dir),
+            inventory=tuple(entries),
+            plugin_json=(
+                files.get("plugin.json", "").encode("utf-8")
+                if isinstance(files.get("plugin.json"), str)
+                else files.get("plugin.json")
+            ),
+            package_json=(
+                files.get("package.json", "").encode("utf-8")
+                if isinstance(files.get("package.json"), str)
+                else files.get("package.json")
+            ),
+        )
+
+    def _snapshot_compare(
+        self,
+        extract_files: dict[str, bytes | str],
+        snapshot: audit_source_snapshot.SourceSnapshot,
+        ref: str = "v1",
+        source_open_side_effect=None,
+        executable_paths: set[str] | None = None,
+    ):
+        executable_paths = executable_paths or set()
+        with (
+            tempfile.TemporaryDirectory() as extract_dir,
+            patch.object(
+                ap,
+                "_gh_get",
+                side_effect=AssertionError("_gh_get should not be used"),
+            ),
+        ):
+            for rel, payload in extract_files.items():
+                path = Path(extract_dir, rel.replace("\\", "/"))
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if isinstance(payload, str):
+                    payload = payload.encode("utf-8")
+                path.write_bytes(payload)
+                if rel in executable_paths:
+                    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+            if source_open_side_effect is None:
+                return ap.compare_source_and_artifact_from_snapshot(
+                    extract_dir,
+                    snapshot,
+                    ref,
                 )
 
-            self.assertTrue((source_root / "package.json").is_file())
-            self.assertTrue((source_root / "setup.py").is_file())
-            self.assertFalse(sentinel.exists())
+            def _open(file, *args, **kwargs):
+                return source_open_side_effect(file, *args, **kwargs)
+
+            with patch("builtins.open", side_effect=_open):
+                return ap.compare_source_and_artifact_from_snapshot(
+                    extract_dir,
+                    snapshot,
+                    ref,
+                )
+
+    def _build_stamp(
+        self,
+        path: str,
+        source: dict,
+        artifact: dict,
+        version: str = "1.0.1-dev.gabc",
+    ) -> bool:
+        return ap._metadata_diff_is_build_stamped(
+            path,
+            json.dumps(source).encode(),
+            json.dumps(artifact).encode(),
+            version,
+        )
+
+    def _snapshot_metadata_compare(
+        self,
+        source_files: dict[str, bytes | str],
+        artifact_files: dict[str, bytes | str],
+        ref: str = "v1.0.1-dev.gabc",
+    ):
+        snapshot = self._mk_source_snapshot(source_files)
+        source_root = Path(snapshot.source_root).resolve()
+        original_open = open
+
+        def deny_source_open(file, *args, **kwargs):
+            absolute_path = os.path.abspath(file)
+            if absolute_path == str(source_root) or absolute_path.startswith(
+                f"{source_root}{os.path.sep}"
+            ):
+                raise AssertionError(
+                    "metadata comparison must use captured snapshot bytes"
+                )
+            return original_open(file, *args, **kwargs)
+
+        return self._snapshot_compare(
+            {f"plugin/{path}": content for path, content in artifact_files.items()},
+            snapshot,
+            ref=ref,
+            source_open_side_effect=deny_source_open,
+        )
+
+    def test_exact_package_version_build_stamp_is_allowed(self):
+        self.assertTrue(
+            self._build_stamp(
+                "package.json",
+                {"name": "plugin", "version": "1.0.0"},
+                {"name": "plugin", "version": "1.0.1-dev.gabc"},
+            )
+        )
+
+    def test_exact_debug_flag_removal_build_stamp_is_allowed(self):
+        self.assertTrue(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "flags": ["debug", "root"],
+                },
+                {"name": "Plugin", "version": "1.0.1-dev.gabc", "flags": ["root"]},
+            )
+        )
+
+    def test_exact_publish_image_build_stamp_is_allowed(self):
+        self.assertTrue(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/main/icon.png"
+                    },
+                },
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/icon.png"
+                    },
+                },
+            )
+        )
+
+    def test_arbitrary_version_build_stamp_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "package.json",
+                {"name": "plugin", "version": "1.0.0"},
+                {"name": "plugin", "version": "999.0.0"},
+            )
+        )
+
+    def test_unrelated_metadata_build_drift_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "plugin.json",
+                {"name": "Plugin", "version": "1.0.0", "flags": ["debug"]},
+                {"name": "Renamed", "version": "1.0.1-dev.gabc", "flags": []},
+            )
+        )
+
+    def test_reordered_non_debug_flags_build_stamp_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "flags": ["root", "debug", "network"],
+                },
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "flags": ["network", "root"],
+                },
+            )
+        )
+
+    def test_near_match_publish_image_build_stamp_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/mainly/icon.png"
+                    },
+                },
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/icon.png"
+                    },
+                },
+            )
+        )
+
+    def test_legacy_entropy_heuristic_remains_absent(self):
+        self.assertFalse(hasattr(ap, "_shannon_entropy"))
+
+    def test_snapshot_adapter_allows_combined_decky_metadata_stamps(self):
+        source_plugin = json.dumps(
+            {
+                "name": "Syncthing",
+                "version": "1.0.0",
+                "flags": ["debug"],
+                "publish": {
+                    "image": "https://raw.githubusercontent.com/o/r/main/assets/icon.png"
+                },
+            }
+        )
+        artifact_plugin = json.dumps(
+            {
+                "name": "Syncthing",
+                "version": "1.0.1-dev.gabc",
+                "flags": [],
+                "publish": {
+                    "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/assets/icon.png"
+                },
+            }
+        )
+        source_package = json.dumps(
+            {"name": "syncthing", "version": "1.0.0", "private": True}
+        )
+        artifact_package = json.dumps(
+            {"name": "syncthing", "version": "1.0.1-dev.gabc", "private": True}
+        )
+
+        summary, findings, status = self._snapshot_metadata_compare(
+            {"plugin.json": source_plugin, "package.json": source_package},
+            {"plugin.json": artifact_plugin, "package.json": artifact_package},
+        )
+
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertEqual(findings, [])
+
+    def test_snapshot_adapter_flags_non_debug_metadata_drift(self):
+        source = json.dumps({"name": "Syncthing", "version": "1.0.0", "flags": []})
+        artifact = json.dumps(
+            {"name": "Syncthing", "version": "1.0.0", "flags": ["root"]}
+        )
+
+        summary, findings, status = self._snapshot_metadata_compare(
+            {"plugin.json": source}, {"plugin.json": artifact}
+        )
+
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(summary["modified_source_files"], ["plugin/plugin.json"])
+        self.assertEqual(
+            [finding.rule_id for finding in findings], ["MODIFIED_SOURCE_FILE"]
+        )
+
+    def test_snapshot_adapter_flags_malformed_metadata(self):
+        source = json.dumps({"name": "Syncthing", "version": "1.0.0", "flags": []})
+
+        summary, findings, status = self._snapshot_metadata_compare(
+            {"plugin.json": source}, {"plugin.json": "{not-json"}
+        )
+
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(summary["modified_source_files"], ["plugin/plugin.json"])
+        self.assertEqual(
+            [finding.rule_id for finding in findings], ["MODIFIED_SOURCE_FILE"]
+        )
+
+    def test_snapshot_adapter_flags_zip_only_python_script(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('source')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/extra.py": b"print('artifact')"}, snapshot
+        )
+
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(summary["zip_only_scripts"], ["plugin/extra.py"])
+        self.assertEqual(summary["zip_only_executables"], [])
+        self.assertEqual([finding.rule_id for finding in findings], ["ZIP_ONLY_SCRIPT"])
+
+    def test_snapshot_adapter_flags_zip_only_shebang_script(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('source')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/run": "#!/bin/sh\necho ok\n"}, snapshot
+        )
+
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(summary["zip_only_scripts"], ["plugin/run"])
+        self.assertEqual(summary["zip_only_executables"], [])
+        self.assertEqual([finding.rule_id for finding in findings], ["ZIP_ONLY_SCRIPT"])
+
+    def test_snapshot_adapter_flags_zip_only_executable_text_script(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('source')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/tool": "echo hi\n"},
+            snapshot,
+            executable_paths={"plugin/tool"},
+        )
+
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(summary["zip_only_scripts"], ["plugin/tool"])
+        self.assertEqual(summary["zip_only_executables"], [])
+        self.assertEqual([finding.rule_id for finding in findings], ["ZIP_ONLY_SCRIPT"])
+
+    def test_snapshot_adapter_does_not_flag_matching_source_script(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('source')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/main.py": b"print('source')"}, snapshot
+        )
+
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["zip_only_scripts"], [])
+        self.assertEqual(summary["zip_only_executables"], [])
+        self.assertEqual(findings, [])
+
+    def test_snapshot_adapter_classifies_elf_only_as_executable(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('source')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/helper": b"\x7fELF\x02\x01\x01\x00abc"}, snapshot
+        )
+
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(summary["zip_only_executables"], ["plugin/helper"])
+        self.assertEqual(summary["zip_only_scripts"], [])
+        self.assertEqual(
+            [finding.rule_id for finding in findings], ["ZIP_ONLY_EXECUTABLE"]
+        )
+
+    def test_snapshot_adapter_ignores_normal_compiled_and_data_assets(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('source')"})
+        summary, findings, status = self._snapshot_compare(
+            {
+                "plugin/main.py": b"print('source')",
+                "plugin/dist/index.js": "var a=1; /* minified bundle */",
+                "plugin/dist/index.js.map": '{"version":3}',
+                "plugin/data.json": '{"k":1}',
+                "plugin/style.css": "body{}",
+                "plugin/assets/logo.png": b"\x89PNG\r\n\x1a\n",
+            },
+            snapshot,
+        )
+
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertEqual(summary["zip_only_executables"], [])
+        self.assertEqual(summary["zip_only_scripts"], [])
+        self.assertEqual(findings, [])
+
+    def test_snapshot_adapter_detects_modified_and_matching_files(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('original')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/main.py": b"print('original')"},
+            snapshot,
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertTrue(summary["checked"])
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertEqual(findings, [])
+
+    def test_snapshot_adapter_flags_modified_source_file(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('original')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/main.py": b"print('modified')"},
+            snapshot,
+        )
+        self.assertEqual(status.status, "found_issue")
+        self.assertIn("plugin/main.py", summary["modified_source_files"])
+        self.assertIn("MODIFIED_SOURCE_FILE", {f.rule_id for f in findings})
+
+    def test_snapshot_adapter_normalizes_crlf_differences(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": "print('x')\n"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/main.py": "print('x')\r\n"},
+            snapshot,
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertEqual(findings, [])
+
+    def test_snapshot_adapter_build_stamped_metadata(self):
+        snapshot = self._mk_source_snapshot(
+            {"plugin.json": json.dumps({"name": "Syncthing", "version": "1.0.0"})}
+        )
+        summary, findings, status = self._snapshot_compare(
+            {
+                "plugin/plugin.json": json.dumps(
+                    {"name": "Syncthing", "version": "1.0.1-dev.gabc"}
+                )
+            },
+            snapshot,
+            ref="v1.0.1-dev.gabc",
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertEqual(findings, [])
+
+    def test_snapshot_adapter_case_insensitive_matching(self):
+        snapshot = self._mk_source_snapshot({"plugin/MAIN.PY": b"print('x')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/main.py": b"print('x')"},
+            snapshot,
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(findings, [])
+        self.assertTrue(summary["checked"])
+
+    def test_snapshot_adapter_leading_artifact_directory(self):
+        snapshot = self._mk_source_snapshot({"main.py": b"print('x')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/main.py": b"print('x')"},
+            snapshot,
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(findings, [])
+        self.assertEqual(summary["modified_source_files"], [])
+
+    def test_snapshot_adapter_zip_only_executable_and_script(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('x')"})
+        summary, findings, status = self._snapshot_compare(
+            {
+                "plugin/main.py": b"print('x')",
+                "plugin/extra-bin": b"\x7fELF\x02\x01\x01\x00abc",
+                "plugin/extra-script": "#!/bin/sh\necho hi\n",
+            },
+            snapshot,
+        )
+        self.assertEqual(status.status, "found_issue")
+        self.assertIn("plugin/extra-bin", summary["zip_only_executables"])
+        self.assertIn("plugin/extra-script", summary["zip_only_scripts"])
+        self.assertIn("ZIP_ONLY_EXECUTABLE", {f.rule_id for f in findings})
+        self.assertIn("ZIP_ONLY_SCRIPT", {f.rule_id for f in findings})
+
+    def test_snapshot_adapter_uses_symlink_blob_payload(self):
+        snapshot = self._mk_source_snapshot(
+            {"plugin/main.py": b"print('x')"},
+            symlinks={"plugin/link": "payload-target"},
+        )
+        source_root = Path(snapshot.source_root).resolve()
+        original_open = open
+
+        def deny_source_open(file, *args, **kwargs):
+            abs_path = os.path.abspath(file)
+            if abs_path == str(source_root) or abs_path.startswith(
+                f"{source_root}{os.path.sep}"
+            ):
+                raise AssertionError("source snapshot file should not be read")
+            return original_open(file, *args, **kwargs)
+
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/link": "payload-target", "plugin/main.py": b"print('x')"},
+            snapshot,
+            source_open_side_effect=deny_source_open,
+        )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertEqual(findings, [])
+
+    def test_snapshot_adapter_root_metadata_passes_without_source_metadata_reads(
+        self,
+    ):
+        payload = json.dumps({"name": "Syncthing", "version": "1.0.0"}).encode()
+        source_snapshot = self._mk_source_snapshot({"plugin.json": payload})
+        snapshot = audit_source_snapshot.SourceSnapshot(
+            repository=source_snapshot.repository,
+            commit_sha=source_snapshot.commit_sha,
+            source_url=source_snapshot.source_url,
+            archive_sha256=source_snapshot.archive_sha256,
+            archive_size_bytes=source_snapshot.archive_size_bytes,
+            source_root=source_snapshot.source_root,
+            inventory=source_snapshot.inventory,
+            plugin_json=b"{invalid captured plugin json",
+            package_json=source_snapshot.package_json,
+        )
+        original_open = ap.os.open
+
+        def deny_source_open(file, flags, *args, **kwargs):
+            if file == "plugin.json" and not (flags & ap.os.O_DIRECTORY):
+                raise AssertionError("source snapshot file should not be read")
+            return original_open(file, flags, *args, **kwargs)
+
+        with patch.object(ap.os, "open", side_effect=deny_source_open):
+            summary, findings, status = self._snapshot_compare(
+                {"plugin.json": payload},
+                snapshot,
+                ref="v1.0.0",
+            )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(findings, [])
+        self.assertEqual(summary["modified_source_files"], [])
+
+    def test_snapshot_adapter_nested_metadata_passes_without_source_metadata_reads_when_file_missing(
+        self,
+    ):
+        payload = json.dumps(
+            {"name": "Syncthing", "version": "1.0.1-dev.gabc"}
+        ).encode()
+        snapshot = self._mk_source_snapshot({"plugin/plugin.json": payload})
+        source_root = (Path(snapshot.source_root) / "plugin").resolve()
+        (source_root / "plugin.json").unlink()
+        original_open = ap.os.open
+
+        def deny_source_open(file, flags, *args, **kwargs):
+            if file == "plugin.json" and not (flags & ap.os.O_DIRECTORY):
+                raise AssertionError("source snapshot file should not be read")
+            return original_open(file, flags, *args, **kwargs)
+
+        with patch.object(ap.os, "open", side_effect=deny_source_open):
+            summary, findings, status = self._snapshot_compare(
+                {"plugin/plugin.json": payload},
+                snapshot,
+                ref="v1.0.1-dev.gabc",
+            )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(findings, [])
+        self.assertEqual(summary["modified_source_files"], [])
+
+    def test_snapshot_adapter_root_metadata_uses_captured_bytes_when_file_missing(self):
+        snapshot = self._mk_source_snapshot(
+            {"plugin.json": json.dumps({"name": "Syncthing", "version": "1.0.0"})}
+        )
+        (Path(snapshot.source_root) / "plugin.json").unlink()
+        original_open = ap.os.open
+
+        def deny_source_open(file, flags, *args, **kwargs):
+            if file == "plugin.json" and not (flags & ap.os.O_DIRECTORY):
+                raise AssertionError("source snapshot file should not be read")
+            return original_open(file, flags, *args, **kwargs)
+
+        with patch.object(ap.os, "open", side_effect=deny_source_open):
+            summary, findings, status = self._snapshot_compare(
+                {
+                    "plugin/plugin.json": json.dumps(
+                        {"name": "Syncthing", "version": "1.0.1-dev.gabc"}
+                    )
+                },
+                snapshot,
+                ref="v1.0.1-dev.gabc",
+            )
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertEqual(findings, [])
+
+    def test_snapshot_adapter_rejects_large_local_metadata_read(self):
+        source_path = Path(
+            "plugin",
+            "plugin.json",
+        )
+        target_size = audit_source_snapshot._SOURCE_METADATA_BYTE_LIMIT + 1
+        prefix = b'{"name":"x","value":"'
+        suffix = b'"}'
+        padding = b"a" * (target_size - len(prefix) - len(suffix))
+        source_content = prefix + padding + suffix
+        artifact_payload = prefix + b"b" + padding[1:] + suffix
+        snapshot = self._mk_source_snapshot({str(source_path): source_content})
+        original_fdopen = ap.os.fdopen
+        read_sizes: list[int] = []
+
+        class _BoundedReader:
+            def __init__(self, inner):
+                self.inner = inner
+                self.read_count = 0
+
+            def read(self, size: int = -1):
+                if size == -1:
+                    raise AssertionError("unbounded metadata read blocked")
+                read_sizes.append(size)
+                self.read_count += 1
+                if self.read_count == 1:
+                    if size > audit_source_snapshot._SOURCE_METADATA_BYTE_LIMIT:
+                        raise AssertionError("metadata read exceeded bound")
+                elif self.read_count == 2:
+                    if size > 1:
+                        raise AssertionError("metadata read exceeded bound")
+                else:
+                    raise AssertionError("unexpected metadata read count")
+                return self.inner.read(size)
+
+            def __enter__(self):
+                self.inner.__enter__()
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return self.inner.__exit__(exc_type, exc, tb)
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+        def guarded_fdopen(*args, **kwargs):
+            return _BoundedReader(original_fdopen(*args, **kwargs))
+
+        with patch.object(ap.os, "fdopen", side_effect=guarded_fdopen):
+            summary, findings, status = self._snapshot_compare(
+                {str(source_path): artifact_payload},
+                snapshot,
+                ref="v1.0.1-dev.gabc",
+            )
+        self.assertEqual(status.status, "failed")
+        self.assertEqual(findings, [])
+        self.assertIn("metadata file too large", status.detail or "")
+        self.assertEqual(len(read_sizes), 2)
+        self.assertLessEqual(
+            read_sizes[0], audit_source_snapshot._SOURCE_METADATA_BYTE_LIMIT
+        )
+        self.assertLessEqual(read_sizes[1], 1)
+
+    def test_snapshot_metadata_rejects_non_canonical_path_without_filesystem_probe(
+        self,
+    ):
+        source_root = Path(tempfile.mkdtemp(prefix="audit-snapshot-root-"))
+        self.addCleanup(lambda: shutil.rmtree(source_root, ignore_errors=True))
+        entry = audit_source_snapshot.SourceInventoryEntry(
+            path="plugin/../plugin.json",
+            kind="file",
+            size_bytes=2,
+            git_blob_sha1="0" * 40,
+            mode="100644",
+        )
+        with patch.object(
+            ap.os, "open", side_effect=AssertionError("filesystem open called")
+        ):
+            with self.assertRaises(ValueError):
+                ap._read_snapshot_metadata_file(entry, str(source_root))
+
+    def test_snapshot_metadata_file_descriptor_lifecycle_success(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td)
+            payload = b'{"name":"expected"}'
+            source_dir = source_root / "plugin"
+            source_dir.mkdir()
+            source_file = source_dir / "plugin.json"
+            source_file.write_bytes(payload)
+            entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin/plugin.json",
+                kind="file",
+                size_bytes=len(payload),
+                git_blob_sha1=ap.git_blob_sha1(payload),
+                mode="100644",
+            )
+
+            opened: list[tuple[str, int]] = []
+            closed: list[int] = []
+            original_open = ap.os.open
+            original_close = ap.os.close
+
+            def tracked_open(file, flags, *args, **kwargs):
+                fd = original_open(file, flags, *args, **kwargs)
+                opened.append((file, fd))
+                return fd
+
+            def tracked_close(fd):
+                closed.append(fd)
+                return original_close(fd)
+
+            with (
+                patch.object(ap.os, "open", side_effect=tracked_open),
+                patch.object(ap.os, "close", side_effect=tracked_close),
+            ):
+                read_payload = ap._read_snapshot_metadata_file(entry, str(source_root))
+            self.assertEqual(read_payload, payload)
+            self.assertEqual(
+                [path for path, _ in opened],
+                [str(source_root), "plugin", "plugin.json"],
+            )
+            self.assertEqual(len(opened), 3)
+            self.assertEqual(len(closed), 3)
+            open_fds = [fd for _, fd in opened]
+            self.assertEqual(len(set(open_fds)), len(open_fds))
+            self.assertEqual(len(set(closed)), len(closed))
+            open_by_fd = {fd: path for path, fd in opened}
+            self.assertEqual(
+                [open_by_fd[fd] for fd in closed],
+                ["plugin.json", "plugin", str(source_root)],
+            )
+
+    def test_snapshot_metadata_file_descriptor_lifecycle_validation_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td)
+            payload = b'{"name":"expected"}'
+            source_dir = source_root / "plugin"
+            source_dir.mkdir()
+            source_file = source_dir / "plugin.json"
+            source_file.write_bytes(payload)
+            entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin/plugin.json",
+                kind="file",
+                size_bytes=len(payload),
+                git_blob_sha1=ap.git_blob_sha1(payload),
+                mode="100644",
+            )
+            failing_entry = audit_source_snapshot.SourceInventoryEntry(
+                path=entry.path,
+                kind=entry.kind,
+                size_bytes=entry.size_bytes + 1,
+                git_blob_sha1=entry.git_blob_sha1,
+                mode=entry.mode,
+            )
+
+            opened: list[tuple[str, int]] = []
+            closed: list[int] = []
+            original_open = ap.os.open
+            original_close = ap.os.close
+
+            def tracked_open(file, flags, *args, **kwargs):
+                fd = original_open(file, flags, *args, **kwargs)
+                opened.append((file, fd))
+                return fd
+
+            def tracked_close(fd):
+                closed.append(fd)
+                return original_close(fd)
+
+            with (
+                patch.object(ap.os, "open", side_effect=tracked_open),
+                patch.object(ap.os, "close", side_effect=tracked_close),
+            ):
+                with self.assertRaises(ValueError):
+                    ap._read_snapshot_metadata_file(failing_entry, str(source_root))
+            self.assertEqual(
+                [path for path, _ in opened],
+                [str(source_root), "plugin", "plugin.json"],
+            )
+            self.assertEqual(len(opened), 3)
+            self.assertEqual(len(closed), 3)
+            open_fds = [fd for _, fd in opened]
+            self.assertEqual(len(set(open_fds)), len(open_fds))
+            self.assertEqual(len(set(closed)), len(closed))
+            open_by_fd = {fd: path for path, fd in opened}
+            self.assertEqual(
+                [open_by_fd[fd] for fd in closed],
+                ["plugin.json", "plugin", str(source_root)],
+            )
+
+    def test_snapshot_metadata_rejects_final_path_symlink_swap(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td)
+            target_file = source_root / "plugin.source.json"
+            target_file.write_text('{"name":"expected"}')
+            source_file = source_root / "plugin.json"
+            source_file.write_text('{"name":"expected"}')
+
+            payload = target_file.read_bytes()
+            entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin.json",
+                kind="file",
+                size_bytes=len(payload),
+                git_blob_sha1=ap.git_blob_sha1(payload),
+                mode="100644",
+            )
+
+            original_open = ap.os.open
+
+            def open_with_final_swap(file, flags, *args, **kwargs):
+                if file == "plugin.json" and not (flags & ap.os.O_DIRECTORY):
+                    source_file.unlink()
+                    os.symlink(str(target_file), source_file)
+                return original_open(file, flags, *args, **kwargs)
+
+            with patch.object(ap.os, "open", side_effect=open_with_final_swap):
+                with self.assertRaises(ValueError) as exc:
+                    ap._read_snapshot_metadata_file(entry, str(source_root))
+            self.assertIn("Could not read source snapshot metadata", str(exc.exception))
+
+    def test_snapshot_metadata_rejects_ancestor_path_symlink_swap(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td)
+            source_dir = source_root / "plugin"
+            source_dir.mkdir()
+            source_file = source_dir / "plugin.json"
+            payload = b'{"name":"expected"}'
+            source_file.write_bytes(payload)
+            replacement_dir = source_root / "plugin-replacement"
+            replacement_dir.mkdir()
+            (replacement_dir / "plugin.json").write_text('{"name":"replacement"}')
+
+            entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin/plugin.json",
+                kind="file",
+                size_bytes=len(payload),
+                git_blob_sha1=ap.git_blob_sha1(payload),
+                mode="100644",
+            )
+
+            original_open = ap.os.open
+
+            def open_with_ancestor_swap(file, flags, *args, **kwargs):
+                if file == "plugin" and (flags & ap.os.O_DIRECTORY):
+                    source_file.unlink()
+                    os.rmdir(source_dir)
+                    os.symlink(str(replacement_dir), source_dir)
+                return original_open(file, flags, *args, **kwargs)
+
+            with patch.object(ap.os, "open", side_effect=open_with_ancestor_swap):
+                with self.assertRaises(ValueError) as exc:
+                    ap._read_snapshot_metadata_file(entry, str(source_root))
+            self.assertIn("Could not read source snapshot metadata", str(exc.exception))
+
+    def test_snapshot_metadata_rejects_root_symlink_or_replacement(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td) / "real"
+            source_root.mkdir()
+            payload = b'{"name":"expected"}'
+            (source_root / "plugin.json").write_bytes(payload)
+
+            link_root = Path(td) / "alias"
+            os.symlink(str(source_root), link_root)
+
+            entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin.json",
+                kind="file",
+                size_bytes=len(payload),
+                git_blob_sha1=ap.git_blob_sha1(payload),
+                mode="100644",
+            )
+
+            with self.assertRaises(ValueError) as exc:
+                ap._read_snapshot_metadata_file(entry, str(link_root))
+            self.assertIn("Could not read source snapshot metadata", str(exc.exception))
+
+    def test_snapshot_metadata_rejects_special_final_node_without_block(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td)
+            fifo_path = source_root / "plugin.json"
+            os.mkfifo(fifo_path)
+            entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin.json",
+                kind="file",
+                size_bytes=0,
+                git_blob_sha1="0" * 40,
+                mode="100644",
+            )
+            with self.assertRaises(ValueError) as exc:
+                ap._read_snapshot_metadata_file(entry, str(source_root))
+            self.assertIn("non-regular", str(exc.exception))
+
+    def test_snapshot_adapter_rejects_local_fallback_metadata_size_hash_mismatch(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td)
+            source_bytes = b'{"name":"expected"}'
+            (source_root / "plugin.json").write_bytes(source_bytes)
+            entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin.json",
+                kind="file",
+                size_bytes=len(source_bytes),
+                git_blob_sha1=ap.git_blob_sha1(source_bytes),
+                mode="100644",
+            )
+            snapshot = audit_source_snapshot.SourceSnapshot(
+                repository="https://github.com/o/r",
+                commit_sha="a" * 40,
+                source_url="https://codeload.github.com/o/r/tar.gz/" + ("a" * 40),
+                archive_sha256="0" * 64,
+                archive_size_bytes=0,
+                source_root=str(source_root),
+                inventory=(entry,),
+                plugin_json=None,
+                package_json=None,
+            )
+            corrupted = audit_source_snapshot.SourceSnapshot(
+                repository=snapshot.repository,
+                commit_sha=snapshot.commit_sha,
+                source_url=snapshot.source_url,
+                archive_sha256=snapshot.archive_sha256,
+                archive_size_bytes=snapshot.archive_size_bytes,
+                source_root=snapshot.source_root,
+                inventory=(
+                    audit_source_snapshot.SourceInventoryEntry(
+                        path=entry.path,
+                        kind=entry.kind,
+                        size_bytes=entry.size_bytes + 1,
+                        git_blob_sha1="0" * 40,
+                        mode=entry.mode,
+                    ),
+                ),
+                plugin_json=None,
+                package_json=None,
+            )
+
+            summary, findings, status = self._snapshot_compare(
+                {"plugin.json": source_bytes},
+                corrupted,
+                ref="v1.0.1-dev.gabc",
+            )
+            self.assertEqual(status.status, "failed")
+            self.assertEqual(findings, [])
+            self.assertTrue(
+                "metadata snapshot size mismatch" in (status.detail or "")
+                or "metadata snapshot hash mismatch" in (status.detail or ""),
+                status.detail,
+            )
+
+    def test_snapshot_adapter_rejects_captured_root_metadata_size_hash_mismatch(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_root = Path(td)
+            source_bytes = b'{"name":"expected","version":"1.0.0"}'
+            (source_root / "plugin.json").write_bytes(source_bytes)
+            good_entry = audit_source_snapshot.SourceInventoryEntry(
+                path="plugin.json",
+                kind="file",
+                size_bytes=len(source_bytes),
+                git_blob_sha1=ap.git_blob_sha1(source_bytes),
+                mode="100644",
+            )
+            snapshot = audit_source_snapshot.SourceSnapshot(
+                repository="https://github.com/o/r",
+                commit_sha="a" * 40,
+                source_url="https://codeload.github.com/o/r/tar.gz/" + ("a" * 40),
+                archive_sha256="0" * 64,
+                archive_size_bytes=0,
+                source_root=str(source_root),
+                inventory=(good_entry,),
+                plugin_json=b'{"name":"captured","version":"1.0.0"}',
+                package_json=None,
+            )
+
+            summary, findings, status = self._snapshot_compare(
+                {"plugin.json": b'{"name":"artifact","version":"2.0.0"}'},
+                snapshot,
+                ref="v1.0.0",
+            )
+            self.assertEqual(status.status, "failed")
+            self.assertEqual(findings, [])
+            self.assertTrue(
+                "metadata snapshot size mismatch" in (status.detail or "")
+                or "metadata snapshot hash mismatch" in (status.detail or ""),
+                status.detail,
+            )
 
 
 # ---------------------------------------------------------------------------

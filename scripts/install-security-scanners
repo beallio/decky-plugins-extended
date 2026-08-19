@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Install the audit scanners with bounded, named, fail-closed phases.
+set -Eeuo pipefail
+
+# The longest permitted path is two 60-second APT phases, two 30-second key
+# downloads, two 60-second Semgrep installs, and the remaining single-attempt
+# phases/backoffs: 556 seconds.  This leaves over two minutes below the calling
+# workflow's unchanged twelve-minute step cap for timeout cleanup.
+NETWORK_ATTEMPTS=2
+RETRY_BACKOFF_SECONDS=4
+BASE_APT_TIMEOUT_SECONDS=60
+KEY_DOWNLOAD_TIMEOUT_SECONDS=30
+KEY_INSTALL_TIMEOUT_SECONDS=30
+TRIVY_APT_TIMEOUT_SECONDS=60
+SEMGREP_INSTALL_TIMEOUT_SECONDS=60
+VERIFY_TIMEOUT_SECONDS=30
+FRESHCLAM_TIMEOUT_SECONDS=90
+SERVICE_STOP_TIMEOUT_SECONDS=15
+
+TRIVY_KEY_URL="https://aquasecurity.github.io/trivy-repo/deb/public.key"
+TRIVY_KEY_FINGERPRINT="825AD9036F7C850E6A6FED4935B8ACA44FD9CA9F"
+TRIVY_KEYRING_PATH="${TRIVY_KEYRING_PATH:-/usr/share/keyrings/trivy.gpg}"
+TRIVY_SOURCE_LIST_PATH="${TRIVY_SOURCE_LIST_PATH:-/etc/apt/sources.list.d/trivy.list}"
+CLAMAV_DB_GLOB="${CLAMAV_DB_GLOB:-/var/lib/clamav/*.c?d}"
+
+tmp_dir="$(mktemp -d)"
+trivy_key="$tmp_dir/trivy-public.key"
+trivy_key_details="$tmp_dir/trivy-key-details.txt"
+trivy_keyring="$tmp_dir/trivy.gpg"
+cleanup() { rm -rf -- "$tmp_dir"; }
+trap cleanup EXIT
+
+phase_run() {
+  local phase="$1"
+  local timeout_seconds="$2"
+  shift 2
+  local started ended status
+  started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'phase=%s start=%s\n' "$phase" "$started"
+  set +e
+  timeout --foreground "$timeout_seconds" "$@"
+  status=$?
+  set -e
+  ended="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'phase=%s end=%s status=%s\n' "$phase" "$ended" "$status"
+  if (( status != 0 )); then
+    printf 'phase=%s status=%s failed\n' "$phase" "$status" >&2
+  fi
+  return "$status"
+}
+
+require_phase() {
+  local phase="$1"
+  local timeout_seconds="$2"
+  shift 2
+  phase_run "$phase" "$timeout_seconds" "$@" || exit $?
+}
+
+retry_phase() {
+  local phase="$1"
+  local timeout_seconds="$2"
+  shift 2
+  local attempt status=1
+  for (( attempt = 1; attempt <= NETWORK_ATTEMPTS; attempt++ )); do
+    if phase_run "$phase" "$timeout_seconds" "$@"; then
+      return 0
+    else
+      status=$?
+    fi
+    if (( attempt < NETWORK_ATTEMPTS )); then
+      printf 'phase=%s retry=%s/%s backoff=%ss\n' \
+        "$phase" "$attempt" "$NETWORK_ATTEMPTS" "$RETRY_BACKOFF_SECONDS" >&2
+      sleep "$RETRY_BACKOFF_SECONDS"
+    fi
+  done
+  return "$status"
+}
+
+require_retry_phase() {
+  local phase="$1"
+  local timeout_seconds="$2"
+  shift 2
+  retry_phase "$phase" "$timeout_seconds" "$@" || exit $?
+}
+
+[[ -n "${GITHUB_PATH:-}" ]] || {
+  printf '%s\n' 'GITHUB_PATH is required for the Semgrep executable' >&2
+  exit 1
+}
+
+require_retry_phase "install base packages" "$BASE_APT_TIMEOUT_SECONDS" \
+  bash -o pipefail -c '
+    sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 update
+    sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 install -y --no-install-recommends wget apt-transport-https gnupg lsb-release clamav
+  '
+
+require_retry_phase "download Trivy signing key" "$KEY_DOWNLOAD_TIMEOUT_SECONDS" \
+  wget --https-only --tries=1 --timeout=20 -O "$trivy_key" "$TRIVY_KEY_URL"
+require_phase "inspect Trivy signing key" "$KEY_INSTALL_TIMEOUT_SECONDS" \
+  bash -c 'gpg --show-keys --with-colons "$1" > "$2"' -- "$trivy_key" "$trivy_key_details"
+require_phase "validate Trivy signing key" "$VERIFY_TIMEOUT_SECONDS" \
+  grep -Fq "fpr:::::::::${TRIVY_KEY_FINGERPRINT}:" "$trivy_key_details"
+require_phase "dearmor Trivy signing key" "$KEY_INSTALL_TIMEOUT_SECONDS" \
+  gpg --dearmor --yes --output "$trivy_keyring" "$trivy_key"
+require_phase "install Trivy signing key" "$KEY_INSTALL_TIMEOUT_SECONDS" \
+  sudo -n install -m 0644 "$trivy_keyring" "$TRIVY_KEYRING_PATH"
+require_phase "configure Trivy repository" "$VERIFY_TIMEOUT_SECONDS" \
+  bash -o pipefail -c '
+    distro="$(lsb_release -sc)"
+    [[ -n "$distro" ]] || exit 1
+    printf "deb [signed-by=%s] https://aquasecurity.github.io/trivy-repo/deb %s main\\n" "$1" "$distro" \
+      | sudo -n tee "$2" > /dev/null
+  ' -- "$TRIVY_KEYRING_PATH" "$TRIVY_SOURCE_LIST_PATH"
+require_retry_phase "install Trivy" "$TRIVY_APT_TIMEOUT_SECONDS" \
+  bash -o pipefail -c '
+    sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 update
+    sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 install -y --no-install-recommends trivy
+  '
+require_retry_phase "install Semgrep" "$SEMGREP_INSTALL_TIMEOUT_SECONDS" \
+  uv tool install --python 3.12 --with setuptools==70.3.0 semgrep==1.132.0
+
+SEMGREP_BIN_DIR="$(uv tool dir --bin)"
+[[ -n "$SEMGREP_BIN_DIR" ]] || {
+  printf '%s\n' 'uv did not report a Semgrep binary directory' >&2
+  exit 1
+}
+printf '%s\n' "$SEMGREP_BIN_DIR" >> "$GITHUB_PATH"
+export PATH="$SEMGREP_BIN_DIR:$PATH"
+
+require_phase "verify Trivy" "$VERIFY_TIMEOUT_SECONDS" trivy --version
+require_phase "verify Semgrep version" "$VERIFY_TIMEOUT_SECONDS" \
+  bash -c '
+    semgrep_version="$(semgrep --version --disable-version-check)"
+    [[ "$semgrep_version" == "1.132.0" ]] || {
+      printf "expected Semgrep 1.132.0, got %s\\n" "$semgrep_version" >&2
+      exit 1
+    }
+  '
+if ! phase_run "stop clamav-freshclam service" "$SERVICE_STOP_TIMEOUT_SECONDS" \
+  sudo -n systemctl stop clamav-freshclam; then
+  printf '%s\n' 'warning: could not stop clamav-freshclam; continuing with explicit refresh' >&2
+fi
+require_phase "refresh ClamAV database" "$FRESHCLAM_TIMEOUT_SECONDS" sudo -n freshclam
+require_phase "verify ClamAV version" "$VERIFY_TIMEOUT_SECONDS" clamscan --version
+require_phase "verify ClamAV database" "$VERIFY_TIMEOUT_SECONDS" \
+  bash -c 'compgen -G "$1" > /dev/null' -- "$CLAMAV_DB_GLOB"

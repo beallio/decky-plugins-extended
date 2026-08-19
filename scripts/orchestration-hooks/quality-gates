@@ -109,9 +109,9 @@ sed 's/github\.ref }}/github.ref \&\& }}/' \
 expect_actionlint_failure \
   "invalid expression" "expression" "$actionlint_mutation_dir/invalid-expression.yml"
 
-grep -Fq 'needs: scheduled-audit' "$scheduled_workflow" \
+grep -Fq 'needs: [prepare-audit-worklist, scheduled-audit]' "$scheduled_workflow" \
   || fail "actionlint dependency mutation anchor is missing"
-sed 's/needs: scheduled-audit/needs: missing-job/' \
+sed 's/needs: \[prepare-audit-worklist, scheduled-audit\]/needs: [prepare-audit-worklist, missing-job]/' \
   "$scheduled_workflow" > "$actionlint_mutation_dir/invalid-needs.yml"
 expect_actionlint_failure \
   "invalid job dependency" "job-needs" "$actionlint_mutation_dir/invalid-needs.yml"

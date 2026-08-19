@@ -32,13 +32,14 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import unicodedata
 import zipfile
 from collections import Counter
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Collection, Optional
@@ -49,6 +50,8 @@ import yaml
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+import audit_source_snapshot
+import audit_worklist
 import plugin_release_utils
 
 # ---------------------------------------------------------------------------
@@ -439,6 +442,46 @@ def _deep_merge(base: dict, override: dict) -> None:
 
 
 _CANONICAL_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_CANONICAL_GIT_SHA1 = re.compile(r"^[0-9a-f]{40}$")
+_CANONICAL_POSITIVE_DECIMAL = re.compile(r"^[1-9][0-9]*$")
+_WORKER_PROGRESS_SCHEMA_V2 = "2"
+_WORKER_PROGRESS_ROOT_KEYS_V2 = {
+    "schema_version",
+    "worklist_fingerprint",
+    "entries",
+}
+_WORKER_PROGRESS_RECORD_KEYS_V2 = {
+    "repository",
+    "github_release_id",
+    "asset_id",
+    "artifact_sha256",
+    "resolved_tag_commit_sha",
+    "audit_context_hash",
+    "completion_status",
+    "report",
+    "worklist_fingerprint",
+}
+_SHARD_MANIFEST_SCHEMA_VERSION = "2"
+_SHARD_MANIFEST_ROOT_KEYS = {
+    "schema_version",
+    "worklist_fingerprint",
+    "source_revision",
+    "shard_count",
+    "shard_index",
+    "assigned_identities",
+    "attempted_identities",
+    "report_identities",
+    "artifacts",
+}
+_SHARD_MANIFEST_IDENTITY_KEYS = {"repository", "github_release_id", "asset_id"}
+_SHARD_MANIFEST_ARTIFACT_KEYS = {
+    "progress",
+    "report_json",
+    "report_markdown",
+    "verdict_delta",
+}
+_SHARD_MANIFEST_ARTIFACT_BINDING_KEYS = {"sha256", "size_bytes"}
+_ARTIFACT_HASH_CHUNK_BYTES = 1024 * 1024
 
 
 def load_allowlist(
@@ -767,14 +810,31 @@ def apply_rule_classification_overrides(
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 
 
-def _make_github_session() -> requests.Session:
+def _make_github_session(*, producer_budgeted: bool = False) -> requests.Session:
+    """Create a GitHub transport for either worker or budgeted producer use.
+
+    Workers rely on urllib3's established transient-failure retries for their
+    artifact and codeload downloads.  Worklist preparation instead uses an
+    explicit ``ApiRequestBudget`` for all retry timing, so its isolated session
+    must not let urllib3 sleep or retry outside that shared deadline.
+    """
     s = requests.Session()
-    retry = Retry(
-        total=MAX_RETRIES,
-        backoff_factor=2,
-        status_forcelist=[429, 500, 502, 503, 504],
-        respect_retry_after_header=True,
-    )
+    if producer_budgeted:
+        retry = Retry(
+            total=0,
+            connect=0,
+            read=0,
+            redirect=0,
+            status=0,
+            respect_retry_after_header=False,
+        )
+    else:
+        retry = Retry(
+            total=MAX_RETRIES,
+            backoff_factor=2,
+            status_forcelist=[429, 500, 502, 503, 504],
+            respect_retry_after_header=True,
+        )
     adapter = HTTPAdapter(max_retries=retry)
     s.mount("https://", adapter)
     s.mount("http://", adapter)
@@ -791,30 +851,82 @@ def _make_github_session() -> requests.Session:
 
 
 _gh_session = _make_github_session()
+_producer_api_budget: ContextVar[Optional[plugin_release_utils.ApiRequestBudget]] = (
+    ContextVar("producer_api_budget", default=None)
+)
+_producer_github_session: ContextVar[Optional[requests.Session]] = ContextVar(
+    "producer_github_session", default=None
+)
+
+
+def _active_github_session() -> requests.Session:
+    """Return the budget-safe producer transport or the normal worker transport."""
+    return _producer_github_session.get() or _gh_session
+
+
+@contextmanager
+def _producer_api_budget_scope(deadline_seconds: int):
+    """Share one bounded REST budget across one worklist producer invocation."""
+    budget = plugin_release_utils.ApiRequestBudget(
+        deadline_seconds,
+        max_retries=MAX_RETRIES,
+    )
+    session = _make_github_session(producer_budgeted=True)
+    budget_token = _producer_api_budget.set(budget)
+    session_token = _producer_github_session.set(session)
+    try:
+        yield budget
+    finally:
+        _producer_github_session.reset(session_token)
+        _producer_api_budget.reset(budget_token)
+        session.close()
 
 
 def _gh_get(url: str, params: Optional[dict] = None) -> dict | list:
     """Perform a GitHub API GET with rate-limit handling."""
-    for attempt in range(MAX_RETRIES + 1):
+    budget = _producer_api_budget.get()
+    if budget is not None:
+        response = budget.get_response(
+            _active_github_session(),
+            url,
+            params=params,
+            timeout=REQUEST_TIMEOUT,
+        )
         try:
-            resp = _gh_session.get(url, params=params, timeout=REQUEST_TIMEOUT)
+            return response.json()
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+
+    for attempt in range(MAX_RETRIES + 1):
+        resp = None
+        try:
+            resp = _active_github_session().get(
+                url, params=params, timeout=REQUEST_TIMEOUT
+            )
         except requests.RequestException:
             if attempt < MAX_RETRIES:
                 time.sleep(2**attempt)
                 continue
             raise
 
-        if resp.status_code == 429 or (
-            resp.status_code == 403 and "rate limit" in resp.text.lower()
-        ):
-            reset = int(resp.headers.get("X-RateLimit-Reset", time.time() + 60))
-            wait = max(1, reset - int(time.time())) + 5
-            log.warning("GitHub rate limit hit; sleeping %d s.", wait)
-            time.sleep(wait)
-            continue
+        try:
+            if resp.status_code == 429 or (
+                resp.status_code == 403 and "rate limit" in resp.text.lower()
+            ):
+                reset = int(resp.headers.get("X-RateLimit-Reset", time.time() + 60))
+                wait = max(1, reset - int(time.time())) + 5
+                log.warning("GitHub rate limit hit; sleeping %d s.", wait)
+                time.sleep(wait)
+                continue
 
-        resp.raise_for_status()
-        return resp.json()
+            resp.raise_for_status()
+            return resp.json()
+        finally:
+            close = getattr(resp, "close", None)
+            if callable(close):
+                close()
 
     raise RuntimeError(f"Failed to fetch {url} after retries")
 
@@ -825,7 +937,11 @@ def get_repo_metadata(owner: str, repo: str) -> dict[str, Any]:
 
 def get_releases(owner: str, repo: str) -> list[dict[str, Any]]:
     return plugin_release_utils.get_releases(
-        owner, repo, session=_gh_session, timeout=REQUEST_TIMEOUT
+        owner,
+        repo,
+        session=_active_github_session(),
+        timeout=REQUEST_TIMEOUT,
+        api_budget=_producer_api_budget.get(),
     )
 
 
@@ -834,19 +950,6 @@ def get_tags(owner: str, repo: str) -> list[dict[str, Any]]:
         f"https://api.github.com/repos/{owner}/{repo}/tags",
         params={"per_page": 100},
     )
-
-
-def get_repo_file_raw(owner: str, repo: str, ref: str, path: str) -> Optional[bytes]:
-    """Fetch raw file bytes from a GitHub repository at a specific ref."""
-    url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
-    try:
-        resp = _gh_session.get(url, timeout=REQUEST_TIMEOUT)
-        if resp.status_code == 404:
-            return None
-        resp.raise_for_status()
-        return resp.content
-    except requests.RequestException:
-        return None
 
 
 def parse_owner_repo(url: str) -> tuple[str, str]:
@@ -1726,6 +1829,19 @@ def _truncate(text: str, max_len: int) -> str:
     return text
 
 
+def _truncate_with_ellipsis(text: str, max_len: int) -> str:
+    text = str(text)
+    if max_len <= 0:
+        return ""
+    if len(text) > max_len:
+        return text[: max_len - 1] + "…"
+    return text
+
+
+def _compose_component_detail(detail: str, max_len: int) -> str:
+    return _truncate_with_ellipsis(redact_secrets(detail), max_len)
+
+
 def _get_rules_for_extension(ext: str) -> list[tuple[str, str, str, str, re.Pattern]]:
     ext = ext.lower()
     if ext in (".py",):
@@ -2166,7 +2282,7 @@ def run_trivy(
     extract_dir: str,
     policy: dict[str, Any],
     *,
-    source_repo: Optional[tuple[str, str, str]] = None,
+    source_root: Optional[str] = None,
 ) -> tuple[ScannerStatus, list[Finding]]:
     """Scan the release artifact and exact-tag source tree with Trivy."""
     if not _scanner_enabled(policy, "trivy"):
@@ -2189,94 +2305,86 @@ def run_trivy(
     review_rank = _severity_rank(review_sev)
 
     scan_targets = [("artifact", extract_dir)]
-    source_temp: Optional[tempfile.TemporaryDirectory[str]] = None
     errors: list[str] = []
     scope_counts: dict[str, int] = {}
     findings: list[Finding] = []
 
-    try:
-        if source_repo is not None:
-            owner, repo, commit_sha = source_repo
-            source_temp = tempfile.TemporaryDirectory(prefix="decky-source-")
-            try:
-                source_root = _fetch_source_tree(
-                    owner, repo, commit_sha, source_temp.name, policy=policy
-                )
-                scan_targets.append(("source", source_root))
-            except Exception as exc:
-                errors.append(f"source fetch failed: {exc}")
-
-        for scope, scan_dir in scan_targets:
-            # Trivy exits 0 on a completed scan because no --exit-code override is
-            # used. Parse any JSON it emits even if the process reports non-zero so
-            # useful findings survive alongside an infrastructure error.
-            ok, stdout, stderr = _run_scanner(
-                ["trivy", "fs", "--format", "json", "--quiet", scan_dir],
-                "trivy",
+    if source_root is not None:
+        if os.path.isdir(source_root):
+            scan_targets.append(("source", source_root))
+        else:
+            errors.append(
+                f"source scan failed: source_root unavailable: {source_root!r}"
             )
-            if not stdout.strip():
-                detail = stderr[:500] if stderr else "no output"
-                errors.append(f"{scope} scan failed: {detail}")
-                continue
 
-            try:
-                data = json.loads(stdout)
-            except (json.JSONDecodeError, ValueError) as exc:
-                errors.append(f"{scope} scan JSON parse error: {exc}")
-                continue
+    for scope, scan_dir in scan_targets:
+        # Trivy exits 0 on a completed scan because no --exit-code override is
+        # used. Parse any JSON it emits even if the process reports non-zero so
+        # useful findings survive alongside an infrastructure error.
+        ok, stdout, stderr = _run_scanner(
+            ["trivy", "fs", "--format", "json", "--quiet", scan_dir],
+            "trivy",
+        )
+        if not stdout.strip():
+            detail = stderr[:500] if stderr else "no output"
+            errors.append(f"{scope} scan failed: {detail}")
+            continue
 
-            if not ok:
-                detail = stderr[:500] if stderr else "scanner exited non-zero"
-                errors.append(f"{scope} scan failed: {detail}")
+        try:
+            data = json.loads(stdout)
+        except (json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"{scope} scan JSON parse error: {exc}")
+            continue
 
-            before = len(findings)
-            for result in data.get("Results") or []:
-                target = str(result.get("Target") or "dependency manifest")
-                for vuln in result.get("Vulnerabilities") or []:
-                    vuln_id = vuln.get("VulnerabilityID", "UNKNOWN")
-                    pkg_name = vuln.get("PkgName", "unknown")
-                    installed = vuln.get("InstalledVersion", "")
-                    fixed = vuln.get("FixedVersion", "")
-                    raw_sev = (vuln.get("Severity") or "UNKNOWN").lower()
-                    sev = raw_sev if raw_sev in SEVERITY_SCORE else "low"
-                    refs = vuln.get("References") or []
-                    advisory_url = refs[0] if refs else ""
-                    title = _truncate(
-                        vuln.get("Title") or vuln.get("Description") or vuln_id,
-                        120,
+        if not ok:
+            detail = stderr[:500] if stderr else "scanner exited non-zero"
+            errors.append(f"{scope} scan failed: {detail}")
+
+        before = len(findings)
+        for result in data.get("Results") or []:
+            target = str(result.get("Target") or "dependency manifest")
+            for vuln in result.get("Vulnerabilities") or []:
+                vuln_id = vuln.get("VulnerabilityID", "UNKNOWN")
+                pkg_name = vuln.get("PkgName", "unknown")
+                installed = vuln.get("InstalledVersion", "")
+                fixed = vuln.get("FixedVersion", "")
+                raw_sev = (vuln.get("Severity") or "UNKNOWN").lower()
+                sev = raw_sev if raw_sev in SEVERITY_SCORE else "low"
+                refs = vuln.get("References") or []
+                advisory_url = refs[0] if refs else ""
+                title = _truncate(
+                    vuln.get("Title") or vuln.get("Description") or vuln_id,
+                    120,
+                )
+                rank = _severity_rank(sev)
+                if rank >= block_rank:
+                    classification = "BLOCK"
+                elif rank >= review_rank:
+                    classification = "MANUAL_REVIEW"
+                else:
+                    classification = "PASS_WITH_WARNINGS"
+
+                fixed_str = f" (fix: {fixed})" if fixed else ""
+                findings.append(
+                    Finding(
+                        rule_id=f"TRIVY_{vuln_id.replace('-', '_').upper()}",
+                        severity=sev,
+                        classification=classification,
+                        path=f"{scope}:{target}",
+                        line=0,
+                        message=(
+                            f"[{scope}] {vuln_id} in {pkg_name}@{installed}"
+                            f"{fixed_str}: {title}"
+                            + (f" — {advisory_url}" if advisory_url else "")
+                        ),
+                        evidence=_truncate(
+                            f"{vuln_id} {pkg_name}@{installed}" + fixed_str,
+                            EVIDENCE_MAX_LEN,
+                        ),
+                        scanner="trivy",
                     )
-                    rank = _severity_rank(sev)
-                    if rank >= block_rank:
-                        classification = "BLOCK"
-                    elif rank >= review_rank:
-                        classification = "MANUAL_REVIEW"
-                    else:
-                        classification = "PASS_WITH_WARNINGS"
-
-                    fixed_str = f" (fix: {fixed})" if fixed else ""
-                    findings.append(
-                        Finding(
-                            rule_id=f"TRIVY_{vuln_id.replace('-', '_').upper()}",
-                            severity=sev,
-                            classification=classification,
-                            path=f"{scope}:{target}",
-                            line=0,
-                            message=(
-                                f"[{scope}] {vuln_id} in {pkg_name}@{installed}"
-                                f"{fixed_str}: {title}"
-                                + (f" — {advisory_url}" if advisory_url else "")
-                            ),
-                            evidence=_truncate(
-                                f"{vuln_id} {pkg_name}@{installed}" + fixed_str,
-                                EVIDENCE_MAX_LEN,
-                            ),
-                            scanner="trivy",
-                        )
-                    )
-            scope_counts[scope] = len(findings) - before
-    finally:
-        if source_temp is not None:
-            source_temp.cleanup()
+                )
+        scope_counts[scope] = len(findings) - before
 
     detail_parts = [
         f"{scope} scanned ({count} findings)" for scope, count in scope_counts.items()
@@ -2528,6 +2636,145 @@ def _looks_like_script_asset(path: str, data: bytes, executable_bits: bool) -> b
     return False
 
 
+def _snapshot_source_inventory_lookup(
+    snapshot_inventory: tuple[audit_source_snapshot.SourceInventoryEntry, ...],
+) -> tuple[
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+    dict[str, audit_source_snapshot.SourceInventoryEntry],
+]:
+    exact: dict[str, str] = {}
+    lower: dict[str, str] = {}
+    path_for_lower: dict[str, str] = {}
+    entry_by_path: dict[str, audit_source_snapshot.SourceInventoryEntry] = {}
+
+    for entry in snapshot_inventory:
+        exact[entry.path] = entry.git_blob_sha1
+        lower_key = entry.path.lower()
+        lower[lower_key] = entry.git_blob_sha1
+        path_for_lower[lower_key] = entry.path
+        entry_by_path[entry.path] = entry
+
+    return exact, lower, path_for_lower, entry_by_path
+
+
+def _snapshot_source_symlink_payload(
+    source_entry: audit_source_snapshot.SourceInventoryEntry,
+) -> bytes:
+    if source_entry.kind != "symlink":
+        raise ValueError(f"expected symlink snapshot entry: {source_entry.path!r}")
+    target = source_entry.symlink_target
+    if target is None:
+        raise ValueError(f"source symlink entry missing target: {source_entry.path!r}")
+    return target.encode("utf-8", errors="surrogateescape")
+
+
+def _validate_snapshot_metadata_path(snapshot_path: str) -> str:
+    """Validate snapshot metadata path is canonical POSIX relative form."""
+    if not isinstance(snapshot_path, str) or not snapshot_path:
+        raise ValueError(f"invalid snapshot metadata path: {snapshot_path!r}")
+    if "\\" in snapshot_path:
+        raise ValueError(f"invalid snapshot metadata path: {snapshot_path!r}")
+
+    normalized = posixpath.normpath(snapshot_path)
+    if (
+        normalized == "."
+        or normalized != snapshot_path
+        or normalized.startswith("/")
+        or normalized.startswith("../")
+        or "/../" in f"/{normalized}/"
+    ):
+        raise ValueError(f"invalid snapshot metadata path: {snapshot_path!r}")
+
+    parts = normalized.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError(f"invalid snapshot metadata path: {snapshot_path!r}")
+
+    return normalized
+
+
+def _assert_snapshot_metadata_payload(
+    source_entry: audit_source_snapshot.SourceInventoryEntry,
+    payload: bytes,
+) -> bytes:
+    if not isinstance(payload, (bytes, bytearray, memoryview)):
+        raise ValueError(
+            f"invalid snapshot metadata payload type: {source_entry.path!r}"
+        )
+    canonical = bytes(payload)
+    if len(canonical) != source_entry.size_bytes:
+        raise ValueError(f"metadata snapshot size mismatch: {source_entry.path!r}")
+    if git_blob_sha1(canonical) != source_entry.git_blob_sha1:
+        raise ValueError(f"metadata snapshot hash mismatch: {source_entry.path!r}")
+    return canonical
+
+
+def _read_snapshot_metadata_file(
+    source_entry: audit_source_snapshot.SourceInventoryEntry,
+    source_root: str,
+) -> bytes:
+    if source_entry.kind != "file":
+        raise ValueError(f"metadata entry is not a regular file: {source_entry.path!r}")
+    source_entry_path = _validate_snapshot_metadata_path(source_entry.path)
+
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise ValueError(
+            f"metadata snapshot no-follow metadata reads unsupported: {source_entry.path!r}"
+        )
+
+    path_parts = source_entry_path.split("/")
+    open_fds: list[int] = []
+    root_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    if hasattr(os, "O_NONBLOCK"):
+        file_flags |= os.O_NONBLOCK
+
+    try:
+        current_fd = os.open(source_root, root_flags)
+        open_fds.append(current_fd)
+
+        for part in path_parts[:-1]:
+            current_fd = os.open(part, dir_flags, dir_fd=current_fd)
+            open_fds.append(current_fd)
+
+        source_fd = os.open(path_parts[-1], file_flags, dir_fd=current_fd)
+        open_fds.append(source_fd)
+        source_stat = os.fstat(source_fd)
+        if not stat.S_ISREG(source_stat.st_mode):
+            raise ValueError(
+                f"metadata snapshot path is non-regular file: {source_entry.path!r}"
+            )
+
+        with os.fdopen(source_fd, "rb", closefd=False) as source_file:
+            cap = audit_source_snapshot._SOURCE_METADATA_BYTE_LIMIT
+            payload = source_file.read(cap)
+            extra = source_file.read(1)
+            if extra:
+                raise ValueError(
+                    f"metadata file too large for bounded read: {source_entry.path!r}"
+                )
+
+        return _assert_snapshot_metadata_payload(source_entry, payload)
+    except FileNotFoundError as exc:
+        raise ValueError(
+            f"metadata snapshot file is missing: {source_entry.path!r}"
+        ) from exc
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError(
+            f"Could not read source snapshot metadata: {source_entry.path!r}: {exc}"
+        ) from exc
+    finally:
+        for fd in reversed(open_fds):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def _metadata_diff_is_build_stamped(
     path: str,
     source_raw: bytes,
@@ -2658,21 +2905,12 @@ def _resolve_ref_to_commit_and_tree_sha(
         )
 
 
-def _resolve_ref_to_tree_sha(
-    owner: str, repo: str, ref: str
-) -> tuple[Optional[str], Optional[str]]:
-    """Resolve tag/ref/commit to a tree SHA. Returns (tree_sha, error_detail)."""
-    _c_sha, t_sha, err = _resolve_ref_to_commit_and_tree_sha(owner, repo, ref)
-    return t_sha, err
-
-
-def compare_source_and_artifact(
+def compare_source_and_artifact_from_snapshot(
     extract_dir: str,
-    owner: str,
-    repo: str,
+    source_snapshot: audit_source_snapshot.SourceSnapshot,
     ref: str,
 ) -> tuple[dict[str, Any], list[Finding], ScannerStatus]:
-    """Compare extracted ZIP against the repository source at ref.
+    """Compare extracted ZIP against materialized source snapshot.
 
     Returns (diff_summary, findings, status).
     """
@@ -2699,66 +2937,26 @@ def compare_source_and_artifact(
             ),
         )
 
-    try:
-        tree_sha, tree_err = _resolve_ref_to_tree_sha(owner, repo, ref)
-        if not tree_sha:
-            return (
-                summary,
-                findings,
-                ScannerStatus(
-                    name="source-artifact-diff",
-                    status="failed",
-                    detail=tree_err or f"Could not resolve ref {ref!r} to a tree SHA",
-                ),
-            )
-        tree_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{tree_sha}"
-        tree_data = _gh_get(tree_url + "?recursive=1")
-        if not isinstance(tree_data, dict):
-            return (
-                summary,
-                findings,
-                ScannerStatus(
-                    name="source-artifact-diff",
-                    status="failed",
-                    detail="Malformed tree response.",
-                ),
-            )
-        if tree_data.get("truncated") is True:
-            return (
-                summary,
-                findings,
-                ScannerStatus(
-                    name="source-artifact-diff",
-                    status="failed",
-                    detail="Tree response truncated by GitHub API.",
-                ),
-            )
-        source_tree_exact: dict[str, Optional[str]] = {}
-        source_tree_lower: dict[str, Optional[str]] = {}
-        source_path_lower: dict[str, str] = {}
-        for item in tree_data.get("tree") or []:
-            if isinstance(item, dict):
-                p = item.get("path")
-                sha = item.get("sha")
-                if p:
-                    source_tree_exact[p] = sha
-                    source_tree_lower[p.lower()] = sha
-                    source_path_lower[p.lower()] = p
-        summary["checked"] = True
-    except Exception as exc:
-        detail = f"Could not fetch source tree for {owner}/{repo}@{ref}: {exc}"
-        log.debug(detail)
+    if not os.path.isdir(source_snapshot.source_root):
         return (
             summary,
             findings,
             ScannerStatus(
                 name="source-artifact-diff",
                 status="failed",
-                detail=detail,
+                detail="Source snapshot root is unavailable.",
             ),
         )
 
-    # Walk extracted directory and compare
+    source_tree_exact, source_tree_lower, source_path_lower, source_entries = (
+        _snapshot_source_inventory_lookup(source_snapshot.inventory)
+    )
+
+    summary["checked"] = True
+
+    # ------------------------------------------------------------------
+    # Walk extracted directory and compare with the provided source snapshot.
+    # ------------------------------------------------------------------
     for root, _dirs, files in os.walk(extract_dir):
         for fname in files:
             full_path = os.path.join(root, fname)
@@ -2788,95 +2986,148 @@ def compare_source_and_artifact(
                 if os.path.islink(full_path):
                     raw = os.readlink(full_path).encode("utf-8", errors="replace")
                 else:
-                    with open(full_path, "rb") as fh:
-                        raw = fh.read()
+                    with open(full_path, "rb") as source_file:
+                        raw = source_file.read()
             except Exception:
                 continue
 
-            bin_info = identify_binary(raw[:16], rel_path)
-            if bin_info and not in_source:
-                summary["zip_only_executables"].append(rel_path)
+            if not in_source:
+                bin_info = identify_binary(raw[:16], rel_path)
+                if bin_info:
+                    summary["zip_only_executables"].append(rel_path)
+                    findings.append(
+                        Finding(
+                            rule_id="ZIP_ONLY_EXECUTABLE",
+                            severity="high",
+                            classification="MANUAL_REVIEW",
+                            path=rel_path,
+                            line=0,
+                            message=(
+                                f"Binary file {rel_path!r} ({bin_info['label']}) is present "
+                                "in the release ZIP but absent from the repository source."
+                            ),
+                            evidence=bin_info["label"],
+                            scanner="source-artifact-diff",
+                        )
+                    )
+                else:
+                    executable_bits = bool(
+                        os.stat(full_path).st_mode
+                        & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                    )
+                    if _looks_like_script_asset(short_path, raw, executable_bits):
+                        summary["zip_only_scripts"].append(rel_path)
+                        findings.append(
+                            Finding(
+                                rule_id="ZIP_ONLY_SCRIPT",
+                                severity="high",
+                                classification="MANUAL_REVIEW",
+                                path=rel_path,
+                                line=0,
+                                message=(
+                                    f"Script-like file {rel_path!r} is present in the "
+                                    "release ZIP but absent from the repository source."
+                                ),
+                                evidence="script-heuristic",
+                                scanner="source-artifact-diff",
+                            )
+                        )
+                continue
+
+            source_entry = source_entries[source_path]
+            if source_sha is None:
+                summary["modified_source_files"].append(rel_path)
                 findings.append(
                     Finding(
-                        rule_id="ZIP_ONLY_EXECUTABLE",
+                        rule_id="MODIFIED_SOURCE_FILE",
                         severity="high",
                         classification="MANUAL_REVIEW",
                         path=rel_path,
                         line=0,
                         message=(
-                            f"Binary file {rel_path!r} ({bin_info['label']}) is present "
-                            "in the release ZIP but absent from the repository source."
+                            f"File {rel_path!r} is present in repository source "
+                            "but has modified content in the release ZIP."
                         ),
-                        evidence=bin_info["label"],
+                        evidence=f"hash-mismatch (source: <missing>, zip: {git_blob_sha1(raw)[:8]})",
                         scanner="source-artifact-diff",
                     )
                 )
                 continue
 
-            if in_source:
-                if source_sha:
-                    zip_sha = git_blob_sha1(raw)
-                    if zip_sha != source_sha:
-                        raw_lf = raw.replace(b"\r\n", b"\n")
-                        zip_sha_lf = git_blob_sha1(raw_lf)
-                        if zip_sha_lf != source_sha:
-                            build_stamped_metadata = False
-                            if source_path and posixpath.basename(
-                                source_path
-                            ).lower() in {"plugin.json", "package.json"}:
-                                source_raw = get_repo_file_raw(
-                                    owner, repo, ref, source_path
-                                )
-                                if source_raw is not None:
-                                    build_stamped_metadata = (
-                                        _metadata_diff_is_build_stamped(
-                                            source_path,
-                                            source_raw,
-                                            raw,
-                                            normalized_release_version,
-                                        )
-                                    )
-                            if not build_stamped_metadata:
-                                summary["modified_source_files"].append(rel_path)
-                                findings.append(
-                                    Finding(
-                                        rule_id="MODIFIED_SOURCE_FILE",
-                                        severity="high",
-                                        classification="MANUAL_REVIEW",
-                                        path=rel_path,
-                                        line=0,
-                                        message=(
-                                            f"File {rel_path!r} is present in repository source "
-                                            "but has modified content in the release ZIP."
-                                        ),
-                                        evidence=f"hash-mismatch (source: {source_sha[:8]}, zip: {zip_sha[:8]})",
-                                        scanner="source-artifact-diff",
-                                    )
-                                )
+            source_raw = None
+            build_stamped_metadata = False
+            base = os.path.basename(source_path).lower()
+
+            zip_sha = git_blob_sha1(raw)
+            if zip_sha == source_sha:
                 continue
 
-            try:
-                executable_bits = bool(
-                    os.stat(full_path).st_mode
-                    & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-                )
-            except OSError:
-                executable_bits = False
+            raw_lf = raw.replace(b"\r\n", b"\n")
+            zip_sha_lf = git_blob_sha1(raw_lf)
+            if zip_sha_lf == source_sha:
+                continue
 
-            if _looks_like_script_asset(short_path, raw, executable_bits):
-                summary["zip_only_scripts"].append(rel_path)
+            if base in {"plugin.json", "package.json"}:
+                source_lookup = {
+                    "plugin.json": source_snapshot.plugin_json,
+                    "package.json": source_snapshot.package_json,
+                }
+                source_raw = source_lookup.get(source_path.lower())
+                try:
+                    if source_raw is None:
+                        if source_entry.kind == "symlink":
+                            source_raw = _snapshot_source_symlink_payload(source_entry)
+                        else:
+                            source_raw = _read_snapshot_metadata_file(
+                                source_entry, source_snapshot.source_root
+                            )
+
+                    source_raw = _assert_snapshot_metadata_payload(
+                        source_entry, source_raw
+                    )
+                except Exception as exc:
+                    try:
+                        detail = (
+                            f"Could not read source snapshot file {source_path!r}: "
+                            f"{_redacted_exception_detail(exc)}"
+                        )
+                    except Exception:
+                        detail = (
+                            f"Could not read source snapshot file {source_path!r}: "
+                            "unavailable"
+                        )
+                    return (
+                        summary,
+                        findings,
+                        ScannerStatus(
+                            name="source-artifact-diff",
+                            status="failed",
+                            detail=detail,
+                        ),
+                    )
+
+            if source_raw is not None:
+                build_stamped_metadata = _metadata_diff_is_build_stamped(
+                    source_path,
+                    source_raw,
+                    raw,
+                    normalized_release_version,
+                )
+
+            if not build_stamped_metadata:
+                summary["modified_source_files"].append(rel_path)
                 findings.append(
                     Finding(
-                        rule_id="ZIP_ONLY_SCRIPT",
+                        rule_id="MODIFIED_SOURCE_FILE",
                         severity="high",
                         classification="MANUAL_REVIEW",
                         path=rel_path,
                         line=0,
                         message=(
-                            f"Script-like file {rel_path!r} is present in the release ZIP "
-                            "but absent from the repository source."
+                            f"File {rel_path!r} is present in repository source "
+                            "but has modified content in the release ZIP."
                         ),
-                        evidence="script-heuristic",
+                        evidence=f"hash-mismatch (source: {source_sha[:8]}, zip: {zip_sha[:8]})",
                         scanner="source-artifact-diff",
                     )
                 )
@@ -3924,98 +4175,6 @@ def download_zip(
     ).sha256
 
 
-def _download_source_archive(
-    owner: str,
-    repo: str,
-    commit_sha: str,
-    dest_path: str | Path,
-    policy: Optional[dict[str, Any]] = None,
-) -> None:
-    """Download the exact commit tarball without invoking repository code."""
-    url = f"https://api.github.com/repos/{owner}/{repo}/tarball/{commit_sha}"
-    plugin_release_utils.bounded_stream_download(
-        url,
-        dest_path,
-        session=_gh_session,
-        kind="source",
-        policy=policy,
-    )
-
-
-def _fetch_source_tree(
-    owner: str,
-    repo: str,
-    commit_sha: str,
-    destination: str | Path,
-    policy: Optional[dict[str, Any]] = None,
-) -> str:
-    """Materialize an exact GitHub source archive without executing its contents."""
-    destination_path = Path(destination)
-    destination_path.mkdir(parents=True, exist_ok=True)
-    archive_path = destination_path / "source.tar.gz"
-    extracted_path = destination_path / "extracted"
-    extracted_path.mkdir()
-    effective_policy = policy if policy is not None else _default_policy()
-    _download_source_archive(
-        owner, repo, commit_sha, archive_path, policy=effective_policy
-    )
-
-    limits = effective_policy["archive"]
-    file_count = 0
-    total_size = 0
-    top_levels: set[str] = set()
-    seen_paths: set[str] = set()
-
-    with tarfile.open(archive_path, "r:*") as archive:
-        for member in archive:
-            safe, reason = _is_safe_member_path(member.name)
-            if not safe:
-                raise ValueError(
-                    f"Unsafe source archive member {member.name!r}: {reason}"
-                )
-            relative = PurePosixPath(member.name)
-            if not relative.parts:
-                continue
-            top_levels.add(relative.parts[0])
-            target = extracted_path.joinpath(*relative.parts)
-
-            if member.isdir():
-                target.mkdir(parents=True, exist_ok=True)
-                continue
-            if not member.isfile():
-                # Git symlinks and other special entries are unnecessary for
-                # dependency resolution and are never materialized.
-                continue
-
-            file_count += 1
-            total_size += member.size
-            if file_count > limits["max_files"]:
-                raise ValueError("Source archive exceeds maximum file count")
-            if member.size > limits["max_single_file_bytes"]:
-                raise ValueError(f"Source archive member too large: {member.name}")
-            if total_size > limits["max_uncompressed_bytes"]:
-                raise ValueError("Source archive exceeds maximum uncompressed size")
-            relative_key = relative.as_posix()
-            if relative_key in seen_paths:
-                raise ValueError(f"Duplicate source archive member: {member.name}")
-            seen_paths.add(relative_key)
-
-            source = archive.extractfile(member)
-            if source is None:
-                raise ValueError(f"Could not read source archive member: {member.name}")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with source, open(target, "wb") as output:
-                shutil.copyfileobj(source, output)
-
-    if file_count == 0:
-        raise ValueError("Source archive contains no regular files")
-    if len(top_levels) == 1:
-        source_root = extracted_path / next(iter(top_levels))
-        if source_root.is_dir():
-            return str(source_root)
-    return str(extracted_path)
-
-
 def _find_metadata_in_extracted(
     extract_dir: str, meta_file: str
 ) -> tuple[Optional[bytes], Optional[str]]:
@@ -4132,6 +4291,7 @@ _RESUME_IDENTITY_FIELDS = (
     "resolved_tag_commit_sha",
     "audit_context_hash",
     "completion_status",
+    "worklist_fingerprint",
 )
 
 
@@ -4557,7 +4717,60 @@ _SCOPED_ARCHIVE_INSPECTION_EXCEPTIONS = (
 
 def _redacted_exception_detail(exc: BaseException) -> str:
     """Return a bounded diagnostic safe for public audit outputs."""
-    return redact_secrets(_truncate(str(exc), EVIDENCE_MAX_LEN))
+    return _compose_component_detail(str(exc), EVIDENCE_MAX_LEN)
+
+
+def _combine_scanner_detail(
+    base_detail: Optional[str], source_preparation_error: Optional[str]
+) -> Optional[str]:
+    """Build a bounded, redacted scanner detail that preserves original context."""
+    if not base_detail and not source_preparation_error:
+        return None
+
+    artifact_part = _compose_component_detail(str(base_detail or ""), EVIDENCE_MAX_LEN)
+    source_part = _compose_component_detail(
+        f"source snapshot preparation failed: {source_preparation_error}"
+        if source_preparation_error
+        else "",
+        EVIDENCE_MAX_LEN,
+    )
+
+    if base_detail and source_preparation_error:
+        separator = "; "
+        available_budget = EVIDENCE_MAX_LEN - len(separator)
+        artifact_budget = min(len(artifact_part), available_budget // 2)
+        source_budget = min(len(source_part), available_budget - artifact_budget)
+
+        if artifact_budget < len(artifact_part) and source_budget < len(source_part):
+            return (
+                _compose_component_detail(str(base_detail), artifact_budget)
+                + separator
+                + _compose_component_detail(
+                    f"source snapshot preparation failed: {source_preparation_error}",
+                    source_budget,
+                )
+            )
+
+        if artifact_budget < len(artifact_part) and source_budget == len(source_part):
+            artifact_budget = min(len(artifact_part), available_budget - source_budget)
+        elif source_budget < len(source_part) and artifact_budget == len(artifact_part):
+            source_budget = min(len(source_part), available_budget - artifact_budget)
+
+        return (
+            _compose_component_detail(str(base_detail), artifact_budget)
+            + separator
+            + _compose_component_detail(
+                f"source snapshot preparation failed: {source_preparation_error}",
+                source_budget,
+            )
+        )
+
+    if base_detail:
+        return _compose_component_detail(str(base_detail), EVIDENCE_MAX_LEN)
+    return _compose_component_detail(
+        f"source snapshot preparation failed: {source_preparation_error}",
+        EVIDENCE_MAX_LEN,
+    )
 
 
 def _record_release_local_error(
@@ -4580,6 +4793,33 @@ def _record_release_local_error(
     return report
 
 
+def _validate_prepared_source_identity(
+    prepared_commit_sha: Optional[str], prepared_source_resolution_error: Optional[str]
+) -> tuple[Optional[str], Optional[str]]:
+    """Validate source identity supplied by an immutable worker worklist.
+
+    The local/smoke path supplies neither value and retains its legacy tag
+    resolver. A worker supplies exactly one prepared value and must never
+    silently fall back to that resolver.
+    """
+    if prepared_commit_sha is not None and prepared_source_resolution_error is not None:
+        raise ValueError(
+            "Prepared source identity must not include both commit and resolution error"
+        )
+    if prepared_commit_sha is not None and (
+        not isinstance(prepared_commit_sha, str)
+        or not _CANONICAL_GIT_SHA1.fullmatch(prepared_commit_sha)
+    ):
+        raise ValueError("Prepared source commit must be a lowercase 40-hex SHA")
+    if prepared_source_resolution_error is not None and (
+        not isinstance(prepared_source_resolution_error, str)
+        or not prepared_source_resolution_error
+        or prepared_source_resolution_error != prepared_source_resolution_error.strip()
+    ):
+        raise ValueError("Prepared source resolution error must be a non-empty string")
+    return prepared_commit_sha, prepared_source_resolution_error
+
+
 def audit_release(
     repo_url: str,
     release: dict[str, Any],
@@ -4589,11 +4829,19 @@ def audit_release(
     skip_cache: bool = False,
     *,
     _repo_metadata: Optional[dict[str, Any]] = None,
+    _prepared_commit_sha: Optional[str] = None,
+    _prepared_source_resolution_error: Optional[str] = None,
     _policy_path: Optional[str] = DEFAULT_POLICY_FILE,
     _allowlist_path: Optional[str] = DEFAULT_ALLOWLIST_FILE,
     _persist_verdict: bool = True,
 ) -> AuditReport:
     """Audit exactly one supplied plugin release without selecting another."""
+    (
+        prepared_commit_sha,
+        prepared_source_resolution_error,
+    ) = _validate_prepared_source_identity(
+        _prepared_commit_sha, _prepared_source_resolution_error
+    )
     report = AuditReport(
         audit_timestamp=datetime.datetime.now(datetime.UTC)
         .isoformat()
@@ -4651,32 +4899,24 @@ def audit_release(
     if meta.get("archived"):
         report.errors.append(f"Repository {owner}/{repo} is archived.")
 
-    commit_sha, _tree_sha, tag_err = _resolve_ref_to_commit_and_tree_sha(
-        owner, repo, tag_name
-    )
-    if not commit_sha:
-        report.errors.append(
-            f"Failed to resolve ref {tag_name} to commit SHA: {tag_err or 'unknown error'}"
+    # A producer-recorded source-resolution failure is already a complete,
+    # release-local worker outcome.  In particular, it must not probe scanner
+    # binaries merely to construct a resumable context for an incomplete
+    # release; that would turn a no-work error record into host-dependent work.
+    if prepared_source_resolution_error is not None:
+        report.audit_context_hash = compute_audit_context_hash(
+            policy,
+            exceptions,
+            policy_path=_policy_path,
+            allowlist_path=_allowlist_path,
+            scanner_identities={},
         )
-        report.final_classification = "AUDIT_ERROR"
-        return report
-
-    resolved_tag_commit_sha = commit_sha
-    report.resolved_tag_commit_sha = resolved_tag_commit_sha
-    artifact_url = report.artifact_url
-
-    # --- Metadata from exact release tag ---
-    tag_plugin_json = get_repo_file_raw(owner, repo, tag_name, "plugin.json")
-    tag_package_json = get_repo_file_raw(owner, repo, tag_name, "package.json")
-
-    plugin_meta_data = tag_plugin_json
-    plugin_meta_path = f"plugin.json@{tag_name}"
-    package_meta_data = tag_package_json
-    package_meta_path = f"package.json@{tag_name}"
-    report.plugin_name = repo
-
-    # --- Cache check ---
-    release_id = report.release_id
+        return _record_release_local_error(
+            report,
+            label="Prepared source resolution failed",
+            status_name="source-resolution",
+            exc=ValueError(prepared_source_resolution_error),
+        )
 
     scanner_identities = _scanner_runtime_identities(policy)
     audit_ctx_hash = compute_audit_context_hash(
@@ -4687,6 +4927,32 @@ def audit_release(
         scanner_identities=scanner_identities,
     )
     report.audit_context_hash = audit_ctx_hash
+
+    if prepared_commit_sha is not None:
+        resolved_tag_commit_sha = prepared_commit_sha
+    else:
+        commit_sha, _tree_sha, tag_err = _resolve_ref_to_commit_and_tree_sha(
+            owner, repo, tag_name
+        )
+        if not commit_sha:
+            report.errors.append(
+                f"Failed to resolve ref {tag_name} to commit SHA: {tag_err or 'unknown error'}"
+            )
+            report.final_classification = "AUDIT_ERROR"
+            return report
+        resolved_tag_commit_sha = commit_sha
+    report.resolved_tag_commit_sha = resolved_tag_commit_sha
+    artifact_url = report.artifact_url
+
+    plugin_meta_data: Optional[bytes] = None
+    plugin_meta_path = f"plugin.json@{tag_name}"
+    package_meta_data: Optional[bytes] = None
+    package_meta_path = f"package.json@{tag_name}"
+    report.plugin_name = repo
+
+    # --- Cache check ---
+    release_id = report.release_id
+
     scheduled_cache_requires_freshness = os.environ.get("AUDIT_SCHEDULED") == "1"
     cache_bypassed = skip_cache or (
         scheduled_cache_requires_freshness
@@ -4766,6 +5032,35 @@ def audit_release(
                 return cached
 
         # --- ZIP inspection ---
+        source_snapshot: Optional[audit_source_snapshot.SourceSnapshot] = None
+        source_preparation_error: Optional[str] = None
+        try:
+            source_snapshot = audit_source_snapshot.materialize_source_snapshot(
+                repo_url,
+                resolved_tag_commit_sha,
+                os.path.join(tmp_dir, "source"),
+                session=_gh_session,
+                policy=policy,
+            )
+            if source_snapshot.plugin_json is not None:
+                plugin_meta_data = source_snapshot.plugin_json
+            if source_snapshot.package_json is not None:
+                package_meta_data = source_snapshot.package_json
+        except Exception as exc:
+            source_preparation_error = _redacted_exception_detail(exc)
+            report.findings.append(
+                Finding(
+                    rule_id="SOURCE_ARTIFACT_PREPARATION_FAILED",
+                    severity="low",
+                    classification="PASS_WITH_WARNINGS",
+                    path="",
+                    line=0,
+                    message="Source snapshot could not be prepared from tag commit.",
+                    evidence=source_preparation_error,
+                    scanner="source-snapshot",
+                )
+            )
+
         try:
             zip_stats, zip_findings = inspect_zip(zip_path, policy)
         except _SCOPED_ARCHIVE_INSPECTION_EXCEPTIONS as exc:
@@ -4859,6 +5154,8 @@ def audit_release(
 
         report.extracted_domains = sorted(all_domains)
 
+        trivy_source_enabled = _scanner_enabled(policy, "trivy")
+
         # --- Metadata fallback from ZIP when missing at tag ---
         zip_plugin_json, zip_plugin_rel = _find_metadata_in_extracted(
             extract_dir, "plugin.json"
@@ -4913,8 +5210,19 @@ def audit_release(
             trivy_status, trivy_findings = run_trivy(
                 extract_dir,
                 policy,
-                source_repo=(owner, repo, resolved_tag_commit_sha),
+                source_root=(
+                    source_snapshot.source_root if source_snapshot is not None else None
+                ),
             )
+            if source_preparation_error is not None and trivy_source_enabled:
+                trivy_status = ScannerStatus(
+                    name="trivy",
+                    status="failed",
+                    detail=_combine_scanner_detail(
+                        trivy_status.detail,
+                        source_preparation_error,
+                    ),
+                )
             report.scanner_statuses.append(trivy_status)
             report.findings.extend(trivy_findings)
 
@@ -4928,9 +5236,27 @@ def audit_release(
 
             # Source/artifact comparison
             if _scanner_enabled(policy, "source-artifact-diff"):
-                diff_summary, diff_findings, diff_status = compare_source_and_artifact(
-                    extract_dir, owner, repo, tag_name
-                )
+                if source_preparation_error is None and source_snapshot is not None:
+                    diff_summary, diff_findings, diff_status = (
+                        compare_source_and_artifact_from_snapshot(
+                            extract_dir,
+                            source_snapshot,
+                            tag_name,
+                        )
+                    )
+                else:
+                    diff_summary = {"ref": tag_name, "checked": False}
+                    diff_findings: list[Finding] = []
+                    diff_status = ScannerStatus(
+                        name="source-artifact-diff",
+                        status="failed",
+                        detail=_combine_scanner_detail(
+                            None
+                            if source_preparation_error is not None
+                            else "Source-artifact snapshot is missing.",
+                            source_preparation_error,
+                        ),
+                    )
             else:
                 diff_summary, diff_findings, diff_status = (
                     {"ref": tag_name, "checked": False},
@@ -5169,8 +5495,10 @@ def _report_identity_key(report: AuditReport) -> str:
     return "\0".join((report.repository, report.github_release_id, report.asset_id))
 
 
-def _progress_record(report: AuditReport) -> dict[str, Any]:
-    return {
+def _progress_record(
+    report: AuditReport, worklist_fingerprint: Optional[str] = None
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
         "repository": report.repository,
         "github_release_id": report.github_release_id,
         "asset_id": report.asset_id,
@@ -5180,30 +5508,800 @@ def _progress_record(report: AuditReport) -> dict[str, Any]:
         "completion_status": report.completion_status,
         "report": _report_to_dict(report),
     }
+    if worklist_fingerprint is not None:
+        normalized = _normalise_worklist_fingerprint(
+            worklist_fingerprint, "worklist_fingerprint"
+        )
+        record["worklist_fingerprint"] = normalized
+    return record
+
+
+def _normalise_positive_decimal_id(value: Any, field_name: str) -> str:
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    if not value or not _CANONICAL_POSITIVE_DECIMAL.fullmatch(value):
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    return value
+
+
+def _normalise_str(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    return value
+
+
+def _normalise_progress_identity_key(key: str) -> tuple[str, str, str]:
+    if not isinstance(key, str):
+        raise ValueError("Invalid progress manifest")
+    parts = key.split("\0")
+    if len(parts) != 3:
+        raise ValueError("Invalid progress manifest")
+    identity = _normalise_manifest_identity(
+        {
+            "repository": parts[0],
+            "github_release_id": parts[1],
+            "asset_id": parts[2],
+        }
+    )
+    return identity["repository"], identity["github_release_id"], identity["asset_id"]
+
+
+def _normalise_progress_record(
+    identity_key: str, value: Mapping[str, Any], expected_fingerprint: str
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError("Invalid progress manifest")
+    if not isinstance(value.get("report"), dict):
+        raise ValueError("Invalid progress manifest")
+    value_fingerprint = value.get("worklist_fingerprint")
+    if value_fingerprint != expected_fingerprint:
+        raise ValueError("Invalid progress manifest")
+
+    repository, github_release_id, asset_id = _normalise_progress_identity_key(
+        identity_key
+    )
+    if set(value.keys()) != _WORKER_PROGRESS_RECORD_KEYS_V2:
+        raise ValueError("Invalid progress manifest")
+
+    repository_value = _normalise_str(value["repository"], "repository")
+    if repository_value != repository:
+        raise ValueError("Invalid progress manifest")
+
+    if value.get("github_release_id") != github_release_id:
+        raise ValueError("Invalid progress manifest")
+    if value.get("asset_id") != asset_id:
+        raise ValueError("Invalid progress manifest")
+
+    _normalise_positive_decimal_id(value["github_release_id"], "github_release_id")
+    _normalise_positive_decimal_id(value["asset_id"], "asset_id")
+
+    if not isinstance(value.get("artifact_sha256"), str):
+        raise ValueError("Invalid progress manifest")
+    if (
+        not _CANONICAL_SHA256.fullmatch(value["artifact_sha256"])
+        and value["artifact_sha256"]
+    ):
+        raise ValueError("Invalid progress manifest")
+    if not isinstance(value.get("resolved_tag_commit_sha"), str):
+        raise ValueError("Invalid progress manifest")
+    audit_context_hash = _normalise_str(
+        value["audit_context_hash"], "audit_context_hash"
+    )
+    if not audit_context_hash:
+        raise ValueError("Invalid progress manifest")
+
+    completion_status = value.get("completion_status")
+    if completion_status not in {"completed", "incomplete"}:
+        raise ValueError("Invalid progress manifest")
+
+    return {
+        **value,
+        "repository": repository,
+        "github_release_id": github_release_id,
+        "asset_id": asset_id,
+        "audit_context_hash": audit_context_hash,
+    }
 
 
 def _write_progress_manifest(
-    path: str | Path, records: dict[str, dict[str, Any]]
+    path: str | Path,
+    records: dict[str, dict[str, Any]],
+    worklist_fingerprint: Optional[str] = None,
 ) -> None:
+    if worklist_fingerprint is not None:
+        normalized_fingerprint = _normalise_worklist_fingerprint(
+            worklist_fingerprint, "worklist_fingerprint"
+        )
+        normalized_records = {
+            key: {
+                **_normalise_progress_record(
+                    key,
+                    {
+                        **value,
+                        "worklist_fingerprint": normalized_fingerprint,
+                    },
+                    normalized_fingerprint,
+                ),
+                "worklist_fingerprint": normalized_fingerprint,
+            }
+            for key, value in records.items()
+        }
+        payload = {
+            "schema_version": _WORKER_PROGRESS_SCHEMA_V2,
+            "worklist_fingerprint": normalized_fingerprint,
+            "entries": normalized_records,
+        }
+    else:
+        payload = {"schema_version": "1", "entries": records}
     _atomic_write_text(
         path,
-        json.dumps(
-            {"schema_version": "1", "entries": records},
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
     )
 
 
-def _load_progress_manifest(path: str | Path) -> dict[str, dict[str, Any]]:
+def _normalise_worklist_fingerprint(
+    value: Any, field_name: str = "worklist_fingerprint"
+) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    if not _CANONICAL_SHA256.fullmatch(value):
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    return value
+
+
+def _load_progress_manifest(
+    path: str | Path, expected_worklist_fingerprint: Optional[str] = None
+) -> dict[str, dict[str, Any]]:
     if not Path(path).is_file():
         return {}
+
+    expected_fingerprint = (
+        None
+        if expected_worklist_fingerprint is None
+        else _normalise_worklist_fingerprint(expected_worklist_fingerprint)
+    )
+
     with open(path, encoding="utf-8") as progress_file:
         payload = json.load(progress_file)
-    if not isinstance(payload, dict) or not isinstance(payload.get("entries"), dict):
+
+    if not isinstance(payload, dict):
         raise ValueError(f"Invalid progress manifest: {path}")
-    return payload["entries"]
+    if expected_fingerprint is None:
+        if payload.get("schema_version") != "1":
+            raise ValueError(f"Invalid progress manifest: {path}")
+        if not isinstance(payload.get("entries"), dict):
+            raise ValueError(f"Invalid progress manifest: {path}")
+        return payload["entries"]
+
+    if payload.get("schema_version") == "1":
+        return {}
+    if payload.get("schema_version") != _WORKER_PROGRESS_SCHEMA_V2:
+        raise ValueError(f"Invalid progress manifest: {path}")
+    if set(payload.keys()) != _WORKER_PROGRESS_ROOT_KEYS_V2:
+        raise ValueError(f"Invalid progress manifest: {path}")
+    if not isinstance(payload.get("entries"), dict):
+        raise ValueError(f"Invalid progress manifest: {path}")
+
+    normalized_root_fingerprint = _normalise_worklist_fingerprint(
+        payload["worklist_fingerprint"], "worklist_fingerprint"
+    )
+
+    entries: dict[str, dict[str, Any]] = {}
+    for key, value in payload["entries"].items():
+        entries[key] = _normalise_progress_record(
+            key,
+            value,
+            normalized_root_fingerprint,
+        )
+
+    if normalized_root_fingerprint != expected_fingerprint:
+        return {}
+    return entries
+
+
+def _normalise_non_negative_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    return value
+
+
+def _normalise_positive_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"Invalid {field_name}: {value!r}")
+    return value
+
+
+def _normalise_manifest_artifacts(raw: Any) -> dict[str, dict[str, Any]]:
+    """Validate the v2 byte bindings for the worker's committed generation."""
+    if not isinstance(raw, Mapping):
+        raise ValueError("artifacts must be an object")
+
+    provided = set(raw.keys())
+    if provided != _SHARD_MANIFEST_ARTIFACT_KEYS:
+        extras = ", ".join(sorted(provided - _SHARD_MANIFEST_ARTIFACT_KEYS))
+        missing = ", ".join(sorted(_SHARD_MANIFEST_ARTIFACT_KEYS - provided))
+        if extras and missing:
+            raise ValueError(f"Unexpected artifact keys: {extras}; missing: {missing}")
+        if extras:
+            raise ValueError(f"Unexpected artifact keys: {extras}")
+        raise ValueError(f"Missing artifact keys: {missing}")
+
+    normalised: dict[str, dict[str, Any]] = {}
+    for name in sorted(_SHARD_MANIFEST_ARTIFACT_KEYS):
+        binding = raw[name]
+        if not isinstance(binding, Mapping):
+            raise ValueError(f"Invalid artifact binding: {name}")
+        binding_keys = set(binding.keys())
+        if binding_keys != _SHARD_MANIFEST_ARTIFACT_BINDING_KEYS:
+            extras = ", ".join(
+                sorted(binding_keys - _SHARD_MANIFEST_ARTIFACT_BINDING_KEYS)
+            )
+            missing = ", ".join(
+                sorted(_SHARD_MANIFEST_ARTIFACT_BINDING_KEYS - binding_keys)
+            )
+            if extras and missing:
+                raise ValueError(
+                    f"Invalid artifact binding {name}: unexpected {extras}; missing {missing}"
+                )
+            if extras:
+                raise ValueError(
+                    f"Invalid artifact binding {name}: unexpected {extras}"
+                )
+            raise ValueError(f"Invalid artifact binding {name}: missing {missing}")
+        normalised[name] = {
+            "sha256": _normalise_worklist_fingerprint(
+                binding["sha256"], f"artifacts.{name}.sha256"
+            ),
+            "size_bytes": _normalise_non_negative_int(
+                binding["size_bytes"], f"artifacts.{name}.size_bytes"
+            ),
+        }
+    return normalised
+
+
+def _bounded_artifact_label(path: str | Path) -> str:
+    value = str(path)
+    return (
+        value
+        if len(value) <= EVIDENCE_MAX_LEN
+        else value[: EVIDENCE_MAX_LEN - 3] + "..."
+    )
+
+
+def _hash_worker_artifact(path: str | Path, artifact_name: str) -> tuple[str, int]:
+    """Stream one caller-supplied artifact without parsing or trusting it."""
+    candidate = Path(path)
+    label = _bounded_artifact_label(candidate)
+    try:
+        if not candidate.is_file():
+            raise ValueError(f"Artifact {artifact_name} is not a regular file: {label}")
+        digest = hashlib.sha256()
+        size_bytes = 0
+        with candidate.open("rb") as artifact_file:
+            while chunk := artifact_file.read(_ARTIFACT_HASH_CHUNK_BYTES):
+                size_bytes += len(chunk)
+                digest.update(chunk)
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError(
+            f"Unable to read artifact {artifact_name} ({label}): {str(exc)[:EVIDENCE_MAX_LEN]}"
+        ) from exc
+    return digest.hexdigest(), size_bytes
+
+
+def _verify_shard_manifest_artifact(
+    manifest: Mapping[str, Any], artifact_name: str, artifact_path: str | Path
+) -> dict[str, Any]:
+    """Return a normalised v2 manifest only when one bound artifact matches.
+
+    Aggregation consumes individual report and verdict-delta paths rather than
+    the worker's complete output set.  Keep this byte-level binding reusable so
+    callers can validate an artifact before parsing its contents.
+    """
+    normalised_manifest = _normalise_shard_manifest(manifest)
+    if (
+        not isinstance(artifact_name, str)
+        or artifact_name not in _SHARD_MANIFEST_ARTIFACT_KEYS
+    ):
+        raise ValueError(f"Unknown shard manifest artifact: {artifact_name!r}")
+
+    supplied_digest, supplied_size = _hash_worker_artifact(artifact_path, artifact_name)
+    binding = normalised_manifest["artifacts"][artifact_name]
+    if supplied_size != binding["size_bytes"]:
+        raise ValueError(f"Artifact size mismatch: {artifact_name}")
+    if supplied_digest != binding["sha256"]:
+        raise ValueError(f"Artifact digest mismatch: {artifact_name}")
+    return normalised_manifest
+
+
+def _verify_shard_manifest_artifacts(
+    manifest: Mapping[str, Any], artifact_paths: Mapping[str, str | Path]
+) -> dict[str, Any]:
+    """Return a normalised manifest only when every bound artifact matches.
+
+    The caller owns the paths.  This deliberately verifies their bytes before
+    it parses progress or accepts report/delta evidence from the generation.
+    """
+    normalised_manifest = _normalise_shard_manifest(manifest)
+    if not isinstance(artifact_paths, Mapping):
+        raise ValueError("Artifact paths must be an object")
+    supplied = set(artifact_paths.keys())
+    if supplied != _SHARD_MANIFEST_ARTIFACT_KEYS:
+        extras = ", ".join(sorted(supplied - _SHARD_MANIFEST_ARTIFACT_KEYS))
+        missing = ", ".join(sorted(_SHARD_MANIFEST_ARTIFACT_KEYS - supplied))
+        if extras and missing:
+            raise ValueError(f"Unexpected artifact paths: {extras}; missing: {missing}")
+        if extras:
+            raise ValueError(f"Unexpected artifact paths: {extras}")
+        raise ValueError(f"Missing artifact paths: {missing}")
+
+    for name in sorted(_SHARD_MANIFEST_ARTIFACT_KEYS):
+        _verify_shard_manifest_artifact(normalised_manifest, name, artifact_paths[name])
+    return normalised_manifest
+
+
+def _worker_artifact_bindings(
+    artifact_paths: Mapping[str, str | Path],
+) -> dict[str, dict[str, Any]]:
+    """Create strict digest/size bindings for generated worker data files."""
+    if set(artifact_paths.keys()) != _SHARD_MANIFEST_ARTIFACT_KEYS:
+        raise ValueError("Worker artifact paths are incomplete")
+    return {
+        name: {
+            "sha256": digest,
+            "size_bytes": size_bytes,
+        }
+        for name, (digest, size_bytes) in (
+            (name, _hash_worker_artifact(artifact_paths[name], name))
+            for name in sorted(_SHARD_MANIFEST_ARTIFACT_KEYS)
+        )
+    }
+
+
+def _resolve_worker_output_targets(
+    *,
+    worklist_path: str | Path,
+    progress_path: str | Path,
+    report_json_path: str | Path,
+    report_markdown_path: str | Path,
+    verdict_delta_path: str | Path,
+    manifest_path: str | Path,
+) -> dict[str, Path]:
+    """Resolve output aliases before staging or changing any worker evidence."""
+    raw_targets = {
+        "progress": progress_path,
+        "report_json": report_json_path,
+        "report_markdown": report_markdown_path,
+        "verdict_delta": verdict_delta_path,
+        "manifest": manifest_path,
+    }
+    try:
+        resolved_worklist = Path(worklist_path).resolve(strict=True)
+        targets = {
+            name: Path(path).resolve(strict=False) for name, path in raw_targets.items()
+        }
+    except OSError as exc:
+        raise ValueError(
+            f"Unable to resolve worker output target: {str(exc)[:EVIDENCE_MAX_LEN]}"
+        ) from exc
+
+    target_paths = list(targets.values())
+    if len(set(target_paths)) != len(target_paths):
+        raise ValueError("Worker output targets must be five distinct paths")
+    if resolved_worklist in target_paths:
+        raise ValueError("Worker output target aliases the worklist input")
+    for name, path in targets.items():
+        if path.exists() and path.is_dir():
+            raise ValueError(f"Worker output target is a directory: {name}")
+    return targets
+
+
+def _fsync_directory(path: str | Path) -> None:
+    """Durably record a same-directory rename before the manifest commits it."""
+    directory = Path(path)
+    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _normalise_manifest_identity(raw: Mapping[str, Any]) -> dict[str, str]:
+    if not isinstance(raw, Mapping):
+        raise ValueError("Manifest identity must be an object")
+    provided = set(raw.keys())
+    if provided != _SHARD_MANIFEST_IDENTITY_KEYS:
+        extras = ", ".join(sorted(provided - _SHARD_MANIFEST_IDENTITY_KEYS))
+        missing = ", ".join(sorted(_SHARD_MANIFEST_IDENTITY_KEYS - provided))
+        if extras and missing:
+            raise ValueError(f"Unexpected identity keys: {extras}; missing: {missing}")
+        if extras:
+            raise ValueError(f"Unexpected identity keys: {extras}")
+        raise ValueError(f"Missing identity keys: {missing}")
+
+    repository = plugin_release_utils.canonicalize_github_repository_url(
+        _normalise_str(raw["repository"], "repository")
+    )
+    if raw["repository"] != repository:
+        raise ValueError("Repository URL is not canonical")
+    github_release_id = _normalise_positive_decimal_id(
+        raw["github_release_id"], "github_release_id"
+    )
+    asset_id = _normalise_positive_decimal_id(raw["asset_id"], "asset_id")
+    return {
+        "repository": repository,
+        "github_release_id": github_release_id,
+        "asset_id": asset_id,
+    }
+
+
+def _normalise_manifest_identities(
+    identities: Any, field_name: str
+) -> list[dict[str, str]]:
+    if not isinstance(identities, list):
+        raise ValueError(f"{field_name} must be a list")
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for entry in identities:
+        normalized_entry = _normalise_manifest_identity(entry)
+        key = (
+            normalized_entry["repository"],
+            normalized_entry["github_release_id"],
+            normalized_entry["asset_id"],
+        )
+        if key in seen:
+            raise ValueError(f"Duplicate identity in {field_name}")
+        seen.add(key)
+        normalized.append(normalized_entry)
+    return normalized
+
+
+def _shard_index_for_manifest_identity(
+    identity: Mapping[str, str], shard_count: int
+) -> int:
+    repository_key = plugin_release_utils.canonical_repository_key(
+        identity["repository"]
+    )
+    release_id = identity["github_release_id"]
+    digest = hashlib.sha256(f"{repository_key}\0{release_id}".encode("utf-8")).digest()
+    return int.from_bytes(digest, "big") % shard_count
+
+
+def _normalise_shard_manifest(raw: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        raise ValueError("Shard manifest must be an object")
+
+    required = set(_SHARD_MANIFEST_ROOT_KEYS)
+    provided = set(raw.keys())
+    if provided != required:
+        extras = ", ".join(sorted(provided - required))
+        missing = ", ".join(sorted(required - provided))
+        if extras and missing:
+            raise ValueError(
+                f"Unexpected shard manifest keys: {extras}; missing: {missing}"
+            )
+        if extras:
+            raise ValueError(f"Unexpected shard manifest keys: {extras}")
+        raise ValueError(f"Missing shard manifest keys: {missing}")
+
+    schema_version = raw["schema_version"]
+    if not isinstance(schema_version, str) or not schema_version:
+        raise ValueError("Invalid schema_version")
+    if schema_version != _SHARD_MANIFEST_SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported shard manifest schema version: {schema_version!r}"
+        )
+    worklist_fingerprint = _normalise_worklist_fingerprint(
+        raw["worklist_fingerprint"], "worklist_fingerprint"
+    )
+    source_revision = raw["source_revision"]
+    if not isinstance(source_revision, str) or not source_revision:
+        raise ValueError("Invalid source_revision")
+    if not _CANONICAL_GIT_SHA1.fullmatch(source_revision):
+        raise ValueError(f"Invalid source_revision: {source_revision!r}")
+    shard_count = _normalise_positive_int(raw["shard_count"], "shard_count")
+    shard_index = _normalise_non_negative_int(raw["shard_index"], "shard_index")
+    if shard_index >= shard_count:
+        raise ValueError("shard_index must satisfy 0 <= index < shard_count")
+
+    assigned = _normalise_manifest_identities(
+        raw["assigned_identities"], "assigned_identities"
+    )
+    attempted = _normalise_manifest_identities(
+        raw["attempted_identities"], "attempted_identities"
+    )
+    report = _normalise_manifest_identities(
+        raw["report_identities"], "report_identities"
+    )
+    artifacts = _normalise_manifest_artifacts(raw["artifacts"])
+
+    assigned_set = {
+        (identity["repository"], identity["github_release_id"], identity["asset_id"])
+        for identity in assigned
+    }
+    attempted_set = {
+        (identity["repository"], identity["github_release_id"], identity["asset_id"])
+        for identity in attempted
+    }
+    report_set = {
+        (identity["repository"], identity["github_release_id"], identity["asset_id"])
+        for identity in report
+    }
+
+    if not attempted_set.issubset(assigned_set):
+        raise ValueError("attempted_identities must be a subset of assigned_identities")
+    if not report_set.issubset(assigned_set):
+        raise ValueError("report_identities must be a subset of assigned_identities")
+    if report != attempted:
+        raise ValueError("report_identities must equal attempted_identities")
+
+    for identity in assigned:
+        if _shard_index_for_manifest_identity(identity, shard_count) != shard_index:
+            raise ValueError(
+                "assigned_identities include an identity not assigned to this shard"
+            )
+
+    return {
+        "schema_version": schema_version,
+        "worklist_fingerprint": worklist_fingerprint,
+        "source_revision": source_revision,
+        "shard_count": shard_count,
+        "shard_index": shard_index,
+        "assigned_identities": assigned,
+        "attempted_identities": attempted,
+        "report_identities": report,
+        "artifacts": artifacts,
+    }
+
+
+def _write_shard_manifest(path: str | Path, manifest: Mapping[str, Any]) -> None:
+    normalised = _normalise_shard_manifest(manifest)
+    _atomic_write_text(
+        path,
+        json.dumps(normalised, indent=2, sort_keys=True) + "\n",
+    )
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"Duplicate key in shard manifest: {key}")
+        result[key] = value
+    return result
+
+
+def _load_shard_manifest(path: str | Path) -> dict[str, Any]:
+    if not Path(path).is_file():
+        raise ValueError(f"Shard manifest not found: {path}")
+    try:
+        with open(path, encoding="utf-8") as manifest_file:
+            payload = json.load(
+                manifest_file, object_pairs_hook=_reject_duplicate_json_keys
+            )
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid shard manifest: {path}") from exc
+    return _normalise_shard_manifest(payload)
+
+
+def _validate_expected_shard_manifest(
+    manifest: Mapping[str, Any],
+    worklist: Mapping[str, Any],
+    shard_index: int,
+) -> dict[str, Any]:
+    normalised_manifest = _normalise_shard_manifest(manifest)
+
+    worklist_fingerprint = worklist.get("fingerprint")
+    if worklist_fingerprint is not None:
+        worklist_fingerprint = _normalise_worklist_fingerprint(
+            worklist_fingerprint, "worklist_fingerprint"
+        )
+    else:
+        raise ValueError("Invalid expected worklist")
+
+    payload = worklist.get("payload")
+    if not isinstance(payload, Mapping):
+        raise ValueError("Invalid expected worklist")
+
+    source_revision = _normalise_str(payload["source_revision"], "source_revision")
+    shard_count = _normalise_positive_int(payload["shard_count"], "shard_count")
+    if not isinstance(shard_index, int) or shard_index < 0:
+        raise ValueError("Invalid shard_index")
+
+    expected_assigned = [
+        audit_worklist.worklist_identity(item)
+        for item in audit_worklist.select_worklist_shard(payload, shard_index)
+    ]
+
+    if normalised_manifest["worklist_fingerprint"] != worklist_fingerprint:
+        raise ValueError("Invalid shard manifest: worklist_fingerprint mismatch")
+    if normalised_manifest["source_revision"] != source_revision:
+        raise ValueError("Invalid shard manifest: source_revision mismatch")
+    if normalised_manifest["shard_count"] != shard_count:
+        raise ValueError("Invalid shard manifest: shard_count mismatch")
+    if normalised_manifest["shard_index"] != shard_index:
+        raise ValueError("Invalid shard manifest: shard_index mismatch")
+    if normalised_manifest["assigned_identities"] != expected_assigned:
+        raise ValueError("Invalid shard manifest: assigned_identities mismatch")
+
+    return normalised_manifest
+
+
+def _worklist_item_to_audit_inputs(
+    item: Mapping[str, Any],
+) -> tuple[str, dict[str, Any], dict[str, Any], Optional[str], Optional[str]]:
+    """Build audit inputs solely from one already-validated worklist item."""
+    identity = audit_worklist.worklist_identity(item)
+    repository = identity["repository"]
+    owner, repo = parse_owner_repo(repository)
+    asset_digest = item["asset_digest"]
+    release = {
+        "id": item["release_id"],
+        "tag_name": item["tag_name"],
+        "prerelease": item["prerelease"],
+        "draft": item["draft"],
+        "published_at": item["published_at"],
+        "created_at": item["created_at"],
+        "assets": [
+            {
+                "id": item["asset_id"],
+                "name": item["asset_name"],
+                "browser_download_url": item["asset_url"],
+                "digest": (
+                    f"sha256:{asset_digest}" if asset_digest is not None else None
+                ),
+            }
+        ],
+    }
+    return (
+        repository,
+        release,
+        {"full_name": f"{owner}/{repo}", "archived": item["repository_archived"]},
+        item["resolved_source_commit_sha"],
+        item["source_resolution_error"],
+    )
+
+
+def _report_manifest_identity(report: AuditReport) -> dict[str, str]:
+    """Return one identity-complete worker report identity or reject it."""
+    return _normalise_manifest_identity(
+        {
+            "repository": report.repository,
+            "github_release_id": report.github_release_id,
+            "asset_id": report.asset_id,
+        }
+    )
+
+
+def _worker_shard_manifest(
+    worklist: Mapping[str, Any],
+    shard_index: int,
+    assigned_items: list[Mapping[str, Any]],
+    reports: list[AuditReport],
+    artifacts: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Build the exact worker checkpoint manifest for a validated snapshot."""
+    payload = worklist["payload"]
+    identities = [_report_manifest_identity(report) for report in reports]
+    return {
+        "schema_version": _SHARD_MANIFEST_SCHEMA_VERSION,
+        "worklist_fingerprint": worklist["fingerprint"],
+        "source_revision": payload["source_revision"],
+        "shard_count": payload["shard_count"],
+        "shard_index": shard_index,
+        "assigned_identities": [
+            audit_worklist.worklist_identity(item) for item in assigned_items
+        ],
+        "attempted_identities": identities,
+        "report_identities": identities,
+        "artifacts": _normalise_manifest_artifacts(artifacts),
+    }
+
+
+def _manifest_identity_key(identity: Mapping[str, str]) -> tuple[str, str, str]:
+    return (
+        identity["repository"],
+        identity["github_release_id"],
+        identity["asset_id"],
+    )
+
+
+def validate_aggregate_worklist_coverage(
+    worklist_path: str | Path,
+    report_paths: list[str],
+    delta_paths: list[str],
+    manifest_paths: list[str],
+) -> dict[str, Any]:
+    """Prove the supplied shard evidence exactly covers the prepared worklist.
+
+    Counting fourteen artifacts cannot detect a shard that uploaded a
+    structurally valid but incomplete report.  Every manifest is bound to the
+    producer's fingerprint and source revision, to its own deterministic
+    assignment, and to the exact bytes of the report and delta it accompanies;
+    the union of shard report identities must then equal the worklist identity
+    set exactly, so unattempted and unexpected work both fail closed.
+    """
+    document = audit_worklist.load_worklist_document(worklist_path)
+    payload = document["payload"]
+    shard_count = payload["shard_count"]
+
+    for label, supplied in (
+        ("report", len(report_paths)),
+        ("verdict delta", len(delta_paths)),
+        ("shard manifest", len(manifest_paths)),
+    ):
+        if supplied != shard_count:
+            raise ValueError(
+                f"Aggregation requires exactly {shard_count} shard {label} "
+                f"artifacts; got {supplied}"
+            )
+
+    expected_identities = {
+        _manifest_identity_key(audit_worklist.worklist_identity(item))
+        for item in payload["items"]
+    }
+
+    covered: set[tuple[str, str, str]] = set()
+    seen_indices: set[int] = set()
+    for report_path, delta_path, manifest_path in zip(
+        report_paths, delta_paths, manifest_paths
+    ):
+        manifest = _load_shard_manifest(manifest_path)
+        shard_index = manifest["shard_index"]
+        if shard_index in seen_indices:
+            raise ValueError(f"Duplicate shard manifest index: {shard_index}")
+        seen_indices.add(shard_index)
+
+        _validate_expected_shard_manifest(manifest, document, shard_index)
+        _verify_shard_manifest_artifact(manifest, "report_json", report_path)
+        _verify_shard_manifest_artifact(manifest, "verdict_delta", delta_path)
+
+        reported = [
+            _manifest_identity_key(_report_manifest_identity(report))
+            for report in _load_aggregate_shard_reports(report_path)
+        ]
+        report_identities = set(reported)
+        if len(reported) != len(report_identities):
+            raise ValueError(
+                f"Duplicate release identity in shard {shard_index} report"
+            )
+        claimed = {
+            _manifest_identity_key(identity)
+            for identity in manifest["report_identities"]
+        }
+        if report_identities != claimed:
+            raise ValueError(
+                f"Shard {shard_index} manifest and report identities disagree"
+            )
+
+        overlap = covered & report_identities
+        if overlap:
+            raise ValueError(f"Overlapping shard coverage: {sorted(overlap)[0]}")
+        covered |= report_identities
+
+    missing_indices = sorted(set(range(shard_count)) - seen_indices)
+    if missing_indices:
+        raise ValueError(
+            "Missing shard manifest index/indices: "
+            + ", ".join(str(index) for index in missing_indices)
+        )
+
+    if covered != expected_identities:
+        unattempted = sorted(expected_identities - covered)
+        unexpected = sorted(covered - expected_identities)
+        raise ValueError(
+            "Aggregate coverage does not match the prepared worklist: "
+            f"{len(unattempted)} unattempted, {len(unexpected)} unexpected "
+            f"(first unattempted {unattempted[:1]}, "
+            f"first unexpected {unexpected[:1]})"
+        )
+
+    return {
+        "worklist_fingerprint": document["fingerprint"],
+        "shard_count": shard_count,
+        "identity_count": len(expected_identities),
+    }
 
 
 def _verdict_delta_from_reports(
@@ -5335,6 +6433,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Audit one explicit repository URL",
     )
     mode_group.add_argument(
+        "--worklist",
+        metavar="PATH",
+        help="Audit one validated immutable worklist shard",
+    )
+    mode_group.add_argument(
         "--aggregate-reports",
         nargs="+",
         metavar="REPORT",
@@ -5346,16 +6449,48 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Validate and atomically merge one verdict delta into the tracked store",
     )
     parser.add_argument(
+        "--prepare-worklist",
+        metavar="WORKLIST",
+        help="Prepare immutable worklist JSON at the given path",
+    )
+    parser.add_argument(
+        "--expected-worklist-fingerprint",
+        metavar="SHA256",
+        help="Required worklist fingerprint expected by a shard worker",
+    )
+    parser.add_argument(
         "--aggregate-verdict-deltas",
         nargs="*",
-        default=[],
+        default=None,
         metavar="DELTA",
         help="Verdict delta JSON files to aggregate with shard reports",
+    )
+    parser.add_argument(
+        "--expected-worklist",
+        metavar="PATH",
+        help="Prepared worklist that aggregated shard evidence must cover exactly",
+    )
+    parser.add_argument(
+        "--aggregate-shard-manifests",
+        nargs="*",
+        default=None,
+        metavar="MANIFEST",
+        help="Shard manifests proving exact worklist coverage",
     )
     parser.add_argument(
         "--latest-only",
         action="store_true",
         help="Audit one latest eligible release; valid only with --repository",
+    )
+    parser.add_argument(
+        "--source-revision",
+        help="Source revision used for worklist preparation mode",
+    )
+    parser.add_argument(
+        "--api-deadline-seconds",
+        type=int,
+        default=None,
+        help="API timeout for producer-mode repository discovery",
     )
     parser.add_argument("--shard-count", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
@@ -5374,12 +6509,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument(
         "--plugins-file",
-        default=PLUGINS_FILE,
+        default=None,
         help=f"Path to plugin list file (default: {PLUGINS_FILE})",
     )
     parser.add_argument(
         "--base-ref",
-        default="HEAD~1",
         help="Git ref to diff against for --changed mode (default: HEAD~1)",
     )
     parser.add_argument(
@@ -5414,13 +6548,102 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    plugins_file_was_supplied = args.plugins_file is not None
+    api_deadline_was_supplied = args.api_deadline_seconds is not None
+    base_ref_was_supplied = args.base_ref is not None
+    expected_worklist_fingerprint_was_supplied = (
+        args.expected_worklist_fingerprint is not None
+    )
+    aggregate_verdict_deltas_was_supplied = args.aggregate_verdict_deltas is not None
+    expected_worklist_was_supplied = args.expected_worklist is not None
+    aggregate_shard_manifests_was_supplied = args.aggregate_shard_manifests is not None
+    args.plugins_file = args.plugins_file or PLUGINS_FILE
+    args.api_deadline_seconds = (
+        args.api_deadline_seconds if args.api_deadline_seconds is not None else 300
+    )
+    args.aggregate_verdict_deltas = args.aggregate_verdict_deltas or []
+    args.aggregate_shard_manifests = args.aggregate_shard_manifests or []
 
-    if args.latest_only and not args.repository:
+    if args.all:
+        selected_mode = "all"
+    elif args.changed:
+        selected_mode = "changed"
+    elif args.repository:
+        selected_mode = "repository"
+    elif args.worklist is not None:
+        selected_mode = "worklist"
+    elif args.aggregate_reports:
+        selected_mode = "aggregate-reports"
+    elif args.merge_verdict_delta:
+        selected_mode = "merge-verdict-delta"
+    else:
+        parser.error(
+            "one of --all, --changed, --repository, --worklist, "
+            "--aggregate-reports, or --merge-verdict-delta must be specified"
+        )
+
+    prepare_mode = args.prepare_worklist is not None
+    worklist_mode = args.worklist is not None
+    if args.latest_only and selected_mode != "repository":
         parser.error("--latest-only is valid only with --repository")
-    try:
-        select_audit_shard([], args.shard_count, args.shard_index)
-    except ValueError as exc:
-        parser.error(str(exc))
+    if expected_worklist_fingerprint_was_supplied and not worklist_mode:
+        parser.error("--expected-worklist-fingerprint is valid only with --worklist")
+    if (
+        expected_worklist_was_supplied or aggregate_shard_manifests_was_supplied
+    ) and selected_mode != "aggregate-reports":
+        parser.error(
+            "--expected-worklist and --aggregate-shard-manifests are valid only "
+            "with --aggregate-reports"
+        )
+    if expected_worklist_was_supplied != aggregate_shard_manifests_was_supplied:
+        parser.error(
+            "--expected-worklist and --aggregate-shard-manifests must be "
+            "supplied together"
+        )
+    if expected_worklist_was_supplied and not args.expected_worklist.strip():
+        parser.error("--expected-worklist must not be empty")
+
+    if worklist_mode:
+        if (
+            not args.expected_worklist_fingerprint
+            or not args.expected_worklist_fingerprint.strip()
+        ):
+            parser.error("--expected-worklist-fingerprint is required with --worklist")
+        if prepare_mode:
+            parser.error("--prepare-worklist cannot be combined with --worklist")
+        if args.latest_only or base_ref_was_supplied:
+            parser.error("local selection arguments are not valid with --worklist")
+        if plugins_file_was_supplied:
+            parser.error("--plugins-file is not valid with --worklist")
+        if args.source_revision is not None or api_deadline_was_supplied:
+            parser.error("producer-only arguments are not valid with --worklist")
+        if aggregate_verdict_deltas_was_supplied:
+            parser.error("aggregate arguments are not valid with --worklist")
+
+    if prepare_mode:
+        if selected_mode not in {"all", "changed", "repository"}:
+            parser.error(
+                "--prepare-worklist requires one of --all, --changed, or --repository"
+            )
+        if selected_mode == "changed" and not (args.base_ref and args.base_ref.strip()):
+            parser.error("--prepare-worklist with --changed requires --base-ref")
+        if selected_mode != "changed" and base_ref_was_supplied:
+            parser.error("base_ref is valid only with --changed")
+        if args.api_deadline_seconds <= 0:
+            parser.error("--api-deadline-seconds must be greater than zero")
+        if not args.source_revision:
+            parser.error("--source-revision is required with --prepare-worklist")
+    else:
+        if args.changed and base_ref_was_supplied and not args.base_ref.strip():
+            parser.error("--base-ref must not be empty")
+        if args.changed and not args.base_ref:
+            args.base_ref = "HEAD~1"
+        if base_ref_was_supplied and selected_mode != "changed":
+            parser.error("base_ref is valid only with --changed")
+        try:
+            select_audit_shard([], args.shard_count, args.shard_index)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -5432,6 +6655,63 @@ def main(argv: Optional[list[str]] = None) -> int:
             log.error("Verdict delta merge failed: %s", exc)
             return 1
         return 0
+
+    if args.prepare_worklist:
+        try:
+            if args.all:
+                repository_urls = read_repo_urls(args.plugins_file)
+                selection_mode = "all"
+            elif args.changed:
+                repository_urls = get_changed_repos(args.plugins_file, args.base_ref)
+                selection_mode = "changed"
+            else:
+                repository_urls = [args.repository]
+                selection_mode = "repository"
+
+            with _producer_api_budget_scope(args.api_deadline_seconds) as api_budget:
+                fingerprint, _ = audit_worklist.prepare_audit_worklist(
+                    args.prepare_worklist,
+                    source_revision=args.source_revision,
+                    selection_mode=selection_mode,
+                    repository_urls=repository_urls,
+                    shard_count=args.shard_count,
+                    latest_only=args.latest_only,
+                    base_ref=args.base_ref if args.changed else None,
+                    release_fetcher=get_releases,
+                    metadata_fetcher=get_repo_metadata,
+                    tag_resolver=audit_worklist.resolve_repository_tags_via_ls_remote,
+                    api_deadline_seconds=args.api_deadline_seconds,
+                    api_budget=api_budget,
+                )
+            print(f"worklist_fingerprint={fingerprint}")
+            return 0
+        except Exception as exc:
+            log.error("Failed to prepare audit worklist: %s", exc)
+            return 1
+
+    worklist_document: Optional[dict[str, Any]] = None
+    worklist_items: list[dict[str, Any]] = []
+    if worklist_mode:
+        # This is intentionally before policy/configuration loading and every
+        # output-path write. A malformed or substituted snapshot is a
+        # run-global error with no worker evidence to publish.
+        try:
+            worklist_document = audit_worklist.load_expected_worklist_document(
+                args.worklist, args.expected_worklist_fingerprint
+            )
+            payload = worklist_document["payload"]
+            if (
+                args.shard_count != payload["shard_count"]
+                or args.shard_index < 0
+                or args.shard_index >= payload["shard_count"]
+            ):
+                raise ValueError("CLI shard shape does not match worklist")
+            worklist_items = audit_worklist.select_worklist_shard(
+                payload, args.shard_index
+            )
+        except Exception as exc:
+            log.error("Failed to load worker worklist: %s", exc)
+            return 1
 
     # Load configuration
     try:
@@ -5464,6 +6744,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             if len(args.aggregate_reports) != len(aggregate_delta_paths):
                 raise ValueError(
                     "Each aggregated shard report requires a corresponding verdict delta shard artifact"
+                )
+            if args.expected_worklist is not None:
+                validate_aggregate_worklist_coverage(
+                    args.expected_worklist,
+                    args.aggregate_reports,
+                    aggregate_delta_paths,
+                    args.aggregate_shard_manifests,
                 )
             for report_path, delta_path in zip(
                 args.aggregate_reports, aggregate_delta_paths
@@ -5501,95 +6788,300 @@ def main(argv: Optional[list[str]] = None) -> int:
     verdict_delta_path = args.verdict_delta or os.path.join(
         args.output_dir, f"verdict-delta-shard-{args.shard_index}.json"
     )
-
-    # Determine repositories to audit
-    try:
-        if args.all:
-            repo_urls = read_repo_urls(args.plugins_file)
-        elif args.changed:
-            repo_urls = get_changed_repos(args.plugins_file, args.base_ref)
-        else:
-            repo_urls = [args.repository]
-    except FileNotFoundError as exc:
-        log.error("%s", exc)
-        return 1
-
-    if not repo_urls:
-        log.info("No repositories to audit.")
-        # Still write deterministic empty reports so the workflow artifact
-        # upload always finds files and CI does not produce a spurious
-        # "No files were found" warning.
+    manifest_path = Path(args.output_dir) / "shard-manifest.json"
+    worker_artifact_paths: Optional[dict[str, Path]] = None
+    if worklist_mode:
         try:
-            write_reports([], args.output_dir, verdicts=verdict_snapshot)
-            _atomic_write_text(
-                verdict_delta_path,
-                json.dumps({}, indent=2, sort_keys=True) + "\n",
+            output_targets = _resolve_worker_output_targets(
+                worklist_path=args.worklist,
+                progress_path=progress_path,
+                report_json_path=report_json_path,
+                report_markdown_path=report_markdown_path,
+                verdict_delta_path=verdict_delta_path,
+                manifest_path=manifest_path,
             )
-            log.info(
-                "Empty reports and verdict delta written: %s, %s, %s",
-                report_json_path,
-                report_markdown_path,
-                verdict_delta_path,
+        except ValueError as exc:
+            log.error("Invalid worker output targets: %s", exc)
+            return 1
+        progress_path = str(output_targets["progress"])
+        report_json_path = str(output_targets["report_json"])
+        report_markdown_path = str(output_targets["report_markdown"])
+        verdict_delta_path = str(output_targets["verdict_delta"])
+        manifest_path = output_targets["manifest"]
+        worker_artifact_paths = {
+            "progress": Path(progress_path),
+            "report_json": Path(report_json_path),
+            "report_markdown": Path(report_markdown_path),
+            "verdict_delta": Path(verdict_delta_path),
+        }
+
+    repository_errors: list[AuditReport] = []
+    if worklist_mode:
+        work_items: list[Any] = worklist_items
+    else:
+        # Local and smoke commands retain the discovery path. Worklist-mode
+        # must not enter this branch: its selection was authenticated above.
+        try:
+            if args.all:
+                repo_urls = read_repo_urls(args.plugins_file)
+            elif args.changed:
+                repo_urls = get_changed_repos(args.plugins_file, args.base_ref)
+            else:
+                repo_urls = [args.repository]
+        except FileNotFoundError as exc:
+            log.error("%s", exc)
+            return 1
+
+        if not repo_urls:
+            log.info("No repositories to audit.")
+            # Still write deterministic empty reports so the workflow artifact
+            # upload always finds files and CI does not produce a spurious
+            # "No files were found" warning.
+            try:
+                write_reports([], args.output_dir, verdicts=verdict_snapshot)
+                _atomic_write_text(
+                    verdict_delta_path,
+                    json.dumps({}, indent=2, sort_keys=True) + "\n",
+                )
+                log.info(
+                    "Empty reports and verdict delta written: %s, %s, %s",
+                    report_json_path,
+                    report_markdown_path,
+                    verdict_delta_path,
+                )
+            except Exception as exc:
+                log.error("Failed to write empty audit outputs: %s", exc)
+                return 1
+            # Print distinction in job summary
+            summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+            if summary_file:
+                try:
+                    with open(summary_file, "a", encoding="utf-8") as f:
+                        f.write(
+                            "## Security Audit\n\n"
+                            "No plugin repository changes were detected. "
+                            "No plugins were scanned in this run.\n"
+                        )
+                except Exception:
+                    pass
+            return 0
+
+        log.info("Enumerating %d repository/repositories.", len(repo_urls))
+        try:
+            work_items, repository_errors = build_audit_worklist(
+                repo_urls, latest_only=args.latest_only
+            )
+            work_items = select_audit_shard(
+                work_items, args.shard_count, args.shard_index
             )
         except Exception as exc:
-            log.error("Failed to write empty audit outputs: %s", exc)
+            log.error("Failed to build audit worklist: %s", exc)
             return 1
-        # Print distinction in job summary
-        summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
-        if summary_file:
-            try:
-                with open(summary_file, "a", encoding="utf-8") as f:
-                    f.write(
-                        "## Security Audit\n\n"
-                        "No plugin repository changes were detected. "
-                        "No plugins were scanned in this run.\n"
-                    )
-            except Exception:
-                pass
-        return 0
 
-    log.info("Enumerating %d repository/repositories.", len(repo_urls))
-    try:
-        worklist, repository_errors = build_audit_worklist(
-            repo_urls, latest_only=args.latest_only
-        )
-        worklist = select_audit_shard(worklist, args.shard_count, args.shard_index)
-    except Exception as exc:
-        log.error("Failed to build audit worklist: %s", exc)
-        return 1
-
-    if args.shard_count > 1 and repository_errors:
-        for report in repository_errors:
-            detail = "; ".join(report.errors) or "unknown repository error"
-            log.error(
-                "Run-global sharded enumeration failure for %s: %s",
-                report.repository,
-                detail,
-            )
-        return 1
+        if args.shard_count > 1 and repository_errors:
+            for report in repository_errors:
+                detail = "; ".join(report.errors) or "unknown repository error"
+                log.error(
+                    "Run-global sharded enumeration failure for %s: %s",
+                    report.repository,
+                    detail,
+                )
+            return 1
 
     log.info(
         "Auditing shard %d/%d with %d eligible release(s).",
         args.shard_index,
         args.shard_count,
-        len(worklist),
+        len(work_items),
     )
-    try:
-        progress_records = _load_progress_manifest(progress_path)
-    except Exception as exc:
-        log.error("Failed to load progress manifest: %s", exc)
-        return 1
+    if worklist_mode:
+        assert worker_artifact_paths is not None
+        try:
+            # The manifest is the generation commit record.  Do not parse a
+            # progress file until all four bound artifacts have matched it.
+            committed_manifest = _load_shard_manifest(manifest_path)
+            _validate_expected_shard_manifest(
+                committed_manifest, worklist_document, args.shard_index
+            )
+            _verify_shard_manifest_artifacts(committed_manifest, worker_artifact_paths)
+            progress_records = _load_progress_manifest(
+                progress_path, worklist_document["fingerprint"]
+            )
+        except Exception as exc:
+            # A missing, old, malformed, or byte-mismatched generation must
+            # never make progress resumable.  Re-audit solely from the
+            # prepared worklist without entering legacy discovery seams.
+            log.warning("Ignoring uncommitted worker checkpoint: %s", exc)
+            progress_records = {}
+    else:
+        try:
+            progress_records = _load_progress_manifest(progress_path)
+        except Exception as exc:
+            log.error("Failed to load progress manifest: %s", exc)
+            return 1
 
     reports: list[AuditReport] = []
     if args.shard_index == 0:
         reports.extend(repository_errors)
 
-    for item in worklist:
-        release = item.release
-        asset = plugin_release_utils.get_zip_asset(release) or {}
+    def checkpoint_outputs() -> tuple[str, str]:
+        if not worklist_mode:
+            _write_progress_manifest(progress_path, progress_records)
+            json_path, md_path = write_reports(
+                reports, args.output_dir, verdicts=verdict_snapshot
+            )
+            _atomic_write_text(
+                verdict_delta_path,
+                json.dumps(
+                    _verdict_delta_from_reports(reports), indent=2, sort_keys=True
+                )
+                + "\n",
+            )
+            return json_path, md_path
+
+        # The manifest is the sole commit record.  Data may be partially
+        # promoted if a process dies, but without a newly replaced manifest
+        # those bytes cannot be resumed or published as a generation.
+        assert worker_artifact_paths is not None
+        staging_root = manifest_path.parent.parent
+        staging_root.mkdir(parents=True, exist_ok=True)
+        staging_dir = Path(
+            tempfile.mkdtemp(prefix=".audit-worker-checkpoint-", dir=staging_root)
+        )
+        staged_progress_path = staging_dir / "progress.json"
+        staged_delta_path = staging_dir / "verdict-delta.json"
+        staged_manifest_path = staging_dir / "shard-manifest.json"
+        try:
+            _write_progress_manifest(
+                staged_progress_path,
+                progress_records,
+                worklist_document["fingerprint"],
+            )
+            staged_report_path, staged_markdown_path = write_reports(
+                reports, str(staging_dir), verdicts=verdict_snapshot
+            )
+            _atomic_write_text(
+                staged_delta_path,
+                json.dumps(
+                    _verdict_delta_from_reports(reports), indent=2, sort_keys=True
+                )
+                + "\n",
+            )
+            staged_artifact_paths = {
+                "progress": staged_progress_path,
+                "report_json": Path(staged_report_path),
+                "report_markdown": Path(staged_markdown_path),
+                "verdict_delta": staged_delta_path,
+            }
+            artifact_bindings = _worker_artifact_bindings(staged_artifact_paths)
+            staged_manifest = _worker_shard_manifest(
+                worklist_document,
+                args.shard_index,
+                work_items,
+                reports,
+                artifact_bindings,
+            )
+            _write_shard_manifest(
+                staged_manifest_path,
+                staged_manifest,
+            )
+            _verify_shard_manifest_artifacts(staged_manifest, staged_artifact_paths)
+
+            def stage_for_target(
+                source_path: Path, target_path: Path, phase: str
+            ) -> Path:
+                """Copy one already-validated file beside its live target."""
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                descriptor, temporary = tempfile.mkstemp(
+                    prefix=f".{target_path.name}.{phase}-",
+                    suffix=".tmp",
+                    dir=target_path.parent,
+                )
+                temporary_path = Path(temporary)
+                try:
+                    with (
+                        os.fdopen(descriptor, "wb") as output,
+                        source_path.open("rb") as source,
+                    ):
+                        shutil.copyfileobj(source, output)
+                        output.flush()
+                        os.fsync(output.fileno())
+                except BaseException:
+                    if temporary_path.exists():
+                        temporary_path.unlink()
+                    raise
+                return temporary_path
+
+            # Target-local staging keeps arbitrary progress and verdict-delta
+            # paths atomic even when they are not on output_dir's filesystem.
+            staged_targets: dict[str, Path] = {}
+            try:
+                for name in sorted(_SHARD_MANIFEST_ARTIFACT_KEYS):
+                    staged_targets[name] = stage_for_target(
+                        staged_artifact_paths[name],
+                        worker_artifact_paths[name],
+                        "checkpoint-stage",
+                    )
+                _verify_shard_manifest_artifacts(staged_manifest, staged_targets)
+
+                # Data first, manifest last.  Never roll a partially promoted
+                # data generation back: the unchanged prior manifest rejects it.
+                for name in sorted(_SHARD_MANIFEST_ARTIFACT_KEYS):
+                    os.replace(staged_targets[name], worker_artifact_paths[name])
+                    _fsync_directory(worker_artifact_paths[name].parent)
+
+                staged_manifest_target = stage_for_target(
+                    staged_manifest_path,
+                    manifest_path,
+                    "checkpoint-manifest",
+                )
+                try:
+                    os.replace(staged_manifest_target, manifest_path)
+                    _fsync_directory(manifest_path.parent)
+                finally:
+                    if staged_manifest_target.exists():
+                        staged_manifest_target.unlink()
+
+                # A manifest is publishable only after it verifies the visible
+                # data generation it just committed.
+                _verify_shard_manifest_artifacts(
+                    _load_shard_manifest(manifest_path), worker_artifact_paths
+                )
+            finally:
+                for staged_path in staged_targets.values():
+                    if staged_path.exists():
+                        staged_path.unlink()
+            return report_json_path, report_markdown_path
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+    if worklist_mode and not work_items:
+        try:
+            checkpoint_outputs()
+        except Exception as exc:
+            log.error("Failed to checkpoint empty worker outputs: %s", exc)
+            return 1
+
+    for item in work_items:
+        if worklist_mode:
+            (
+                repository,
+                release,
+                repository_metadata,
+                prepared_commit_sha,
+                prepared_source_resolution_error,
+            ) = _worklist_item_to_audit_inputs(item)
+            asset = release["assets"][0]
+        else:
+            repository = item.repository
+            release = item.release
+            repository_metadata = item.repository_metadata
+            prepared_commit_sha = None
+            prepared_source_resolution_error = None
+            asset = plugin_release_utils.get_zip_asset(release) or {}
         key = "\0".join(
             (
-                item.repository,
+                repository,
                 str(release.get("id", "")),
                 str(asset.get("id", "")),
             )
@@ -5599,19 +7091,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             asset.get("digest")
         )
         if digest and key in progress_records:
-            commit_sha, _tree_sha, _error = _resolve_ref_to_commit_and_tree_sha(
-                *parse_owner_repo(item.repository), release.get("tag_name", "")
-            )
+            if worklist_mode:
+                resolved_tag_commit_sha = prepared_commit_sha or ""
+            else:
+                commit_sha, _tree_sha, _error = _resolve_ref_to_commit_and_tree_sha(
+                    *parse_owner_repo(repository), release.get("tag_name", "")
+                )
+                resolved_tag_commit_sha = commit_sha or ""
             scanner_identities = _scanner_runtime_identities(policy)
             expected = {
-                "repository": item.repository,
+                "repository": repository,
                 "release": str(release.get("tag_name", "")),
                 "release_id": (f"{release.get('tag_name', '')}@{asset.get('id', '')}"),
                 "github_release_id": str(release.get("id", "")),
                 "asset_id": str(asset.get("id", "")),
                 "artifact_url": str(asset.get("browser_download_url", "")),
                 "artifact_sha256": digest,
-                "resolved_tag_commit_sha": commit_sha or "",
+                "resolved_tag_commit_sha": resolved_tag_commit_sha,
                 "audit_context_hash": compute_audit_context_hash(
                     policy,
                     exceptions,
@@ -5621,13 +7117,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                 ),
                 "completion_status": "completed",
             }
+            if worklist_mode:
+                expected["worklist_fingerprint"] = worklist_document["fingerprint"]
             resumed_report = _resumable_progress_report(
                 progress_records[key], expected, key
             )
             if resumed_report is not None:
                 log.info(
                     "Resuming completed release %s %s.",
-                    item.repository,
+                    repository,
                     resumed_report.release_id,
                 )
 
@@ -5636,13 +7134,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             try:
                 report = audit_release(
-                    item.repository,
+                    repository,
                     release,
                     policy=policy,
                     exceptions=exceptions,
                     cache_dir=args.cache_dir,
                     skip_cache=args.skip_cache,
-                    _repo_metadata=item.repository_metadata,
+                    _repo_metadata=repository_metadata,
+                    _prepared_commit_sha=prepared_commit_sha,
+                    _prepared_source_resolution_error=prepared_source_resolution_error,
                     _policy_path=args.policy,
                     _allowlist_path=args.allowlist,
                     _persist_verdict=False,
@@ -5650,25 +7150,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             except Exception as exc:
                 log.error(
                     "Run-global audit failure while processing %s release %s: %s",
-                    item.repository,
+                    repository,
                     release.get("id", ""),
                     _redacted_exception_detail(exc),
                 )
                 return 1
         reports.append(report)
-        progress_records[key] = _progress_record(report)
+        progress_records[key] = _progress_record(
+            report,
+            worklist_document["fingerprint"] if worklist_mode else None,
+        )
         try:
-            _write_progress_manifest(progress_path, progress_records)
-            write_reports(reports, args.output_dir, verdicts=verdict_snapshot)
-            _atomic_write_text(
-                verdict_delta_path,
-                json.dumps(
-                    _verdict_delta_from_reports(reports),
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-            )
+            checkpoint_outputs()
         except Exception as exc:
             log.error("Failed to checkpoint audit outputs: %s", exc)
             return 1
@@ -5677,7 +7170,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         log.info(
             "%s %s %s → %s (score %d)",
             cls_emoji,
-            item.repository,
+            repository,
             report.release_id,
             cls,
             report.risk_score,
@@ -5700,14 +7193,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # Write reports
     try:
-        json_path, md_path = write_reports(
-            reports, args.output_dir, verdicts=verdict_snapshot
-        )
-        _atomic_write_text(
-            verdict_delta_path,
-            json.dumps(_verdict_delta_from_reports(reports), indent=2, sort_keys=True)
-            + "\n",
-        )
+        json_path, md_path = checkpoint_outputs()
         log.info("JSON report: %s", json_path)
         log.info("Markdown report: %s", md_path)
     except Exception as exc:
