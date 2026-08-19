@@ -62,6 +62,17 @@ def test_readme_documents_current_identity_and_outcome_contract():
         assert contract in readme
 
 
+def test_configured_repository_list_uses_the_auditable_rename_target():
+    configured_repositories = (
+        (ROOT / "additional_plugins.txt").read_text(encoding="utf-8").splitlines()
+    )
+
+    assert (
+        "https://github.com/danielcopper/decky-romm-sync" not in configured_repositories
+    )
+    assert "https://github.com/danielcopper/romm-tender" in configured_repositories
+
+
 def test_source_inventory_proof_is_complete_and_self_consistent():
     proof = _read_json(SOURCE_INVENTORY_PROOF_PATH)
     projection = _read_json(CAPACITY_PROJECTION_PATH)
