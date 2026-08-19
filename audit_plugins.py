@@ -4815,6 +4815,25 @@ def audit_release(
     if meta.get("archived"):
         report.errors.append(f"Repository {owner}/{repo} is archived.")
 
+    # A producer-recorded source-resolution failure is already a complete,
+    # release-local worker outcome.  In particular, it must not probe scanner
+    # binaries merely to construct a resumable context for an incomplete
+    # release; that would turn a no-work error record into host-dependent work.
+    if prepared_source_resolution_error is not None:
+        report.audit_context_hash = compute_audit_context_hash(
+            policy,
+            exceptions,
+            policy_path=_policy_path,
+            allowlist_path=_allowlist_path,
+            scanner_identities={},
+        )
+        return _record_release_local_error(
+            report,
+            label="Prepared source resolution failed",
+            status_name="source-resolution",
+            exc=ValueError(prepared_source_resolution_error),
+        )
+
     scanner_identities = _scanner_runtime_identities(policy)
     audit_ctx_hash = compute_audit_context_hash(
         policy,
@@ -4824,14 +4843,6 @@ def audit_release(
         scanner_identities=scanner_identities,
     )
     report.audit_context_hash = audit_ctx_hash
-
-    if prepared_source_resolution_error is not None:
-        return _record_release_local_error(
-            report,
-            label="Prepared source resolution failed",
-            status_name="source-resolution",
-            exc=ValueError(prepared_source_resolution_error),
-        )
 
     if prepared_commit_sha is not None:
         resolved_tag_commit_sha = prepared_commit_sha
@@ -6047,7 +6058,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--aggregate-verdict-deltas",
         nargs="*",
-        default=[],
+        default=None,
         metavar="DELTA",
         help="Verdict delta JSON files to aggregate with shard reports",
     )
@@ -6124,10 +6135,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
     plugins_file_was_supplied = args.plugins_file is not None
     api_deadline_was_supplied = args.api_deadline_seconds is not None
+    base_ref_was_supplied = args.base_ref is not None
+    expected_worklist_fingerprint_was_supplied = (
+        args.expected_worklist_fingerprint is not None
+    )
+    aggregate_verdict_deltas_was_supplied = args.aggregate_verdict_deltas is not None
     args.plugins_file = args.plugins_file or PLUGINS_FILE
     args.api_deadline_seconds = (
         args.api_deadline_seconds if args.api_deadline_seconds is not None else 300
     )
+    args.aggregate_verdict_deltas = args.aggregate_verdict_deltas or []
 
     if args.all:
         selected_mode = "all"
@@ -6135,7 +6152,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         selected_mode = "changed"
     elif args.repository:
         selected_mode = "repository"
-    elif args.worklist:
+    elif args.worklist is not None:
         selected_mode = "worklist"
     elif args.aggregate_reports:
         selected_mode = "aggregate-reports"
@@ -6151,21 +6168,24 @@ def main(argv: Optional[list[str]] = None) -> int:
     worklist_mode = args.worklist is not None
     if args.latest_only and selected_mode != "repository":
         parser.error("--latest-only is valid only with --repository")
-    if args.expected_worklist_fingerprint and not worklist_mode:
+    if expected_worklist_fingerprint_was_supplied and not worklist_mode:
         parser.error("--expected-worklist-fingerprint is valid only with --worklist")
 
     if worklist_mode:
-        if not args.expected_worklist_fingerprint:
+        if (
+            not args.expected_worklist_fingerprint
+            or not args.expected_worklist_fingerprint.strip()
+        ):
             parser.error("--expected-worklist-fingerprint is required with --worklist")
         if prepare_mode:
             parser.error("--prepare-worklist cannot be combined with --worklist")
-        if args.latest_only or args.base_ref:
+        if args.latest_only or base_ref_was_supplied:
             parser.error("local selection arguments are not valid with --worklist")
         if plugins_file_was_supplied:
             parser.error("--plugins-file is not valid with --worklist")
         if args.source_revision is not None or api_deadline_was_supplied:
             parser.error("producer-only arguments are not valid with --worklist")
-        if args.aggregate_verdict_deltas:
+        if aggregate_verdict_deltas_was_supplied:
             parser.error("aggregate arguments are not valid with --worklist")
 
     if prepare_mode:
@@ -6175,16 +6195,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         if selected_mode == "changed" and not (args.base_ref and args.base_ref.strip()):
             parser.error("--prepare-worklist with --changed requires --base-ref")
-        if selected_mode != "changed" and args.base_ref:
+        if selected_mode != "changed" and base_ref_was_supplied:
             parser.error("base_ref is valid only with --changed")
         if args.api_deadline_seconds <= 0:
             parser.error("--api-deadline-seconds must be greater than zero")
         if not args.source_revision:
             parser.error("--source-revision is required with --prepare-worklist")
     else:
+        if args.changed and base_ref_was_supplied and not args.base_ref.strip():
+            parser.error("--base-ref must not be empty")
         if args.changed and not args.base_ref:
             args.base_ref = "HEAD~1"
-        if args.base_ref and selected_mode != "changed":
+        if base_ref_was_supplied and selected_mode != "changed":
             parser.error("base_ref is valid only with --changed")
         try:
             select_audit_shard([], args.shard_count, args.shard_index)
@@ -6425,22 +6447,50 @@ def main(argv: Optional[list[str]] = None) -> int:
         reports.extend(repository_errors)
 
     def checkpoint_outputs() -> tuple[str, str]:
-        _write_progress_manifest(
-            progress_path,
-            progress_records,
-            worklist_document["fingerprint"] if worklist_mode else None,
+        if not worklist_mode:
+            _write_progress_manifest(progress_path, progress_records)
+            json_path, md_path = write_reports(
+                reports, args.output_dir, verdicts=verdict_snapshot
+            )
+            _atomic_write_text(
+                verdict_delta_path,
+                json.dumps(
+                    _verdict_delta_from_reports(reports), indent=2, sort_keys=True
+                )
+                + "\n",
+            )
+            return json_path, md_path
+
+        # Keep the last fully publishable shard evidence intact when staging a
+        # newer release checkpoint fails.  In particular, build and validate
+        # the replacement manifest before replacing any report, progress, or
+        # verdict-delta path visible to aggregation.
+        output_dir = Path(args.output_dir)
+        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        staging_dir = Path(
+            tempfile.mkdtemp(prefix=".audit-worker-checkpoint-", dir=output_dir.parent)
         )
-        json_path, md_path = write_reports(
-            reports, args.output_dir, verdicts=verdict_snapshot
-        )
-        _atomic_write_text(
-            verdict_delta_path,
-            json.dumps(_verdict_delta_from_reports(reports), indent=2, sort_keys=True)
-            + "\n",
-        )
-        if worklist_mode:
+        staged_progress_path = staging_dir / "progress.json"
+        staged_delta_path = staging_dir / "verdict-delta.json"
+        staged_manifest_path = staging_dir / "shard-manifest.json"
+        try:
+            _write_progress_manifest(
+                staged_progress_path,
+                progress_records,
+                worklist_document["fingerprint"],
+            )
+            staged_report_path, staged_markdown_path = write_reports(
+                reports, str(staging_dir), verdicts=verdict_snapshot
+            )
+            _atomic_write_text(
+                staged_delta_path,
+                json.dumps(
+                    _verdict_delta_from_reports(reports), indent=2, sort_keys=True
+                )
+                + "\n",
+            )
             _write_shard_manifest(
-                os.path.join(args.output_dir, "shard-manifest.json"),
+                staged_manifest_path,
                 _worker_shard_manifest(
                     worklist_document,
                     args.shard_index,
@@ -6448,7 +6498,20 @@ def main(argv: Optional[list[str]] = None) -> int:
                     reports,
                 ),
             )
-        return json_path, md_path
+
+            targets = (
+                (staged_progress_path, Path(progress_path)),
+                (Path(staged_report_path), Path(report_json_path)),
+                (Path(staged_markdown_path), Path(report_markdown_path)),
+                (staged_delta_path, Path(verdict_delta_path)),
+                (staged_manifest_path, output_dir / "shard-manifest.json"),
+            )
+            for staged_path, target_path in targets:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(staged_path, target_path)
+            return report_json_path, report_markdown_path
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
     if worklist_mode and not work_items:
         try:
@@ -6588,24 +6651,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # Write reports
     try:
-        json_path, md_path = write_reports(
-            reports, args.output_dir, verdicts=verdict_snapshot
-        )
-        _atomic_write_text(
-            verdict_delta_path,
-            json.dumps(_verdict_delta_from_reports(reports), indent=2, sort_keys=True)
-            + "\n",
-        )
-        if worklist_mode:
-            _write_shard_manifest(
-                os.path.join(args.output_dir, "shard-manifest.json"),
-                _worker_shard_manifest(
-                    worklist_document,
-                    args.shard_index,
-                    work_items,
-                    reports,
-                ),
-            )
+        json_path, md_path = checkpoint_outputs()
         log.info("JSON report: %s", json_path)
         log.info("Markdown report: %s", md_path)
     except Exception as exc:
