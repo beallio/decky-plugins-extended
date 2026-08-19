@@ -1071,3 +1071,87 @@ def test_aggregate_coverage_arguments_are_rejected_outside_aggregate_mode(tmp_pa
                 str(tmp_path / "out"),
             ]
         )
+
+
+def _rebind_shard_manifest(manifest_path: str) -> None:
+    """Re-sign a manifest's byte bindings after a deliberate report edit."""
+    path = Path(manifest_path)
+    directory = path.parent
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["artifacts"] = ap._worker_artifact_bindings(
+        {
+            "progress": directory / "progress.json",
+            "report_json": directory / "security-report.json",
+            "report_markdown": directory / "security-report.md",
+            "verdict_delta": directory / "security-verdict-delta.json",
+        }
+    )
+    path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def test_aggregate_rejects_an_identity_incomplete_shard_report(tmp_path):
+    """An incomplete record without a full identity cannot count as coverage."""
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    document, plan = _coverage_shard_plan(worklist_path)
+    payload = document["payload"]
+    item = payload["items"][0]
+    index = audit_worklist.shard_index_for_worklist_item(item, payload["shard_count"])
+    plan[index]["reports"] = [
+        _coverage_report(
+            item, classification="AUDIT_ERROR", completion_status="incomplete"
+        )
+    ]
+    artifacts = _write_coverage_shards(tmp_path, plan)
+
+    report_path = Path(artifacts["reports"][index])
+    stored = json.loads(report_path.read_text(encoding="utf-8"))
+    stored["reports"][0]["asset_id"] = ""
+    report_path.write_text(
+        json.dumps(stored, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    _rebind_shard_manifest(artifacts["manifests"][index])
+
+    output_dir = tmp_path / "security-reports"
+    exit_code = ap.main(_coverage_argv(worklist_path, artifacts, output_dir))
+
+    assert exit_code == 1
+    assert not output_dir.exists()
+
+
+def test_aggregate_coverage_is_enforced_by_the_real_command_line(tmp_path):
+    """Drive the installed CLI, not just the in-process entry point."""
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    _document, plan = _coverage_shard_plan(worklist_path)
+    artifacts = _write_coverage_shards(tmp_path, plan)
+    output_dir = tmp_path / "security-reports"
+    argv = [
+        sys.executable,
+        str(ROOT / "audit_plugins.py"),
+        *_coverage_argv(worklist_path, artifacts, output_dir),
+    ]
+
+    accepted = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+
+    assert accepted.returncode == 0, accepted.stderr
+    assert (output_dir / "security-report.json").is_file()
+
+    dropped_output = tmp_path / "rejected-reports"
+    rejected = subprocess.run(
+        [
+            *argv[:2],
+            *_coverage_argv(
+                worklist_path,
+                {**artifacts, "manifests": artifacts["manifests"][:-1]},
+                dropped_output,
+            ),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert rejected.returncode == 1
+    assert "Shard aggregation failed" in rejected.stderr
+    assert not dropped_output.exists()
