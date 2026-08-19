@@ -313,7 +313,7 @@ def test_workflow_aggregates_fourteen_executable_empty_shards(tmp_path, workflow
     assert tracked_verdict_path.read_bytes() == tracked_verdict_bytes
 
 
-def test_workflow_aggregation_merges_one_delta_with_thirteen_empty_shards(tmp_path):
+def test_workflow_aggregation_enforces_coverage_and_merges_shard_deltas(tmp_path):
     worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
     _document, plan = _coverage_shard_plan(worklist_path)
     _write_coverage_shards(tmp_path, plan)
@@ -335,6 +335,11 @@ def test_workflow_aggregation_merges_one_delta_with_thirteen_empty_shards(tmp_pa
         "v1@30",
         "v2@20",
     ]
+    assert json.loads(
+        (aggregate_output / "security-verdict-delta.json").read_text(encoding="utf-8")
+    ) == ap._verdict_delta_from_reports(
+        [report for shard in plan for report in shard["reports"]]
+    )
 
 
 @pytest.mark.parametrize(
