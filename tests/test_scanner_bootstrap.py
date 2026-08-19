@@ -204,7 +204,7 @@ def _terminate_process(pid: int) -> None:
 
 
 def _integer_script_constant(name: str) -> int:
-    match = re.search(rf"^{re.escape(name)}=(\\d+)$", SCRIPT.read_text(), re.MULTILINE)
+    match = re.search(rf"^{re.escape(name)}=(\d+)$", SCRIPT.read_text(), re.MULTILINE)
     assert match, f"missing integer {name} assignment"
     return int(match.group(1))
 
@@ -262,6 +262,7 @@ def test_scanner_bootstrap_reaps_timeout_grandchildren_with_real_timeout(tmp_pat
         tmp_path,
         NETWORK_ATTEMPTS=1,
         BASE_APT_TIMEOUT_SECONDS=1,
+        PHASE_TIMEOUT_KILL_GRACE_SECONDS=1,
     )
     environment = _fake_environment(tmp_path, real_timeout=True)
     _write_executable(
@@ -269,7 +270,7 @@ def test_scanner_bootstrap_reaps_timeout_grandchildren_with_real_timeout(tmp_pat
         """
 if [[ "$1" == "-o" && "$2" == "pipefail" && "$3" == "-c" && "$4" == *"apt-get"* ]]; then
   trap 'exit 143' TERM
-  /bin/bash -c 'bash -c "exec sleep 2" </dev/null >/dev/null 2>&1 & child="$!"; printf "%s\\n" "$child" > "$FAKE_GRANDCHILD_PID_FILE"; wait "$child"' </dev/null >/dev/null 2>&1 &
+  /bin/bash -c 'bash -c "trap \"\" TERM; exec sleep 2" </dev/null >/dev/null 2>&1 & child="$!"; printf "%s\\n" "$child" > "$FAKE_GRANDCHILD_PID_FILE"; wait "$child"' </dev/null >/dev/null 2>&1 &
   wait "$!"
   exit 0
 fi
@@ -303,8 +304,9 @@ def test_scanner_bootstrap_retries_timeout_then_continues_with_real_timeout(tmp_
     script = _script_with_short_timeouts(
         tmp_path,
         BASE_APT_TIMEOUT_SECONDS=1,
-        RETRY_BACKOFF_SECONDS=0.1,
-        APT_RETRY_BACKOFF_SECONDS=0.1,
+        RETRY_BACKOFF_SECONDS=0,
+        APT_RETRY_BACKOFF_SECONDS=0,
+        PHASE_TIMEOUT_KILL_GRACE_SECONDS=1,
     )
     environment = _fake_environment(tmp_path, real_timeout=True)
     _write_executable(
@@ -343,8 +345,9 @@ def test_scanner_bootstrap_waits_for_dpkg_lock_before_apt_retry(tmp_path):
     script = _script_with_short_timeouts(
         tmp_path,
         BASE_APT_TIMEOUT_SECONDS=1,
-        RETRY_BACKOFF_SECONDS=0.1,
-        APT_RETRY_BACKOFF_SECONDS=0.1,
+        RETRY_BACKOFF_SECONDS=0,
+        APT_RETRY_BACKOFF_SECONDS=0,
+        PHASE_TIMEOUT_KILL_GRACE_SECONDS=1,
     )
     environment = _fake_environment(tmp_path, real_timeout=True)
     _write_executable(
@@ -418,6 +421,7 @@ def test_scanner_bootstrap_fails_closed_when_dpkg_lock_does_not_clear(tmp_path):
     script = _script_with_short_timeouts(
         tmp_path,
         DPKG_FRONTEND_LOCK_WAIT_TIMEOUT_SECONDS=1,
+        PHASE_TIMEOUT_KILL_GRACE_SECONDS=1,
     )
     environment = _fake_environment(tmp_path, real_timeout=True)
     _write_executable(
@@ -460,13 +464,16 @@ def test_scanner_bootstrap_enforces_documented_total_budget():
     assert _integer_script_constant("BASE_APT_TIMEOUT_SECONDS") > 60
     assert _integer_script_constant("TRIVY_APT_TIMEOUT_SECONDS") > 60
     assert "timeout --foreground" not in source
-    assert 'timeout --kill-after="${PHASE_TIMEOUT_KILL_GRACE_SECONDS}s"' in source
+    assert 'timeout --kill-after="$((timeout_teardown_seconds))s"' in source
+    assert "set -m" in source
+    assert 'kill -KILL -- "-$payload_pid"' in source
     assert "BOOTSTRAP_TIMEOUT_SECONDS - (SECONDS - bootstrap_started_seconds) - 1" in (
         source
     )
     header = "\n".join(source.splitlines()[4:12])
     for name in (
         "PHASE_TIMEOUT_KILL_GRACE_SECONDS",
+        "PHASE_TIMEOUT_SUPERVISOR_GRACE_SECONDS",
         "DPKG_FRONTEND_LOCK_WAIT_TIMEOUT_SECONDS",
         "APT_RETRY_BACKOFF_SECONDS",
         "RETRY_BACKOFF_SECONDS",

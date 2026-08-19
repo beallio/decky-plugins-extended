@@ -4,16 +4,18 @@ set -Eeuo pipefail
 
 # The bootstrap has a hard 600-second total budget, leaving two minutes below
 # the calling workflow's unchanged twelve-minute step cap. Each named phase is
-# clipped to the time remaining after its 5-second forced-kill grace; the budget
-# therefore includes the two 15-second dpkg-lock waits per APT retry, 10-second
-# APT retry backoffs, 4-second key/Semgrep retry backoffs, and every timeout
-# grace period plus a one-second clock-boundary guard. The normal cold-install
-# APT budgets are 90 seconds each.
+# clipped to the time remaining after its 5-second forced-kill grace and
+# 1-second timeout-supervisor guard; the budget therefore includes the two
+# 15-second dpkg-lock waits per APT retry, 10-second APT retry backoffs,
+# 4-second key/Semgrep retry backoffs, every timeout grace period, and a
+# 1-second clock-boundary guard. The normal cold-install APT budgets are 90
+# seconds each.
 BOOTSTRAP_TIMEOUT_SECONDS=600
 NETWORK_ATTEMPTS=2
 RETRY_BACKOFF_SECONDS=4
 APT_RETRY_BACKOFF_SECONDS=10
 PHASE_TIMEOUT_KILL_GRACE_SECONDS=5
+PHASE_TIMEOUT_SUPERVISOR_GRACE_SECONDS=1
 DPKG_FRONTEND_LOCK_WAIT_TIMEOUT_SECONDS=15
 DPKG_FRONTEND_LOCK_POLL_SECONDS=1
 DPKG_FRONTEND_LOCK_PATH="/var/lib/dpkg/lock-frontend"
@@ -40,6 +42,25 @@ cleanup() { rm -rf -- "$tmp_dir"; }
 trap cleanup EXIT
 bootstrap_started_seconds="$SECONDS"
 
+remaining_bootstrap_seconds() {
+  printf '%s\n' "$((
+    BOOTSTRAP_TIMEOUT_SECONDS - (SECONDS - bootstrap_started_seconds) - 1
+  ))"
+}
+
+retry_backoff() {
+  local phase="$1"
+  local backoff_seconds="$2"
+  local remaining_seconds
+  remaining_seconds="$(remaining_bootstrap_seconds)"
+  if (( remaining_seconds <= backoff_seconds )); then
+    printf 'phase=%s status=124 failed: bootstrap deadline exhausted before retry\n' \
+      "$phase" >&2
+    return 124
+  fi
+  sleep "$backoff_seconds"
+}
+
 phase_run() {
   local phase="$1"
   local timeout_seconds="$2"
@@ -47,17 +68,34 @@ phase_run() {
   local started ended status remaining_seconds
   started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'phase=%s start=%s\n' "$phase" "$started"
-  remaining_seconds=$((
-    BOOTSTRAP_TIMEOUT_SECONDS - (SECONDS - bootstrap_started_seconds) - 1
+  remaining_seconds="$(remaining_bootstrap_seconds)"
+  local timeout_teardown_seconds=$((
+    PHASE_TIMEOUT_KILL_GRACE_SECONDS + PHASE_TIMEOUT_SUPERVISOR_GRACE_SECONDS
   ))
-  if (( remaining_seconds <= PHASE_TIMEOUT_KILL_GRACE_SECONDS )); then
+  if (( remaining_seconds <= timeout_teardown_seconds )); then
     status=124
   else
-    if (( timeout_seconds + PHASE_TIMEOUT_KILL_GRACE_SECONDS > remaining_seconds )); then
-      timeout_seconds=$((remaining_seconds - PHASE_TIMEOUT_KILL_GRACE_SECONDS))
+    if (( timeout_seconds + timeout_teardown_seconds > remaining_seconds )); then
+      timeout_seconds=$((remaining_seconds - timeout_teardown_seconds))
     fi
     set +e
-    timeout --kill-after="${PHASE_TIMEOUT_KILL_GRACE_SECONDS}s" "$timeout_seconds" "$@"
+    timeout --kill-after="$((timeout_teardown_seconds))s" "$timeout_seconds" \
+      bash -c '
+        grace_seconds="$1"
+        shift
+        set -m
+        "$@" &
+        payload_pid=$!
+        terminate_payload() {
+          kill -TERM -- "-$payload_pid" 2>/dev/null || true
+          sleep "$grace_seconds"
+          kill -KILL -- "-$payload_pid" 2>/dev/null || true
+          wait "$payload_pid" 2>/dev/null || true
+          exit 124
+        }
+        trap terminate_payload TERM
+        wait "$payload_pid"
+      ' -- "$PHASE_TIMEOUT_KILL_GRACE_SECONDS" "$@"
     status=$?
     set -e
     if (( status == 137 )); then
@@ -93,7 +131,7 @@ retry_phase() {
     if (( attempt < NETWORK_ATTEMPTS )); then
       printf 'phase=%s retry=%s/%s backoff=%ss\n' \
         "$phase" "$attempt" "$NETWORK_ATTEMPTS" "$RETRY_BACKOFF_SECONDS" >&2
-      sleep "$RETRY_BACKOFF_SECONDS"
+      retry_backoff "$phase" "$RETRY_BACKOFF_SECONDS" || return $?
     fi
   done
   return "$status"
@@ -133,7 +171,7 @@ retry_apt_phase() {
     if (( attempt < NETWORK_ATTEMPTS )); then
       printf 'phase=%s retry=%s/%s backoff=%ss\n' \
         "$phase" "$attempt" "$NETWORK_ATTEMPTS" "$APT_RETRY_BACKOFF_SECONDS" >&2
-      sleep "$APT_RETRY_BACKOFF_SECONDS"
+      retry_backoff "$phase" "$APT_RETRY_BACKOFF_SECONDS" || return $?
     fi
   done
   return "$status"
