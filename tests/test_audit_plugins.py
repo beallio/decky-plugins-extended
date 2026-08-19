@@ -2767,14 +2767,23 @@ class TestAuditRepositoryMocked(unittest.TestCase):
     def test_source_preparation_failure_preserves_trivy_and_source_context_with_bound(
         self,
     ):
+        token_start = 248
         long_secret = "ghp_" + "a" * 36
+        prefix = "source snapshot materialization failed while reading tag payload "
+        prefix_padding = "x" * (token_start - len(prefix))
+        token_end = token_start + len(long_secret) - 1
         long_exception_detail = (
-            "source snapshot materialization failed while reading tag payload "
-            + ("x" * 250)
-            + f"{long_secret}; "
-            + ("x" * 220)
-            + ("secret-tail " * 10)
+            prefix + prefix_padding + long_secret + ("x" * 300) + ("secret-tail " * 10)
         )
+        self.assertEqual(len(prefix_padding), token_start - len(prefix))
+        self.assertEqual(long_exception_detail.index(long_secret), token_start)
+        self.assertEqual(token_end, token_start + len(long_secret) - 1)
+        self.assertEqual(
+            long_exception_detail.index(long_secret) + len(long_secret) - 1, token_end
+        )
+        self.assertLess(token_start, ap.EVIDENCE_MAX_LEN)
+        self.assertGreater(token_end, ap.EVIDENCE_MAX_LEN)
+        self.assertGreater(len(long_exception_detail), ap.EVIDENCE_MAX_LEN)
         long_artifact_detail = (
             "artifact-trivy-non-secret-marker="
             + ("x" * 420)
