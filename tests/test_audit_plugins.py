@@ -158,9 +158,11 @@ def test_worker_download_session_retries_transient_http_failures():
 def test_producer_api_session_has_no_transport_retry_delay():
     """Only the explicit ApiRequestBudget controls producer retry timing."""
     with ap._producer_api_budget_scope(5):
-        retry = ap._active_github_session().get_adapter(
-            "https://api.github.com"
-        ).max_retries
+        retry = (
+            ap._active_github_session()
+            .get_adapter("https://api.github.com")
+            .max_retries
+        )
 
         assert retry.total == 0
         assert retry.connect == 0
