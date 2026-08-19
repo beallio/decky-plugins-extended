@@ -13,6 +13,7 @@ on:
     paths:
       - additional_plugins.txt
       - audit_plugins.py
+      - audit_worklist.py
       - generate_json.py
       - check_for_updates.py
       - plugin_release_utils.py
@@ -24,6 +25,7 @@ on:
       - uv.lock
       - scripts/orchestration-hooks/quality-gates
       - scripts/orchestration/run-quality-gates
+      - scripts/install-security-scanners
       - tests/**
       - .github/workflows/plugin-security-audit.yml
       - .github/workflows/scheduled-security-audit.yml
@@ -84,14 +86,14 @@ jobs:
             }
           done
 
-  audit-shards:
-    name: Security Audit (shard ${{ matrix.shard_index }}/14)
+  prepare-audit-worklist:
+    name: Prepare immutable audit worklist
     runs-on: ubuntu-latest
-    timeout-minutes: 35
-    strategy:
-      fail-fast: false
-      matrix:
-        shard_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      worklist_fingerprint: ${{ steps.prepare.outputs.worklist_fingerprint }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -107,33 +109,6 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version-file: pyproject.toml
-
-      - name: Install required security scanners
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends wget apt-transport-https gnupg lsb-release clamav
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
-            | gpg --dearmor \
-            | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb \
-            $(lsb_release -sc) main" \
-            | sudo tee /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends trivy
-          uv tool install --python 3.12 --with setuptools==70.3.0 semgrep==1.132.0
-          SEMGREP_BIN_DIR=$(uv tool dir --bin)
-          echo "$SEMGREP_BIN_DIR" >> "$GITHUB_PATH"
-          export PATH="$SEMGREP_BIN_DIR:$PATH"
-          semgrep_version="$(semgrep --version --disable-version-check)"
-          [[ "$semgrep_version" == "1.132.0" ]] || {
-            echo "::error::expected Semgrep 1.132.0, got $semgrep_version"
-            exit 1
-          }
-          sudo systemctl stop clamav-freshclam || true
-          sudo freshclam
-          clamscan --version
-          ls /var/lib/clamav/*.c?d >/dev/null
-        timeout-minutes: 12
 
       - name: Determine audit mode
         id: selection
@@ -198,23 +173,110 @@ jobs:
             else
               echo "Base ref: not required"
             fi
-            echo "Shard ${{ matrix.shard_index }} of 14"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prepare immutable audit worklist
+        id: prepare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AUDIT_MODE: ${{ steps.selection.outputs.audit_mode }}
+          BASE_REF: ${{ steps.selection.outputs.base_ref }}
+        run: |
+          mkdir -p audit-worklist
+          case "$AUDIT_MODE" in
+            all) mode_args=(--all) ;;
+            changed | none) mode_args=(--changed --base-ref "$BASE_REF") ;;
+            *) echo "::error::invalid prepared audit mode: $AUDIT_MODE"; exit 1 ;;
+          esac
+          producer_output="$(uv run python audit_plugins.py "${mode_args[@]}" \
+            --prepare-worklist audit-worklist/worklist.json \
+            --source-revision "$GITHUB_SHA" \
+            --api-deadline-seconds 480 \
+            --shard-count 14)"
+          [[ "$producer_output" =~ ^worklist_fingerprint=[0-9a-f]{64}$ ]] || {
+            echo "::error::worklist producer returned malformed stdout"
+            exit 1
+          }
+          printf '%s\n' "$producer_output"
+          echo "worklist_fingerprint=${producer_output#worklist_fingerprint=}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload prepared audit worklist
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: prepared-audit-worklist
+          path: audit-worklist/worklist.json
+          retention-days: 30
+          if-no-files-found: error
+
+  audit-shards:
+    name: Security Audit (shard ${{ matrix.shard_index }}/14)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    needs: prepare-audit-worklist
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version-file: pyproject.toml
+
+      - name: Download prepared audit worklist
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: prepared-audit-worklist
+          path: audit-worklist
+
+      - name: Install required security scanners
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends wget apt-transport-https gnupg lsb-release clamav
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb \
+            $(lsb_release -sc) main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends trivy
+          uv tool install --python 3.12 --with setuptools==70.3.0 semgrep==1.132.0
+          SEMGREP_BIN_DIR=$(uv tool dir --bin)
+          echo "$SEMGREP_BIN_DIR" >> "$GITHUB_PATH"
+          export PATH="$SEMGREP_BIN_DIR:$PATH"
+          semgrep_version="$(semgrep --version --disable-version-check)"
+          [[ "$semgrep_version" == "1.132.0" ]] || {
+            echo "::error::expected Semgrep 1.132.0, got $semgrep_version"
+            exit 1
+          }
+          sudo systemctl stop clamav-freshclam || true
+          sudo freshclam
+          clamscan --version
+          ls /var/lib/clamav/*.c?d >/dev/null
+        timeout-minutes: 12
 
       - name: Run isolated audit shard
         id: audit
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AUDIT_MODE: ${{ steps.selection.outputs.audit_mode }}
-          BASE_REF: ${{ steps.selection.outputs.base_ref }}
+          WORKLIST_FINGERPRINT: ${{ needs.prepare-audit-worklist.outputs.worklist_fingerprint }}
         run: |
           mkdir -p security-reports
-          case "$AUDIT_MODE" in
-            all) mode_args=(--all) ;;
-            changed | none) mode_args=(--changed --base-ref "$BASE_REF") ;;
-          esac
           set +e
-          uv run python audit_plugins.py "${mode_args[@]}" \
+          uv run python audit_plugins.py \
+            --worklist audit-worklist/worklist.json \
+            --expected-worklist-fingerprint "$WORKLIST_FINGERPRINT" \
             --shard-count 14 \
             --shard-index "${{ matrix.shard_index }}" \
             --output-dir security-reports \
@@ -251,7 +313,7 @@ jobs:
 
   aggregate-audit:
     name: Aggregate security audit shards
-    needs: audit-shards
+    needs: [prepare-audit-worklist, audit-shards]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -268,6 +330,19 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version-file: pyproject.toml
+
+      - name: Require prepared worklist success
+        run: |
+          [[ "${{ needs.prepare-audit-worklist.result }}" == "success" ]] || {
+            echo "::error::prepared worklist job was not successful; refusing aggregation"
+            exit 1
+          }
+
+      - name: Download prepared audit worklist
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: prepared-audit-worklist
+          path: audit-worklist
 
       - name: Download isolated shard evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -292,8 +367,9 @@ jobs:
           done
           reports=(shard-artifacts/**/security-report.json)
           deltas=(shard-artifacts/**/security-verdict-delta.json)
-          (( ${#reports[@]} == 14 && ${#deltas[@]} == 14 )) || {
-            echo "::error::every shard must publish report and verdict delta"
+          manifests=(shard-artifacts/**/shard-manifest.json)
+          (( ${#reports[@]} == 14 && ${#deltas[@]} == 14 && ${#manifests[@]} == 14 )) || {
+            echo "::error::every shard must publish report, verdict delta, and manifest"
             exit 1
           }
           mkdir -p security-reports
@@ -301,6 +377,8 @@ jobs:
           uv run python audit_plugins.py \
             --aggregate-reports "${reports[@]}" \
             --aggregate-verdict-deltas "${deltas[@]}" \
+            --expected-worklist audit-worklist/worklist.json \
+            --aggregate-shard-manifests "${manifests[@]}" \
             --output-dir security-reports \
             --verdict-delta security-reports/security-verdict-delta.json
           audit_exit=$?

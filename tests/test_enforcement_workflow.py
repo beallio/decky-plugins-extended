@@ -90,8 +90,7 @@ def _run_audit_step(
         {
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "GITHUB_OUTPUT": str(outputs),
-            "AUDIT_MODE": "all",
-            "BASE_REF": "origin/dev",
+            "WORKLIST_FINGERPRINT": "a" * 64,
         },
     )
     return result, outputs.read_text(encoding="utf-8")
@@ -139,6 +138,23 @@ def _write_shard_artifacts(tmp_path: Path, count: int = PRODUCTION_SHARD_COUNT):
         (shard / "audit-exit.txt").write_text("0\n", encoding="utf-8")
         (shard / "security-report.json").write_text("{}\n", encoding="utf-8")
         (shard / "security-verdict-delta.json").write_text("{}\n", encoding="utf-8")
+        (shard / "shard-manifest.json").write_text("{}\n", encoding="utf-8")
+
+
+def _prepare_empty_worklist(tmp_path: Path) -> tuple[Path, str]:
+    worklist_path = tmp_path / "audit-worklist" / "worklist.json"
+    fingerprint, _document = audit_worklist.prepare_audit_worklist(
+        worklist_path,
+        source_revision="a" * 40,
+        selection_mode="none",
+        repository_urls=[],
+        shard_count=PRODUCTION_SHARD_COUNT,
+        latest_only=False,
+        release_fetcher=lambda *_args: [],
+        metadata_fetcher=lambda *_args: {},
+        tag_resolver=lambda *_args: {},
+    )
+    return worklist_path, fingerprint
 
 
 def _run_real_aggregate_step(
@@ -150,6 +166,10 @@ def _run_real_aggregate_step(
     script = _run_block(workflow, "Aggregate safe shard reports and deltas")
     script = script.replace("shard-artifacts", str(tmp_path / "shard-artifacts"))
     script = script.replace("security-reports", str(aggregate_output))
+    script = script.replace(
+        "audit-worklist/worklist.json",
+        str(tmp_path / "audit-worklist" / "worklist.json"),
+    )
     script = script.replace(
         "uv run python audit_plugins.py",
         f"{shlex.quote(sys.executable)} {shlex.quote(str(ROOT / 'audit_plugins.py'))}",
@@ -163,6 +183,7 @@ def _run_real_aggregate_step(
 
 
 def _run_executable_empty_shards(tmp_path: Path) -> list[Path]:
+    worklist_path, fingerprint = _prepare_empty_worklist(tmp_path)
     shard_paths = []
     for index in range(PRODUCTION_SHARD_COUNT):
         shard = tmp_path / "shard-artifacts" / f"shard-{index}"
@@ -171,9 +192,10 @@ def _run_executable_empty_shards(tmp_path: Path) -> list[Path]:
             [
                 sys.executable,
                 str(ROOT / "audit_plugins.py"),
-                "--changed",
-                "--base-ref",
-                "HEAD",
+                "--worklist",
+                str(worklist_path),
+                "--expected-worklist-fingerprint",
+                fingerprint,
                 "--shard-count",
                 str(PRODUCTION_SHARD_COUNT),
                 "--shard-index",
@@ -292,38 +314,13 @@ def test_workflow_aggregates_fourteen_executable_empty_shards(tmp_path, workflow
 
 
 def test_workflow_aggregation_merges_one_delta_with_thirteen_empty_shards(tmp_path):
-    shards = _run_executable_empty_shards(tmp_path)
-    report = ap.AuditReport(
-        audit_timestamp="2026-08-08T00:00:00Z",
-        repository="https://github.com/owner/repo",
-        release="v1",
-        release_id="v1@10",
-        github_release_id="1",
-        asset_id="10",
-        artifact_sha256="a" * 64,
-        artifact_url="https://example.invalid/v1.zip",
-        identity_status="CURRENT",
-        resolved_tag_commit_sha="commit",
-        audit_context_hash="context",
-        final_classification="PASS",
-        completion_status="completed",
-    )
-    report_payload = {
-        "schema_version": ap.AUDIT_SCHEMA_VERSION,
-        "policy_version": ap.POLICY_VERSION,
-        "generated_at": report.audit_timestamp,
-        "report_count": 1,
-        "reports": [ap._report_to_dict(report)],
-    }
-    expected_delta = ap._verdict_delta_from_reports([report])
-    (shards[13] / "security-report.json").write_text(
-        json.dumps(report_payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    (shards[13] / "security-verdict-delta.json").write_text(
-        json.dumps(expected_delta, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    worklist_path, _fingerprint = _prepare_coverage_worklist(tmp_path)
+    _document, plan = _coverage_shard_plan(worklist_path)
+    _write_coverage_shards(tmp_path, plan)
+    for index in range(PRODUCTION_SHARD_COUNT):
+        (tmp_path / "shard-artifacts" / f"shard-{index}" / "audit-exit.txt").write_text(
+            "0\n", encoding="utf-8"
+        )
 
     result, outputs, aggregate_output = _run_real_aggregate_step(tmp_path)
 
@@ -332,16 +329,12 @@ def test_workflow_aggregation_merges_one_delta_with_thirteen_empty_shards(tmp_pa
     aggregate_report = json.loads(
         (aggregate_output / "security-report.json").read_text(encoding="utf-8")
     )
-    assert aggregate_report["report_count"] == 1
-    assert [item["release_id"] for item in aggregate_report["reports"]] == ["v1@10"]
-    assert (
-        json.loads(
-            (aggregate_output / "security-verdict-delta.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        == expected_delta
-    )
+    assert aggregate_report["report_count"] == 3
+    assert sorted(item["release_id"] for item in aggregate_report["reports"]) == [
+        "v1@10",
+        "v1@30",
+        "v2@20",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -424,7 +417,12 @@ def test_aggregate_guard_rejects_nonzero_shard_run_global_error_before_publicati
 @pytest.mark.parametrize("workflow", [PULL_REQUEST, SCHEDULED])
 @pytest.mark.parametrize(
     "artifact_name",
-    ["audit-exit.txt", "security-report.json", "security-verdict-delta.json"],
+    [
+        "audit-exit.txt",
+        "security-report.json",
+        "security-verdict-delta.json",
+        "shard-manifest.json",
+    ],
 )
 def test_aggregate_guard_requires_all_fourteen_artifacts(
     tmp_path, workflow, artifact_name
@@ -548,7 +546,8 @@ def _prepare_coverage_worklist(tmp_path: Path, *, empty: bool = False):
         ],
         ("owner", "other"): [_coverage_release("v1", 3, 30, "owner", "other")],
     }
-    worklist_path = tmp_path / "worklist.json"
+    worklist_path = tmp_path / "audit-worklist" / "worklist.json"
+    worklist_path.parent.mkdir()
     fingerprint, _document = audit_worklist.prepare_audit_worklist(
         worklist_path,
         source_revision=COVERAGE_SOURCE_REVISION,

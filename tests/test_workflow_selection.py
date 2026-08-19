@@ -97,7 +97,7 @@ def _run_selection(
 
 
 def _run_audit_shard(
-    tmp_path: Path, *, audit_mode: str, base_ref: str
+    tmp_path: Path,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -129,8 +129,7 @@ def _run_audit_shard(
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "GITHUB_OUTPUT": str(output),
             "FAKE_UV_ARGS": str(uv_args),
-            "AUDIT_MODE": audit_mode,
-            "BASE_REF": base_ref,
+            "WORKLIST_FINGERPRINT": "a" * 64,
         },
         capture_output=True,
         text=True,
@@ -283,17 +282,19 @@ def test_workflow_executes_selection_shard_and_summary_with_real_base_ref(
     assert outputs["audit_mode"] == expected_mode
     assert outputs["base_ref"] == expected_base_ref
 
-    shard, shard_args = _run_audit_shard(
-        tmp_path, audit_mode=expected_mode, base_ref=expected_base_ref
-    )
+    shard, shard_args = _run_audit_shard(tmp_path)
     assert shard.returncode == 0, shard.stderr
-    if expected_mode == "all":
-        assert "--all" in shard_args
-        assert "--base-ref" not in shard_args
-        assert not git_log.exists()
-    else:
-        base_index = shard_args.index("--base-ref")
-        assert shard_args[base_index + 1] == expected_base_ref
+    assert "--worklist" in shard_args
+    assert (
+        shard_args[shard_args.index("--worklist") + 1] == "audit-worklist/worklist.json"
+    )
+    assert (
+        shard_args[shard_args.index("--expected-worklist-fingerprint") + 1] == "a" * 64
+    )
+    assert "--all" not in shard_args
+    assert "--changed" not in shard_args
+    assert "--base-ref" not in shard_args
+    assert git_log.exists() is (expected_mode == "changed")
 
     summary_result, summary = _run_selection_summary(tmp_path, outputs)
     assert summary_result.returncode == 0, summary_result.stderr
@@ -335,7 +336,8 @@ def test_full_corpus_is_fourteen_isolated_shards_with_expected_artifact_names():
     assert '--shard-index "$SHARD_INDEX"' in scheduled
     assert "Security Audit (shard ${{ matrix.shard_index }}/14)" in workflow
     assert "Scheduled Audit (shard ${{ matrix.shard_index }}/14)" in scheduled
-    assert "Shard ${{ matrix.shard_index }} of 14" in workflow
+    assert "--worklist audit-worklist/worklist.json" in workflow
+    assert "--worklist audit-worklist/worklist.json" in scheduled
     assert "security-audit-shard-${{ matrix.shard_index }}-of-14" in workflow
     assert "scheduled-security-audit-shard-${{ matrix.shard_index }}-of-14" in scheduled
     assert "shard-${SHARD_INDEX}-of-14" in scheduled
@@ -345,6 +347,21 @@ def test_full_corpus_is_fourteen_isolated_shards_with_expected_artifact_names():
     assert "${#reports[@]} == 14 && ${#deltas[@]} == 14" in scheduled
     assert "--aggregate-reports" in workflow
     assert "--aggregate-verdict-deltas" in workflow
+
+
+def test_workflow_selects_and_prepares_the_worklist_once_before_all_shards():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    scheduled = SCHEDULED_WORKFLOW.read_text(encoding="utf-8")
+
+    assert workflow.count("- name: Determine audit mode") == 1
+    assert workflow.count("--prepare-worklist audit-worklist/worklist.json") == 1
+    assert scheduled.count("--prepare-worklist audit-worklist/worklist.json") == 1
+    assert workflow.index("  prepare-audit-worklist:\n") < workflow.index(
+        "  audit-shards:\n"
+    )
+    assert scheduled.index("  prepare-audit-worklist:\n") < scheduled.index(
+        "  scheduled-audit:\n"
+    )
 
 
 def test_workflow_executes_exact_security_node_collection_gate(tmp_path: Path):

@@ -21,17 +21,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  scheduled-audit:
-    name: Scheduled Audit (shard ${{ matrix.shard_index }}/14)
+  prepare-audit-worklist:
+    name: Prepare immutable scheduled audit worklist
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        shard_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
-    env:
-      SHARD_INDEX: ${{ matrix.shard_index }}
-      AUDIT_SCHEDULED: "1"
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      worklist_fingerprint: ${{ steps.prepare.outputs.worklist_fingerprint }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -46,10 +43,70 @@ jobs:
         with:
           python-version-file: pyproject.toml
 
+      - name: Prepare immutable audit worklist
+        id: prepare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p audit-worklist
+          producer_output="$(uv run python audit_plugins.py --all \
+            --prepare-worklist audit-worklist/worklist.json \
+            --source-revision "$GITHUB_SHA" \
+            --api-deadline-seconds 480 \
+            --shard-count 14)"
+          [[ "$producer_output" =~ ^worklist_fingerprint=[0-9a-f]{64}$ ]] || {
+            echo "::error::worklist producer returned malformed stdout"
+            exit 1
+          }
+          printf '%s\n' "$producer_output"
+          echo "worklist_fingerprint=${producer_output#worklist_fingerprint=}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload prepared audit worklist
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: prepared-audit-worklist
+          path: audit-worklist/worklist.json
+          retention-days: 90
+          if-no-files-found: error
+
+  scheduled-audit:
+    name: Scheduled Audit (shard ${{ matrix.shard_index }}/14)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: prepare-audit-worklist
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    env:
+      SHARD_INDEX: ${{ matrix.shard_index }}
+      AUDIT_SCHEDULED: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version-file: pyproject.toml
+
+      - name: Download prepared audit worklist
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: prepared-audit-worklist
+          path: audit-worklist
+
       - name: Compute audit cache key
         id: cache-key
         run: |
-          POLICY_HASH=$(sha256sum security-policy.yml security-allowlist.yml semgrep-rules.yml audit_plugins.py plugin_release_utils.py pyproject.toml uv.lock | sha256sum | cut -c1-16)
+          POLICY_HASH=$(sha256sum security-policy.yml security-allowlist.yml semgrep-rules.yml audit_plugins.py audit_worklist.py plugin_release_utils.py pyproject.toml uv.lock | sha256sum | cut -c1-16)
           echo "restore_key=audit-cache-v2-${POLICY_HASH}-shard-${SHARD_INDEX}-of-14" >> "$GITHUB_OUTPUT"
           echo "save_key=audit-cache-v2-${POLICY_HASH}-shard-${SHARD_INDEX}-of-14-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
 
@@ -91,12 +148,13 @@ jobs:
       - name: Run audit on all configured repositories
         id: audit
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKLIST_FINGERPRINT: ${{ needs.prepare-audit-worklist.outputs.worklist_fingerprint }}
         run: |
           mkdir -p security-reports
           set +e
           uv run python audit_plugins.py \
-            --all \
+            --worklist audit-worklist/worklist.json \
+            --expected-worklist-fingerprint "$WORKLIST_FINGERPRINT" \
             --shard-count 14 \
             --shard-index "$SHARD_INDEX" \
             --output-dir security-reports \
@@ -141,7 +199,7 @@ jobs:
 
   aggregate-and-publish:
     name: Aggregate and publish scheduled verdicts
-    needs: scheduled-audit
+    needs: [prepare-audit-worklist, scheduled-audit]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -160,6 +218,19 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version-file: pyproject.toml
+
+      - name: Require prepared worklist success
+        run: |
+          [[ "${{ needs.prepare-audit-worklist.result }}" == "success" ]] || {
+            echo "::error::prepared worklist job was not successful; refusing aggregation"
+            exit 1
+          }
+
+      - name: Download prepared audit worklist
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: prepared-audit-worklist
+          path: audit-worklist
 
       - name: Download isolated scheduled evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -184,8 +255,9 @@ jobs:
           done
           reports=(shard-artifacts/**/security-report.json)
           deltas=(shard-artifacts/**/security-verdict-delta.json)
-          (( ${#reports[@]} == 14 && ${#deltas[@]} == 14 )) || {
-            echo "::error::every shard must publish report and verdict delta"
+          manifests=(shard-artifacts/**/shard-manifest.json)
+          (( ${#reports[@]} == 14 && ${#deltas[@]} == 14 && ${#manifests[@]} == 14 )) || {
+            echo "::error::every shard must publish report, verdict delta, and manifest"
             exit 1
           }
           mkdir -p security-reports
@@ -193,6 +265,8 @@ jobs:
           uv run python audit_plugins.py \
             --aggregate-reports "${reports[@]}" \
             --aggregate-verdict-deltas "${deltas[@]}" \
+            --expected-worklist audit-worklist/worklist.json \
+            --aggregate-shard-manifests "${manifests[@]}" \
             --output-dir security-reports \
             --verdict-delta security-reports/security-verdict-delta.json
           audit_exit=$?
