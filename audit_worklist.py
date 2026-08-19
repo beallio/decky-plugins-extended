@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -18,10 +19,13 @@ import plugin_release_utils
 WORKLIST_SCHEMA_VERSION = "1"
 WORKLIST_SELECTION_MODES = {"all", "changed", "repository", "none"}
 
+log = logging.getLogger(__name__)
+
 _CANONICAL_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CANONICAL_GIT_SHA1 = re.compile(r"^[0-9a-f]{40}$")
 _CANONICAL_POSITIVE_DECIMAL = re.compile(r"^[1-9][0-9]*$")
 _CANONICAL_GITHUB_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_CANONICAL_REPOSITORY_ERROR_REASON = re.compile(r"^[a-z][a-z0-9-]{0,127}$")
 
 _DOC_KEYS = {"schema_version", "fingerprint", "payload"}
 _PAYLOAD_KEYS = {
@@ -33,6 +37,8 @@ _PAYLOAD_KEYS = {
     "base_commit",
     "latest_only",
 }
+_OPTIONAL_PAYLOAD_KEYS = {"repository_errors"}
+_REPOSITORY_ERROR_KEYS = {"repository", "reason"}
 _ITEM_KEYS = {
     "repository",
     "release_id",
@@ -211,6 +217,76 @@ def _normalise_repository_urls(repositories: list[str]) -> list[str]:
         seen.add(canonical)
         canonical_repositories.append(canonical)
     return sorted(canonical_repositories)
+
+
+def _normalise_repository_errors(
+    raw_errors: Any,
+    selected_repositories: set[str],
+) -> list[dict[str, str]]:
+    if not isinstance(raw_errors, list) or not raw_errors:
+        raise ValueError("repository_errors must be a non-empty list")
+
+    normalised_errors: list[dict[str, str]] = []
+    seen_repositories: set[str] = set()
+    for raw_error in raw_errors:
+        if not isinstance(raw_error, Mapping):
+            raise ValueError("repository error must be an object")
+        provided = set(raw_error.keys())
+        if provided != _REPOSITORY_ERROR_KEYS:
+            missing = ", ".join(sorted(_REPOSITORY_ERROR_KEYS - provided))
+            extras = ", ".join(sorted(provided - _REPOSITORY_ERROR_KEYS))
+            if missing and extras:
+                raise ValueError(
+                    f"Invalid repository error fields: missing {missing}; extra {extras}"
+                )
+            if missing:
+                raise ValueError(f"Missing repository error fields: {missing}")
+            raise ValueError(f"Unexpected repository error fields: {extras}")
+
+        repository = _normalise_str(
+            raw_error["repository"], "repository error repository"
+        )
+        canonical = plugin_release_utils.canonicalize_github_repository_url(repository)
+        if repository != canonical:
+            raise ValueError("Repository error URL is not canonical")
+        if repository not in selected_repositories:
+            raise ValueError("Repository error is outside selected repositories")
+        if repository in seen_repositories:
+            raise ValueError(f"Duplicate repository error: {repository}")
+
+        reason = _normalise_str(raw_error["reason"], "repository error reason")
+        if not _CANONICAL_REPOSITORY_ERROR_REASON.fullmatch(reason):
+            raise ValueError(f"Invalid repository error reason: {reason!r}")
+
+        seen_repositories.add(repository)
+        normalised_errors.append({"repository": repository, "reason": reason})
+
+    if normalised_errors != sorted(
+        normalised_errors, key=lambda error: error["repository"]
+    ):
+        raise ValueError("Repository errors are not in canonical order")
+    return normalised_errors
+
+
+def _repository_metadata_error(repository: str, metadata: Any) -> Optional[str]:
+    """Return a redacted per-repository error when metadata cannot prove identity."""
+    if not isinstance(metadata, Mapping):
+        return "repository-metadata-invalid"
+
+    metadata_name = metadata.get("full_name")
+    if not isinstance(metadata_name, str) or not metadata_name.strip():
+        return "repository-metadata-identity-missing"
+    try:
+        metadata_repository = plugin_release_utils.canonicalize_github_repository_url(
+            f"https://github.com/{metadata_name}"
+        )
+    except ValueError:
+        return "repository-metadata-identity-invalid"
+    if metadata_repository != repository:
+        return "repository-metadata-identity-mismatch"
+    if not isinstance(metadata.get("archived"), bool):
+        return "repository-metadata-invalid"
+    return None
 
 
 def _parse_asset_from_release(
@@ -557,9 +633,10 @@ def _validate_worklist_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("worklist payload must be an object")
 
     provided = set(payload.keys())
-    if provided != _PAYLOAD_KEYS:
+    allowed_payload_keys = _PAYLOAD_KEYS | _OPTIONAL_PAYLOAD_KEYS
+    if not _PAYLOAD_KEYS <= provided or not provided <= allowed_payload_keys:
         missing = ", ".join(sorted(_PAYLOAD_KEYS - provided))
-        extras = ", ".join(sorted(provided - _PAYLOAD_KEYS))
+        extras = ", ".join(sorted(provided - allowed_payload_keys))
         if missing and extras:
             raise ValueError(
                 f"Missing worklist payload fields: {missing}; extra worklist payload fields: {extras}"
@@ -595,6 +672,12 @@ def _validate_worklist_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         normalized_repositories.append(repository)
     if normalized_repositories != sorted(normalized_repositories):
         raise ValueError("Worklist repositories are not canonical order")
+
+    repository_errors: list[dict[str, str]] = []
+    if "repository_errors" in payload:
+        repository_errors = _normalise_repository_errors(
+            payload["repository_errors"], set(normalized_repositories)
+        )
 
     latest_only = _normalise_bool(payload["latest_only"], "latest_only")
     base_commit = payload["base_commit"]
@@ -635,12 +718,15 @@ def _validate_worklist_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     normalized_items: list[dict[str, Any]] = []
     selected_repositories = set(normalized_repositories)
+    errored_repositories = {error["repository"] for error in repository_errors}
     for item in items:
         normalized = _validate_worklist_item(item)
         if normalized["repository"] not in selected_repositories:
             raise ValueError(
                 "worklist item repository is outside selected repositories"
             )
+        if normalized["repository"] in errored_repositories:
+            raise ValueError("Worklist item repository has a repository error")
         normalized_items.append(normalized)
 
     grouped: dict[str, list[dict[str, Any]]] = {}
@@ -670,7 +756,7 @@ def _validate_worklist_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"Duplicate worklist identity: {identity!r}")
             seen.add(identity)
 
-    return {
+    normalised_payload = {
         "selection_mode": selection_mode,
         "source_revision": source_revision,
         "repositories": normalized_repositories,
@@ -679,6 +765,9 @@ def _validate_worklist_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         "base_commit": base_commit if selection_mode in {"changed", "none"} else None,
         "latest_only": _normalise_bool(latest_only, "latest_only"),
     }
+    if repository_errors:
+        normalised_payload["repository_errors"] = repository_errors
+    return normalised_payload
 
 
 def _validate_worklist_document_payload(
@@ -901,6 +990,7 @@ def prepare_audit_worklist(
         raise ValueError("base_ref is only valid for changed mode")
 
     items: list[dict[str, Any]] = []
+    repository_errors: list[dict[str, str]] = []
     try:
         if selection_mode != "none":
             for repository in repositories:
@@ -918,9 +1008,29 @@ def prepare_audit_worklist(
                 tag_map = _normalise_tag_map(
                     tag_resolver(owner, repo, tag_timeout_seconds)
                 )
-                metadata = metadata_fetcher(owner, repo)
-                if not isinstance(metadata, Mapping):
-                    raise ValueError(f"Invalid repository metadata for {repository}")
+                try:
+                    metadata = metadata_fetcher(owner, repo)
+                except Exception:
+                    repository_errors.append(
+                        {
+                            "repository": repository,
+                            "reason": "repository-metadata-fetch-failed",
+                        }
+                    )
+                    log.warning(
+                        "Repository error for %s: repository-metadata-fetch-failed",
+                        repository,
+                    )
+                    continue
+                metadata_error = _repository_metadata_error(repository, metadata)
+                if metadata_error is not None:
+                    repository_errors.append(
+                        {"repository": repository, "reason": metadata_error}
+                    )
+                    log.warning(
+                        "Repository error for %s: %s", repository, metadata_error
+                    )
+                    continue
 
                 releases = release_fetcher(owner, repo)
                 if not isinstance(releases, list):
@@ -948,6 +1058,8 @@ def prepare_audit_worklist(
             "base_commit": base_commit,
             "latest_only": latest_only,
         }
+        if repository_errors:
+            prepared_payload["repository_errors"] = repository_errors
         payload = _validate_worklist_payload(prepared_payload)
         fingerprint = compute_worklist_fingerprint(payload)
         document = {

@@ -198,6 +198,7 @@ def test_worklist_prepare_and_load_roundtrip_is_stable(tmp_path):
         "https://github.com/owner/b",
     ]
     assert len(loaded_one["payload"]["items"]) == 3
+    assert "repository_errors" not in loaded_one["payload"]
 
 
 def test_worklist_load_rejects_tampered_fingerprint(tmp_path):
@@ -1012,36 +1013,155 @@ def test_worklist_prepare_rejects_changed_mode_without_base_ref(tmp_path):
         )
 
 
-def test_worklist_prepare_rejects_metadata_identity_mismatch(tmp_path):
-    with pytest.raises(ValueError, match="Repository metadata mismatch"):
-        worklist.prepare_audit_worklist(
-            tmp_path / "metadata.json",
-            source_revision=SOURCE_REVISION,
-            selection_mode="repository",
-            repository_urls=["https://github.com/owner/repo"],
-            shard_count=14,
-            latest_only=False,
-            release_fetcher=lambda *_args: [
-                _with_digest(
-                    _with_asset_urls(
-                        _release(
-                            "v1",
-                            1,
-                            10,
-                            repository_url="https://github.com/owner/repo",
-                        ),
-                        "https://github.com/owner/repo",
+def test_worklist_prepare_records_metadata_identity_mismatch_without_adopting_redirect(
+    tmp_path,
+):
+    configured_repository = "https://github.com/danielcopper/decky-romm-sync"
+    redirect_target = "https://github.com/danielcopper/romm-tender"
+    healthy_repository = "https://github.com/owner/healthy"
+    output = tmp_path / "metadata-mismatch.json"
+
+    def release_fetcher(owner: str, repo: str) -> list[dict]:
+        repository = f"https://github.com/{owner}/{repo}"
+        return [
+            _with_digest(
+                _with_asset_urls(
+                    _release("v1", 1, 10, repository_url=repository), repository
+                ),
+                "a" * 64,
+            )
+        ]
+
+    def metadata_fetcher(owner: str, repo: str) -> dict:
+        if (owner, repo) == ("danielcopper", "decky-romm-sync"):
+            return {"full_name": "danielcopper/romm-tender", "archived": False}
+        return _release_metadata(owner, repo)
+
+    fingerprint, document = worklist.prepare_audit_worklist(
+        output,
+        source_revision=SOURCE_REVISION,
+        selection_mode="all",
+        repository_urls=[configured_repository, healthy_repository],
+        shard_count=14,
+        latest_only=False,
+        release_fetcher=release_fetcher,
+        metadata_fetcher=metadata_fetcher,
+        tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
+        api_deadline_seconds=7,
+    )
+
+    payload = document["payload"]
+    assert payload["repository_errors"] == [
+        {
+            "repository": configured_repository,
+            "reason": "repository-metadata-identity-mismatch",
+        }
+    ]
+    assert [item["repository"] for item in payload["items"]] == [healthy_repository]
+    assert redirect_target not in json.dumps(payload, sort_keys=True)
+    assert all(item["repository"] != redirect_target for item in payload["items"])
+    assert fingerprint == worklist.compute_worklist_fingerprint(payload)
+    assert worklist.load_worklist_document(output) == document
+
+
+@pytest.mark.parametrize(
+    ("metadata_mode", "expected_reason"),
+    [
+        ("missing-identity", "repository-metadata-identity-missing"),
+        ("fetch-failure", "repository-metadata-fetch-failed"),
+    ],
+)
+def test_worklist_prepare_records_per_repository_metadata_outcomes(
+    tmp_path, metadata_mode, expected_reason
+):
+    repository = "https://github.com/owner/repo"
+
+    def metadata_fetcher(*_args):
+        if metadata_mode == "fetch-failure":
+            raise RuntimeError("upstream metadata request failed")
+        return {"archived": False}
+
+    _fingerprint, document = worklist.prepare_audit_worklist(
+        tmp_path / f"metadata-{metadata_mode}.json",
+        source_revision=SOURCE_REVISION,
+        selection_mode="repository",
+        repository_urls=[repository],
+        shard_count=14,
+        latest_only=False,
+        release_fetcher=lambda *_args: [
+            _with_digest(
+                _with_asset_urls(
+                    _release(
+                        "v1",
+                        1,
+                        10,
+                        repository_url=repository,
                     ),
-                    "a" * 64,
-                )
-            ],
-            metadata_fetcher=lambda *_args: {
-                "full_name": "owner/other",
-                "archived": False,
+                    repository,
+                ),
+                "a" * 64,
+            )
+        ],
+        metadata_fetcher=metadata_fetcher,
+        tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
+        api_deadline_seconds=7,
+    )
+
+    assert document["payload"]["items"] == []
+    assert document["payload"]["repository_errors"] == [
+        {"repository": repository, "reason": expected_reason}
+    ]
+
+
+def test_worklist_rejects_tampered_repository_errors_without_a_new_fingerprint(
+    tmp_path,
+):
+    repositories = [
+        "https://github.com/owner/a",
+        "https://github.com/owner/b",
+    ]
+    output = tmp_path / "repository-errors.json"
+
+    _fingerprint, document = worklist.prepare_audit_worklist(
+        output,
+        source_revision=SOURCE_REVISION,
+        selection_mode="all",
+        repository_urls=repositories,
+        shard_count=14,
+        latest_only=False,
+        release_fetcher=lambda *_args: [],
+        metadata_fetcher=lambda owner, _repo: {
+            "full_name": f"{owner}/redirected",
+            "archived": False,
+        },
+        tag_resolver=lambda *_args, **_kwargs: {},
+        api_deadline_seconds=7,
+    )
+
+    assert [
+        entry["repository"] for entry in document["payload"]["repository_errors"]
+    ] == repositories
+    cases = {
+        "reordered": list(reversed(document["payload"]["repository_errors"])),
+        "duplicated": [
+            document["payload"]["repository_errors"][0],
+            document["payload"]["repository_errors"][0],
+        ],
+        "altered": [
+            {
+                **document["payload"]["repository_errors"][0],
+                "reason": "repository-metadata-fetch-failed",
             },
-            tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
-            api_deadline_seconds=7,
-        )
+            document["payload"]["repository_errors"][1],
+        ],
+    }
+    for name, errors in cases.items():
+        tampered = json.loads(json.dumps(document))
+        tampered["payload"]["repository_errors"] = errors
+        path = tmp_path / f"repository-errors-{name}.json"
+        path.write_text(json.dumps(tampered), encoding="utf-8")
+        with pytest.raises(ValueError):
+            worklist.load_worklist_document(path)
 
 
 def test_prepare_marks_unresolved_source_tag_as_error(tmp_path):

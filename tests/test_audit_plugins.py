@@ -146,6 +146,26 @@ def test_producer_api_budget_is_shared_by_metadata_rest_calls():
     assert response.closed
 
 
+def test_repository_error_reports_have_no_release_identity_or_verdict_delta():
+    reports = ap._repository_error_reports(
+        [
+            {
+                "repository": "https://github.com/owner/renamed",
+                "reason": "repository-metadata-identity-mismatch",
+            }
+        ]
+    )
+
+    assert len(reports) == 1
+    report = reports[0]
+    assert report.repository == "https://github.com/owner/renamed"
+    assert report.final_classification == "AUDIT_ERROR"
+    assert report.completion_status == "incomplete"
+    assert report.error_scope == "repository"
+    assert not report.release_id
+    assert ap._verdict_delta_from_reports(reports) == {}
+
+
 def test_worker_download_session_retries_transient_http_failures():
     """Worker artifact/codeload downloads retain the established retry policy."""
     retry = ap._make_github_session().get_adapter("https://example.invalid").max_retries

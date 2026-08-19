@@ -406,6 +406,13 @@ evidence or updates the verdict store. A valid empty selection still supplies
 fourteen empty triples. This is deliberately stronger than counting uploaded
 artifacts.
 
+If upstream repository metadata identifies a different repository than the URL
+configured in `additional_plugins.txt`, preparation records a per-repository
+`AUDIT_ERROR` and continues auditing the rest of the corpus. The audit never
+follows a repository rename redirect: adopting a renamed upstream is an
+explicit, reviewed edit to `additional_plugins.txt`, which prevents a
+re-registered former name from being audited under the old identity.
+
 An uncached release materializes one immutable `codeload.github.com` source
 archive at its resolved commit, safely extracts it once, and shares that
 snapshot between metadata checks, Trivy, and source/artifact comparison. Cache
