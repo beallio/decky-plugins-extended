@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -152,7 +153,7 @@ def _make_shard_manifest(
     source_revision: str = "a" * 40,
 ):
     return {
-        "schema_version": "1",
+        "schema_version": "2",
         "worklist_fingerprint": fingerprint,
         "source_revision": source_revision,
         "shard_count": shard_count,
@@ -160,6 +161,7 @@ def _make_shard_manifest(
         "assigned_identities": assigned,
         "attempted_identities": attempt,
         "report_identities": report,
+        "artifacts": _manifest_artifacts(),
     }
 
 
@@ -188,7 +190,7 @@ def _make_valid_manifest_for_expected_shard(
     if source_revision is None:
         source_revision = payload["source_revision"]
     return {
-        "schema_version": "1",
+        "schema_version": "2",
         "worklist_fingerprint": fingerprint,
         "source_revision": source_revision,
         "shard_count": shard_count,
@@ -196,6 +198,7 @@ def _make_valid_manifest_for_expected_shard(
         "assigned_identities": assigned,
         "attempted_identities": attempted,
         "report_identities": report,
+        "artifacts": _manifest_artifacts(),
     }
 
 
@@ -231,6 +234,18 @@ def _sample_progress_record(report_id: str = "v1@10", *, fingerprint: str = "f" 
         final_classification="PASS",
     )
     return ap._report_identity_key(report), ap._progress_record(report, fingerprint)
+
+
+def _manifest_artifacts():
+    return {
+        name: {"sha256": "a" * 64, "size_bytes": 0}
+        for name in (
+            "progress",
+            "report_json",
+            "report_markdown",
+            "verdict_delta",
+        )
+    }
 
 
 def test_load_expected_worklist_document_enforces_exact_fingerprint(tmp_path):
@@ -483,7 +498,7 @@ def _base_manifest(index: int, shard_count: int = 14, fingerprint: str = "f" * 6
         index, shard_count, "https://github.com/owner/repo"
     )
     return {
-        "schema_version": "1",
+        "schema_version": "2",
         "worklist_fingerprint": fingerprint,
         "source_revision": "a" * 40,
         "shard_count": shard_count,
@@ -491,6 +506,7 @@ def _base_manifest(index: int, shard_count: int = 14, fingerprint: str = "f" * 6
         "assigned_identities": [identity],
         "attempted_identities": [identity],
         "report_identities": [identity],
+        "artifacts": _manifest_artifacts(),
     }
 
 
@@ -501,7 +517,7 @@ def test_shard_manifest_roundtrip_with_empty_and_non_empty_assignments(tmp_path)
     loaded = ap._load_shard_manifest(path)
 
     assert loaded == {
-        "schema_version": "1",
+        "schema_version": "2",
         "worklist_fingerprint": "f" * 64,
         "source_revision": "a" * 40,
         "shard_count": 14,
@@ -509,13 +525,14 @@ def test_shard_manifest_roundtrip_with_empty_and_non_empty_assignments(tmp_path)
         "assigned_identities": manifest["assigned_identities"],
         "attempted_identities": manifest["attempted_identities"],
         "report_identities": manifest["report_identities"],
+        "artifacts": _manifest_artifacts(),
     }
 
     empty_path = tmp_path / "empty.json"
     ap._write_shard_manifest(
         empty_path,
         {
-            "schema_version": "1",
+            "schema_version": "2",
             "worklist_fingerprint": "f" * 64,
             "source_revision": "b" * 40,
             "shard_count": 7,
@@ -523,9 +540,99 @@ def test_shard_manifest_roundtrip_with_empty_and_non_empty_assignments(tmp_path)
             "assigned_identities": [],
             "attempted_identities": [],
             "report_identities": [],
+            "artifacts": _manifest_artifacts(),
         },
     )
     assert ap._load_shard_manifest(empty_path)["assigned_identities"] == []
+
+
+def test_shard_manifest_v2_binds_and_verifies_all_worker_artifacts(tmp_path):
+    artifact_paths = {}
+    for name, content in {
+        "progress": b'{"schema_version":"2"}\n',
+        "report_json": b'{"reports":[]}\n',
+        "report_markdown": b"# Empty\n",
+        "verdict_delta": b"{}\n",
+    }.items():
+        path = tmp_path / f"{name}.bin"
+        path.write_bytes(content)
+        artifact_paths[name] = path
+
+    manifest = _base_manifest(0)
+    manifest["artifacts"] = {
+        name: {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size_bytes": path.stat().st_size,
+        }
+        for name, path in artifact_paths.items()
+    }
+
+    assert ap._verify_shard_manifest_artifacts(manifest, artifact_paths) == manifest
+    serialized = json.dumps(manifest, sort_keys=True)
+    assert all(str(path) not in serialized for path in artifact_paths.values())
+
+    artifact_paths["report_json"].write_bytes(b"tampered\n")
+    with pytest.raises(ValueError, match="size mismatch|digest mismatch"):
+        ap._verify_shard_manifest_artifacts(manifest, artifact_paths)
+
+
+def test_shard_manifest_loader_rejects_duplicate_json_schema_keys(tmp_path):
+    path = tmp_path / "manifest.json"
+    path.write_text('{"schema_version":"2","schema_version":"2"}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Duplicate key"):
+        ap._load_shard_manifest(path)
+
+
+@pytest.mark.parametrize(
+    "artifact_name",
+    ["progress", "report_json", "report_markdown", "verdict_delta"],
+)
+def test_shard_manifest_verifier_rejects_each_independently_tampered_artifact(
+    tmp_path, artifact_name
+):
+    artifact_paths = {}
+    for name in ap._SHARD_MANIFEST_ARTIFACT_KEYS:
+        path = tmp_path / f"{name}.bin"
+        path.write_bytes(f"{name}-original".encode("utf-8"))
+        artifact_paths[name] = path
+    manifest = _base_manifest(0)
+    manifest["artifacts"] = {
+        name: {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size_bytes": path.stat().st_size,
+        }
+        for name, path in artifact_paths.items()
+    }
+
+    target = artifact_paths[artifact_name]
+    target.write_bytes(b"x" * target.stat().st_size)
+    with pytest.raises(ValueError, match="digest mismatch"):
+        ap._verify_shard_manifest_artifacts(manifest, artifact_paths)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda manifest: manifest.pop("artifacts"),
+        lambda manifest: manifest["artifacts"].pop("progress"),
+        lambda manifest: manifest["artifacts"].__setitem__(
+            "extra", _manifest_artifacts()["progress"]
+        ),
+        lambda manifest: manifest["artifacts"].__setitem__(
+            "progress", {"sha256": "A" * 64, "size_bytes": 0}
+        ),
+        lambda manifest: manifest["artifacts"].__setitem__(
+            "progress", {"sha256": "a" * 64, "size_bytes": -1}
+        ),
+    ],
+)
+def test_shard_manifest_v2_rejects_malformed_artifact_bindings(mutate):
+    manifest = _base_manifest(0)
+    mutate(manifest)
+
+    with pytest.raises(ValueError, match="artifact|Artifact|Missing|Unexpected"):
+        ap._normalise_shard_manifest(manifest)
 
 
 def test_shard_manifest_rejects_wrong_shard_identity(tmp_path):
@@ -544,7 +651,7 @@ def test_shard_manifest_rejects_invalid_schema_fields(tmp_path):
         ap._write_shard_manifest(
             path,
             {
-                "schema_version": "1",
+                "schema_version": "2",
                 "worklist_fingerprint": "not-a-fingerprint",
                 "source_revision": "a" * 40,
                 "shard_count": 2,
@@ -552,6 +659,7 @@ def test_shard_manifest_rejects_invalid_schema_fields(tmp_path):
                 "assigned_identities": [],
                 "attempted_identities": [],
                 "report_identities": [],
+                "artifacts": _manifest_artifacts(),
             },
         )
 
@@ -559,7 +667,7 @@ def test_shard_manifest_rejects_invalid_schema_fields(tmp_path):
         ap._write_shard_manifest(
             path,
             {
-                "schema_version": "1",
+                "schema_version": "2",
                 "worklist_fingerprint": "a" * 64,
                 "source_revision": "short",
                 "shard_count": 2,
@@ -567,6 +675,7 @@ def test_shard_manifest_rejects_invalid_schema_fields(tmp_path):
                 "assigned_identities": [],
                 "attempted_identities": [],
                 "report_identities": [],
+                "artifacts": _manifest_artifacts(),
             },
         )
 
@@ -597,7 +706,7 @@ def test_shard_manifest_rejects_non_canonical_identities(
     ):
         ap._normalise_shard_manifest(
             {
-                "schema_version": "1",
+                "schema_version": "2",
                 "worklist_fingerprint": "a" * 64,
                 "source_revision": "a" * 40,
                 "shard_count": 2,
@@ -605,6 +714,7 @@ def test_shard_manifest_rejects_non_canonical_identities(
                 "assigned_identities": [identity],
                 "attempted_identities": [identity],
                 "report_identities": [identity],
+                "artifacts": _manifest_artifacts(),
             }
         )
 
@@ -619,7 +729,7 @@ def test_shard_manifest_rejects_out_of_assignment_identities_and_duplicates(tmp_
     with pytest.raises(ValueError, match="attempted_identities must be a subset"):
         ap._normalise_shard_manifest(
             {
-                "schema_version": "1",
+                "schema_version": "2",
                 "worklist_fingerprint": "a" * 64,
                 "source_revision": "a" * 40,
                 "shard_count": shard_count,
@@ -633,13 +743,14 @@ def test_shard_manifest_rejects_out_of_assignment_identities_and_duplicates(tmp_
                     }
                 ],
                 "report_identities": [],
+                "artifacts": _manifest_artifacts(),
             }
         )
 
     with pytest.raises(ValueError, match="Duplicate identity"):
         ap._normalise_shard_manifest(
             {
-                "schema_version": "1",
+                "schema_version": "2",
                 "worklist_fingerprint": "a" * 64,
                 "source_revision": "a" * 40,
                 "shard_count": shard_count,
@@ -647,6 +758,7 @@ def test_shard_manifest_rejects_out_of_assignment_identities_and_duplicates(tmp_
                 "assigned_identities": [first, first],
                 "attempted_identities": [first],
                 "report_identities": [first],
+                "artifacts": _manifest_artifacts(),
             }
         )
 
@@ -667,7 +779,7 @@ def test_shard_manifest_rejects_completed_shard_with_incomplete_reports(tmp_path
         ap._write_shard_manifest(
             path,
             {
-                "schema_version": "1",
+                "schema_version": "2",
                 "worklist_fingerprint": "a" * 64,
                 "source_revision": "a" * 40,
                 "shard_count": shard_count,
@@ -675,6 +787,7 @@ def test_shard_manifest_rejects_completed_shard_with_incomplete_reports(tmp_path
                 "assigned_identities": [first, second],
                 "attempted_identities": [first, second],
                 "report_identities": [first],
+                "artifacts": _manifest_artifacts(),
             },
         )
 
@@ -710,7 +823,7 @@ def test_shard_manifest_atomic_write_failure_leaves_no_file(tmp_path, monkeypatc
         ap._write_shard_manifest(
             path,
             {
-                "schema_version": "1",
+                "schema_version": "2",
                 "worklist_fingerprint": "a" * 64,
                 "source_revision": "a" * 40,
                 "shard_count": 2,
@@ -718,6 +831,7 @@ def test_shard_manifest_atomic_write_failure_leaves_no_file(tmp_path, monkeypatc
                 "assigned_identities": [],
                 "attempted_identities": [],
                 "report_identities": [],
+                "artifacts": _manifest_artifacts(),
             },
         )
 
@@ -765,7 +879,7 @@ def test_shard_manifest_rejects_partial_report_order_mismatch(tmp_path):
     ):
         ap._normalise_shard_manifest(
             {
-                "schema_version": "1",
+                "schema_version": "2",
                 "worklist_fingerprint": "a" * 64,
                 "source_revision": "a" * 40,
                 "shard_count": shard_count,
@@ -773,6 +887,7 @@ def test_shard_manifest_rejects_partial_report_order_mismatch(tmp_path):
                 "assigned_identities": [first, second],
                 "attempted_identities": [first, second],
                 "report_identities": [second, first],
+                "artifacts": _manifest_artifacts(),
             }
         )
 

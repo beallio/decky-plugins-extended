@@ -459,7 +459,7 @@ _WORKER_PROGRESS_RECORD_KEYS_V2 = {
     "report",
     "worklist_fingerprint",
 }
-_SHARD_MANIFEST_SCHEMA_VERSION = "1"
+_SHARD_MANIFEST_SCHEMA_VERSION = "2"
 _SHARD_MANIFEST_ROOT_KEYS = {
     "schema_version",
     "worklist_fingerprint",
@@ -469,8 +469,17 @@ _SHARD_MANIFEST_ROOT_KEYS = {
     "assigned_identities",
     "attempted_identities",
     "report_identities",
+    "artifacts",
 }
 _SHARD_MANIFEST_IDENTITY_KEYS = {"repository", "github_release_id", "asset_id"}
+_SHARD_MANIFEST_ARTIFACT_KEYS = {
+    "progress",
+    "report_json",
+    "report_markdown",
+    "verdict_delta",
+}
+_SHARD_MANIFEST_ARTIFACT_BINDING_KEYS = {"sha256", "size_bytes"}
+_ARTIFACT_HASH_CHUNK_BYTES = 1024 * 1024
 
 
 def load_allowlist(
@@ -5627,6 +5636,184 @@ def _normalise_positive_int(value: Any, field_name: str) -> int:
     return value
 
 
+def _normalise_manifest_artifacts(raw: Any) -> dict[str, dict[str, Any]]:
+    """Validate the v2 byte bindings for the worker's committed generation."""
+    if not isinstance(raw, Mapping):
+        raise ValueError("artifacts must be an object")
+
+    provided = set(raw.keys())
+    if provided != _SHARD_MANIFEST_ARTIFACT_KEYS:
+        extras = ", ".join(sorted(provided - _SHARD_MANIFEST_ARTIFACT_KEYS))
+        missing = ", ".join(sorted(_SHARD_MANIFEST_ARTIFACT_KEYS - provided))
+        if extras and missing:
+            raise ValueError(f"Unexpected artifact keys: {extras}; missing: {missing}")
+        if extras:
+            raise ValueError(f"Unexpected artifact keys: {extras}")
+        raise ValueError(f"Missing artifact keys: {missing}")
+
+    normalised: dict[str, dict[str, Any]] = {}
+    for name in sorted(_SHARD_MANIFEST_ARTIFACT_KEYS):
+        binding = raw[name]
+        if not isinstance(binding, Mapping):
+            raise ValueError(f"Invalid artifact binding: {name}")
+        binding_keys = set(binding.keys())
+        if binding_keys != _SHARD_MANIFEST_ARTIFACT_BINDING_KEYS:
+            extras = ", ".join(
+                sorted(binding_keys - _SHARD_MANIFEST_ARTIFACT_BINDING_KEYS)
+            )
+            missing = ", ".join(
+                sorted(_SHARD_MANIFEST_ARTIFACT_BINDING_KEYS - binding_keys)
+            )
+            if extras and missing:
+                raise ValueError(
+                    f"Invalid artifact binding {name}: unexpected {extras}; missing {missing}"
+                )
+            if extras:
+                raise ValueError(
+                    f"Invalid artifact binding {name}: unexpected {extras}"
+                )
+            raise ValueError(f"Invalid artifact binding {name}: missing {missing}")
+        normalised[name] = {
+            "sha256": _normalise_worklist_fingerprint(
+                binding["sha256"], f"artifacts.{name}.sha256"
+            ),
+            "size_bytes": _normalise_non_negative_int(
+                binding["size_bytes"], f"artifacts.{name}.size_bytes"
+            ),
+        }
+    return normalised
+
+
+def _bounded_artifact_label(path: str | Path) -> str:
+    value = str(path)
+    return (
+        value
+        if len(value) <= EVIDENCE_MAX_LEN
+        else value[: EVIDENCE_MAX_LEN - 3] + "..."
+    )
+
+
+def _hash_worker_artifact(path: str | Path, artifact_name: str) -> tuple[str, int]:
+    """Stream one caller-supplied artifact without parsing or trusting it."""
+    candidate = Path(path)
+    label = _bounded_artifact_label(candidate)
+    try:
+        if not candidate.is_file():
+            raise ValueError(f"Artifact {artifact_name} is not a regular file: {label}")
+        digest = hashlib.sha256()
+        size_bytes = 0
+        with candidate.open("rb") as artifact_file:
+            while chunk := artifact_file.read(_ARTIFACT_HASH_CHUNK_BYTES):
+                size_bytes += len(chunk)
+                digest.update(chunk)
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError(
+            f"Unable to read artifact {artifact_name} ({label}): {str(exc)[:EVIDENCE_MAX_LEN]}"
+        ) from exc
+    return digest.hexdigest(), size_bytes
+
+
+def _verify_shard_manifest_artifacts(
+    manifest: Mapping[str, Any], artifact_paths: Mapping[str, str | Path]
+) -> dict[str, Any]:
+    """Return a normalised manifest only when every bound artifact matches.
+
+    The caller owns the paths.  This deliberately verifies their bytes before
+    it parses progress or accepts report/delta evidence from the generation.
+    """
+    normalised_manifest = _normalise_shard_manifest(manifest)
+    if not isinstance(artifact_paths, Mapping):
+        raise ValueError("Artifact paths must be an object")
+    supplied = set(artifact_paths.keys())
+    if supplied != _SHARD_MANIFEST_ARTIFACT_KEYS:
+        extras = ", ".join(sorted(supplied - _SHARD_MANIFEST_ARTIFACT_KEYS))
+        missing = ", ".join(sorted(_SHARD_MANIFEST_ARTIFACT_KEYS - supplied))
+        if extras and missing:
+            raise ValueError(f"Unexpected artifact paths: {extras}; missing: {missing}")
+        if extras:
+            raise ValueError(f"Unexpected artifact paths: {extras}")
+        raise ValueError(f"Missing artifact paths: {missing}")
+
+    for name in sorted(_SHARD_MANIFEST_ARTIFACT_KEYS):
+        supplied_digest, supplied_size = _hash_worker_artifact(
+            artifact_paths[name], name
+        )
+        binding = normalised_manifest["artifacts"][name]
+        if supplied_size != binding["size_bytes"]:
+            raise ValueError(f"Artifact size mismatch: {name}")
+        if supplied_digest != binding["sha256"]:
+            raise ValueError(f"Artifact digest mismatch: {name}")
+    return normalised_manifest
+
+
+def _worker_artifact_bindings(
+    artifact_paths: Mapping[str, str | Path],
+) -> dict[str, dict[str, Any]]:
+    """Create strict digest/size bindings for generated worker data files."""
+    if set(artifact_paths.keys()) != _SHARD_MANIFEST_ARTIFACT_KEYS:
+        raise ValueError("Worker artifact paths are incomplete")
+    return {
+        name: {
+            "sha256": digest,
+            "size_bytes": size_bytes,
+        }
+        for name, (digest, size_bytes) in (
+            (name, _hash_worker_artifact(artifact_paths[name], name))
+            for name in sorted(_SHARD_MANIFEST_ARTIFACT_KEYS)
+        )
+    }
+
+
+def _resolve_worker_output_targets(
+    *,
+    worklist_path: str | Path,
+    progress_path: str | Path,
+    report_json_path: str | Path,
+    report_markdown_path: str | Path,
+    verdict_delta_path: str | Path,
+    manifest_path: str | Path,
+) -> dict[str, Path]:
+    """Resolve output aliases before staging or changing any worker evidence."""
+    raw_targets = {
+        "progress": progress_path,
+        "report_json": report_json_path,
+        "report_markdown": report_markdown_path,
+        "verdict_delta": verdict_delta_path,
+        "manifest": manifest_path,
+    }
+    try:
+        resolved_worklist = Path(worklist_path).resolve(strict=True)
+        targets = {
+            name: Path(path).resolve(strict=False) for name, path in raw_targets.items()
+        }
+    except OSError as exc:
+        raise ValueError(
+            f"Unable to resolve worker output target: {str(exc)[:EVIDENCE_MAX_LEN]}"
+        ) from exc
+
+    target_paths = list(targets.values())
+    if len(set(target_paths)) != len(target_paths):
+        raise ValueError("Worker output targets must be five distinct paths")
+    if resolved_worklist in target_paths:
+        raise ValueError("Worker output target aliases the worklist input")
+    for name, path in targets.items():
+        if path.exists() and path.is_dir():
+            raise ValueError(f"Worker output target is a directory: {name}")
+    return targets
+
+
+def _fsync_directory(path: str | Path) -> None:
+    """Durably record a same-directory rename before the manifest commits it."""
+    directory = Path(path)
+    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _normalise_manifest_identity(raw: Mapping[str, Any]) -> dict[str, str]:
     if not isinstance(raw, Mapping):
         raise ValueError("Manifest identity must be an object")
@@ -5734,6 +5921,7 @@ def _normalise_shard_manifest(raw: Mapping[str, Any]) -> dict[str, Any]:
     report = _normalise_manifest_identities(
         raw["report_identities"], "report_identities"
     )
+    artifacts = _normalise_manifest_artifacts(raw["artifacts"])
 
     assigned_set = {
         (identity["repository"], identity["github_release_id"], identity["asset_id"])
@@ -5770,6 +5958,7 @@ def _normalise_shard_manifest(raw: Mapping[str, Any]) -> dict[str, Any]:
         "assigned_identities": assigned,
         "attempted_identities": attempted,
         "report_identities": report,
+        "artifacts": artifacts,
     }
 
 
@@ -5781,11 +5970,25 @@ def _write_shard_manifest(path: str | Path, manifest: Mapping[str, Any]) -> None
     )
 
 
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"Duplicate key in shard manifest: {key}")
+        result[key] = value
+    return result
+
+
 def _load_shard_manifest(path: str | Path) -> dict[str, Any]:
     if not Path(path).is_file():
         raise ValueError(f"Shard manifest not found: {path}")
-    with open(path, encoding="utf-8") as manifest_file:
-        payload = json.load(manifest_file)
+    try:
+        with open(path, encoding="utf-8") as manifest_file:
+            payload = json.load(
+                manifest_file, object_pairs_hook=_reject_duplicate_json_keys
+            )
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid shard manifest: {path}") from exc
     return _normalise_shard_manifest(payload)
 
 
@@ -5883,6 +6086,7 @@ def _worker_shard_manifest(
     shard_index: int,
     assigned_items: list[Mapping[str, Any]],
     reports: list[AuditReport],
+    artifacts: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Build the exact worker checkpoint manifest for a validated snapshot."""
     payload = worklist["payload"]
@@ -5898,6 +6102,7 @@ def _worker_shard_manifest(
         ],
         "attempted_identities": identities,
         "report_identities": identities,
+        "artifacts": _normalise_manifest_artifacts(artifacts),
     }
 
 
@@ -6347,6 +6552,32 @@ def main(argv: Optional[list[str]] = None) -> int:
     verdict_delta_path = args.verdict_delta or os.path.join(
         args.output_dir, f"verdict-delta-shard-{args.shard_index}.json"
     )
+    manifest_path = Path(args.output_dir) / "shard-manifest.json"
+    worker_artifact_paths: Optional[dict[str, Path]] = None
+    if worklist_mode:
+        try:
+            output_targets = _resolve_worker_output_targets(
+                worklist_path=args.worklist,
+                progress_path=progress_path,
+                report_json_path=report_json_path,
+                report_markdown_path=report_markdown_path,
+                verdict_delta_path=verdict_delta_path,
+                manifest_path=manifest_path,
+            )
+        except ValueError as exc:
+            log.error("Invalid worker output targets: %s", exc)
+            return 1
+        progress_path = str(output_targets["progress"])
+        report_json_path = str(output_targets["report_json"])
+        report_markdown_path = str(output_targets["report_markdown"])
+        verdict_delta_path = str(output_targets["verdict_delta"])
+        manifest_path = output_targets["manifest"]
+        worker_artifact_paths = {
+            "progress": Path(progress_path),
+            "report_json": Path(report_json_path),
+            "report_markdown": Path(report_markdown_path),
+            "verdict_delta": Path(verdict_delta_path),
+        }
 
     repository_errors: list[AuditReport] = []
     if worklist_mode:
@@ -6427,18 +6658,29 @@ def main(argv: Optional[list[str]] = None) -> int:
         args.shard_count,
         len(work_items),
     )
-    try:
-        progress_records = _load_progress_manifest(
-            progress_path,
-            worklist_document["fingerprint"] if worklist_mode else None,
-        )
-    except Exception as exc:
-        if worklist_mode:
-            # A stale or malformed checkpoint must never make a different
-            # snapshot resumable. It is safe to disregard and recompute it.
-            log.warning("Ignoring stale worker progress manifest: %s", exc)
+    if worklist_mode:
+        assert worker_artifact_paths is not None
+        try:
+            # The manifest is the generation commit record.  Do not parse a
+            # progress file until all four bound artifacts have matched it.
+            committed_manifest = _load_shard_manifest(manifest_path)
+            _validate_expected_shard_manifest(
+                committed_manifest, worklist_document, args.shard_index
+            )
+            _verify_shard_manifest_artifacts(committed_manifest, worker_artifact_paths)
+            progress_records = _load_progress_manifest(
+                progress_path, worklist_document["fingerprint"]
+            )
+        except Exception as exc:
+            # A missing, old, malformed, or byte-mismatched generation must
+            # never make progress resumable.  Re-audit solely from the
+            # prepared worklist without entering legacy discovery seams.
+            log.warning("Ignoring uncommitted worker checkpoint: %s", exc)
             progress_records = {}
-        else:
+    else:
+        try:
+            progress_records = _load_progress_manifest(progress_path)
+        except Exception as exc:
             log.error("Failed to load progress manifest: %s", exc)
             return 1
 
@@ -6461,14 +6703,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
             return json_path, md_path
 
-        # Keep the last fully publishable shard evidence intact when staging a
-        # newer release checkpoint fails.  In particular, build and validate
-        # the replacement manifest before replacing any report, progress, or
-        # verdict-delta path visible to aggregation.
-        output_dir = Path(args.output_dir)
-        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        # The manifest is the sole commit record.  Data may be partially
+        # promoted if a process dies, but without a newly replaced manifest
+        # those bytes cannot be resumed or published as a generation.
+        assert worker_artifact_paths is not None
+        staging_root = manifest_path.parent.parent
+        staging_root.mkdir(parents=True, exist_ok=True)
         staging_dir = Path(
-            tempfile.mkdtemp(prefix=".audit-worker-checkpoint-", dir=output_dir.parent)
+            tempfile.mkdtemp(prefix=".audit-worker-checkpoint-", dir=staging_root)
         )
         staged_progress_path = staging_dir / "progress.json"
         staged_delta_path = staging_dir / "verdict-delta.json"
@@ -6489,23 +6731,25 @@ def main(argv: Optional[list[str]] = None) -> int:
                 )
                 + "\n",
             )
+            staged_artifact_paths = {
+                "progress": staged_progress_path,
+                "report_json": Path(staged_report_path),
+                "report_markdown": Path(staged_markdown_path),
+                "verdict_delta": staged_delta_path,
+            }
+            artifact_bindings = _worker_artifact_bindings(staged_artifact_paths)
+            staged_manifest = _worker_shard_manifest(
+                worklist_document,
+                args.shard_index,
+                work_items,
+                reports,
+                artifact_bindings,
+            )
             _write_shard_manifest(
                 staged_manifest_path,
-                _worker_shard_manifest(
-                    worklist_document,
-                    args.shard_index,
-                    work_items,
-                    reports,
-                ),
+                staged_manifest,
             )
-
-            targets = (
-                (staged_progress_path, Path(progress_path)),
-                (Path(staged_report_path), Path(report_json_path)),
-                (Path(staged_markdown_path), Path(report_markdown_path)),
-                (staged_delta_path, Path(verdict_delta_path)),
-                (staged_manifest_path, output_dir / "shard-manifest.json"),
-            )
+            _verify_shard_manifest_artifacts(staged_manifest, staged_artifact_paths)
 
             def stage_for_target(
                 source_path: Path, target_path: Path, phase: str
@@ -6526,7 +6770,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         shutil.copyfileobj(source, output)
                         output.flush()
                         os.fsync(output.fileno())
-                except Exception:
+                except BaseException:
                     if temporary_path.exists():
                         temporary_path.unlink()
                     raise
@@ -6534,59 +6778,43 @@ def main(argv: Optional[list[str]] = None) -> int:
 
             # Target-local staging keeps arbitrary progress and verdict-delta
             # paths atomic even when they are not on output_dir's filesystem.
-            staged_targets: list[tuple[Path, Path]] = []
-            backups: dict[Path, Optional[Path]] = {}
-            promoted: list[Path] = []
+            staged_targets: dict[str, Path] = {}
             try:
-                for staged_path, target_path in targets:
-                    staged_targets.append(
-                        (
-                            stage_for_target(
-                                staged_path, target_path, "checkpoint-stage"
-                            ),
-                            target_path,
-                        )
+                for name in sorted(_SHARD_MANIFEST_ARTIFACT_KEYS):
+                    staged_targets[name] = stage_for_target(
+                        staged_artifact_paths[name],
+                        worker_artifact_paths[name],
+                        "checkpoint-stage",
                     )
+                _verify_shard_manifest_artifacts(staged_manifest, staged_targets)
 
-                # Preserve every prior target before changing any visible
-                # path.  A promotion failure can then restore the complete
-                # previous generation instead of exposing mixed evidence.
-                for _staged_path, target_path in staged_targets:
-                    if target_path.exists():
-                        backups[target_path] = stage_for_target(
-                            target_path, target_path, "checkpoint-backup"
-                        )
-                    else:
-                        backups[target_path] = None
+                # Data first, manifest last.  Never roll a partially promoted
+                # data generation back: the unchanged prior manifest rejects it.
+                for name in sorted(_SHARD_MANIFEST_ARTIFACT_KEYS):
+                    os.replace(staged_targets[name], worker_artifact_paths[name])
+                    _fsync_directory(worker_artifact_paths[name].parent)
 
-                for staged_path, target_path in staged_targets:
-                    os.replace(staged_path, target_path)
-                    promoted.append(target_path)
-            except Exception as promotion_error:
-                rollback_errors: list[str] = []
-                for target_path in reversed(promoted):
-                    backup_path = backups[target_path]
-                    try:
-                        if backup_path is None:
-                            target_path.unlink()
-                        else:
-                            os.replace(backup_path, target_path)
-                            backups[target_path] = None
-                    except Exception as rollback_error:
-                        rollback_errors.append(f"{target_path}: {rollback_error}")
-                if rollback_errors:
-                    raise OSError(
-                        "Checkpoint promotion failed and rollback was incomplete: "
-                        + "; ".join(rollback_errors)
-                    ) from promotion_error
-                raise
+                staged_manifest_target = stage_for_target(
+                    staged_manifest_path,
+                    manifest_path,
+                    "checkpoint-manifest",
+                )
+                try:
+                    os.replace(staged_manifest_target, manifest_path)
+                    _fsync_directory(manifest_path.parent)
+                finally:
+                    if staged_manifest_target.exists():
+                        staged_manifest_target.unlink()
+
+                # A manifest is publishable only after it verifies the visible
+                # data generation it just committed.
+                _verify_shard_manifest_artifacts(
+                    _load_shard_manifest(manifest_path), worker_artifact_paths
+                )
             finally:
-                for staged_path, _target_path in staged_targets:
+                for staged_path in staged_targets.values():
                     if staged_path.exists():
                         staged_path.unlink()
-                for backup_path in backups.values():
-                    if backup_path is not None and backup_path.exists():
-                        backup_path.unlink()
             return report_json_path, report_markdown_path
         finally:
             shutil.rmtree(staging_dir, ignore_errors=True)

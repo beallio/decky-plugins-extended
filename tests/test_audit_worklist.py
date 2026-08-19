@@ -1919,6 +1919,49 @@ def test_worker_mode_validates_snapshot_before_creating_any_output(tmp_path):
         )
 
 
+@pytest.mark.parametrize("case", ["duplicate", "worklist", "worklist-symlink"])
+def test_worker_mode_rejects_output_aliases_before_creating_evidence(
+    monkeypatch, tmp_path, case
+):
+    worklist_path, fingerprint = _write_worker_worklist(tmp_path)
+    output_dir = tmp_path / "outputs"
+    if case == "duplicate":
+        progress_path = output_dir / "security-report.json"
+        expected_entries = set()
+    elif case == "worklist":
+        progress_path = worklist_path
+        expected_entries = set()
+    else:
+        output_dir.mkdir()
+        progress_path = output_dir / "progress-link.json"
+        progress_path.symlink_to(worklist_path)
+        expected_entries = {progress_path}
+
+    monkeypatch.setattr(
+        ap,
+        "audit_release",
+        lambda *_args, **_kwargs: pytest.fail(
+            "output-alias rejection audited a release"
+        ),
+    )
+    assert (
+        ap.main(
+            _worker_cli(
+                worklist_path,
+                fingerprint,
+                output_dir,
+                "--progress-manifest",
+                str(progress_path),
+            )
+        )
+        == 1
+    )
+    if output_dir.exists():
+        assert set(output_dir.iterdir()) == expected_entries
+    else:
+        assert not expected_entries
+
+
 @pytest.mark.parametrize(
     ("case", "extra"),
     [
@@ -2371,8 +2414,9 @@ def test_worker_mode_writes_valid_empty_outputs_and_manifest(monkeypatch, tmp_pa
         )
         == {}
     )
-    assert ap._load_shard_manifest(output_dir / "shard-manifest.json") == {
-        "schema_version": "1",
+    manifest = ap._load_shard_manifest(output_dir / "shard-manifest.json")
+    assert manifest | {"artifacts": {}} == {
+        "schema_version": "2",
         "worklist_fingerprint": fingerprint,
         "source_revision": SOURCE_REVISION,
         "shard_count": 1,
@@ -2380,7 +2424,20 @@ def test_worker_mode_writes_valid_empty_outputs_and_manifest(monkeypatch, tmp_pa
         "assigned_identities": [],
         "attempted_identities": [],
         "report_identities": [],
+        "artifacts": {},
     }
+    assert (
+        ap._verify_shard_manifest_artifacts(
+            manifest,
+            {
+                "progress": output_dir / "progress-shard-0.json",
+                "report_json": output_dir / "security-report.json",
+                "report_markdown": output_dir / "security-report.md",
+                "verdict_delta": output_dir / "verdict-delta-shard-0.json",
+            },
+        )
+        == manifest
+    )
 
 
 def test_worker_mode_real_prepared_audit_reuses_one_source_snapshot(
@@ -2609,6 +2666,54 @@ def test_worker_mode_matching_resume_never_calls_audit_or_discovery(
                 f"resume called forbidden seam {_name}"
             ),
         )
+    assert ap.main(_worker_cli(worklist_path, fingerprint, output_dir)) == 0
+
+
+def test_worker_mode_tampered_progress_is_not_parsed_before_manifest_verification(
+    monkeypatch, tmp_path
+):
+    worklist_path, fingerprint = _write_worker_worklist(tmp_path)
+    output_dir = tmp_path / "outputs"
+    monkeypatch.setattr(ap, "load_policy", lambda *_args: ap._default_policy())
+    monkeypatch.setattr(ap, "load_allowlist", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ap, "load_verdicts", lambda *_args: {})
+    monkeypatch.setattr(ap, "_scanner_runtime_identities", lambda *_args: {})
+    monkeypatch.setattr(
+        ap,
+        "compute_audit_context_hash",
+        lambda *_args, **_kwargs: "current-context",
+    )
+
+    def completed(repository, release, **kwargs):
+        asset = release["assets"][0]
+        return ap.AuditReport(
+            repository=repository,
+            release=release["tag_name"],
+            release_id=f"{release['tag_name']}@{asset['id']}",
+            github_release_id=str(release["id"]),
+            asset_id=str(asset["id"]),
+            artifact_url=asset["browser_download_url"],
+            artifact_sha256="a" * 64,
+            identity_status="CURRENT",
+            resolved_tag_commit_sha=kwargs["_prepared_commit_sha"],
+            audit_context_hash="current-context",
+            final_classification="PASS",
+            completion_status="completed",
+        )
+
+    monkeypatch.setattr(ap, "audit_release", completed)
+    assert ap.main(_worker_cli(worklist_path, fingerprint, output_dir)) == 0
+    (output_dir / "progress-shard-0.json").write_text(
+        "untrusted progress bytes", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        ap,
+        "_load_progress_manifest",
+        lambda *_args, **_kwargs: pytest.fail(
+            "worker parsed unverified progress before artifact validation"
+        ),
+    )
+
     assert ap.main(_worker_cli(worklist_path, fingerprint, output_dir)) == 0
 
 
@@ -2897,10 +3002,23 @@ def test_worker_mode_manifest_checkpoint_failure_is_run_global(monkeypatch, tmp_
     assert len(progress) == 1
 
 
-def test_worker_checkpoint_promotion_rolls_back_every_visible_output(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    ("failed_artifact", "failure_type"),
+    [
+        ("progress", OSError),
+        ("report_json", OSError),
+        ("report_markdown", OSError),
+        ("verdict_delta", OSError),
+        ("progress", BaseException),
+        ("report_json", BaseException),
+        ("report_markdown", BaseException),
+        ("verdict_delta", BaseException),
+    ],
+)
+def test_worker_checkpoint_manifest_last_rejects_interrupted_data_generation(
+    monkeypatch, tmp_path, failed_artifact, failure_type
 ):
-    """A later promotion failure leaves the prior worker generation intact."""
+    """Data before a manifest is never a resumable or publishable generation."""
     worklist_path, _fingerprint = _write_worker_worklist(tmp_path)
     document = json.loads(worklist_path.read_text(encoding="utf-8"))
     first = document["payload"]["items"][0]
@@ -2923,13 +3041,13 @@ def test_worker_checkpoint_promotion_rolls_back_every_visible_output(
     output_dir = tmp_path / "outputs"
     progress_path = tmp_path / "state" / "progress.json"
     delta_path = tmp_path / "deltas" / "delta.json"
-    visible_targets = (
-        progress_path,
-        output_dir / "security-report.json",
-        output_dir / "security-report.md",
-        delta_path,
-        output_dir / "shard-manifest.json",
-    )
+    visible_targets = {
+        "progress": progress_path,
+        "report_json": output_dir / "security-report.json",
+        "report_markdown": output_dir / "security-report.md",
+        "verdict_delta": delta_path,
+        "manifest": output_dir / "shard-manifest.json",
+    }
     monkeypatch.setattr(ap, "load_policy", lambda *_args: ap._default_policy())
     monkeypatch.setattr(ap, "load_allowlist", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(ap, "load_verdicts", lambda *_args: {})
@@ -2943,7 +3061,7 @@ def test_worker_checkpoint_promotion_rolls_back_every_visible_output(
         audit_calls += 1
         if audit_calls == 2:
             prior_generation = {
-                target: target.read_bytes() for target in visible_targets
+                name: target.read_bytes() for name, target in visible_targets.items()
             }
             inject_failure = True
         asset = release["assets"][0]
@@ -2968,39 +3086,67 @@ def test_worker_checkpoint_promotion_rolls_back_every_visible_output(
 
     def fail_middle_promotion(source, destination):
         nonlocal replacement_failed
+        result = real_replace(source, destination)
         if (
             inject_failure
             and not replacement_failed
-            and Path(destination) == delta_path
+            and Path(destination) == visible_targets[failed_artifact]
         ):
             replacement_failed = True
-            raise OSError("injected verdict-delta promotion failure")
-        return real_replace(source, destination)
+            raise failure_type(f"injected {failed_artifact} promotion failure")
+        return result
 
     monkeypatch.setattr(ap.os, "replace", fail_middle_promotion)
 
-    assert (
-        ap.main(
-            _worker_cli(
-                worklist_path,
-                fingerprint,
-                output_dir,
-                "--progress-manifest",
-                str(progress_path),
-                "--verdict-delta",
-                str(delta_path),
-            )
-        )
-        == 1
+    argv = _worker_cli(
+        worklist_path,
+        fingerprint,
+        output_dir,
+        "--progress-manifest",
+        str(progress_path),
+        "--verdict-delta",
+        str(delta_path),
     )
+    if failure_type is BaseException:
+        with pytest.raises(BaseException, match="injected"):
+            ap.main(argv)
+    else:
+        assert ap.main(argv) == 1
     assert replacement_failed
     assert prior_generation is not None
-    assert {
-        target: target.read_bytes() for target in visible_targets
-    } == prior_generation
+    assert visible_targets["manifest"].read_bytes() == prior_generation["manifest"]
+    with pytest.raises(ValueError, match="Artifact (size|digest) mismatch"):
+        ap._verify_shard_manifest_artifacts(
+            ap._load_shard_manifest(visible_targets["manifest"]),
+            {name: visible_targets[name] for name in ap._SHARD_MANIFEST_ARTIFACT_KEYS},
+        )
     assert not list(tmp_path.rglob(".audit-worker-checkpoint-*"))
     assert not list(tmp_path.rglob("*.checkpoint-stage-*"))
-    assert not list(tmp_path.rglob("*.checkpoint-backup-*"))
+
+    monkeypatch.setattr(ap.os, "replace", real_replace)
+    for name in (
+        "read_repo_urls",
+        "get_changed_repos",
+        "build_audit_worklist",
+        "get_repo_metadata",
+        "get_releases",
+        "_gh_get",
+        "_resolve_ref_to_commit_and_tree_sha",
+        "audit_repository",
+    ):
+        monkeypatch.setattr(
+            ap,
+            name,
+            lambda *_args, _name=name, **_kwargs: pytest.fail(
+                f"mixed-generation recovery called forbidden seam {_name}"
+            ),
+        )
+    assert ap.main(argv) == 0
+    assert audit_calls == 4
+    assert ap._verify_shard_manifest_artifacts(
+        ap._load_shard_manifest(visible_targets["manifest"]),
+        {name: visible_targets[name] for name in ap._SHARD_MANIFEST_ARTIFACT_KEYS},
+    )
 
 
 def test_aggregation_rejects_duplicate_and_conflicting_release_keys(tmp_path):
