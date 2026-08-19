@@ -429,11 +429,15 @@ The producer has an eight-minute monotonic GitHub API budget inside its
 ten-minute job. Connect/read attempts, pagination, retries, and rate-limit
 waits are clipped to that deadline; an over-budget reset fails run-global
 instead of sleeping into a worker timeout. Scanner setup is one shared scanner
-bootstrap script with named, bounded phases, retry only for idempotent APT/key
-fetch work, a verified Trivy signing-key fingerprint, and hard ClamAV, Trivy,
-and exact Semgrep `1.132.0` checks. External package availability is not
-guaranteed; failure is observable and fail-closed before the unchanged
-twelve-minute setup-step cap.
+bootstrap script with named, bounded phases. A timed-out phase terminates its
+whole process group, allows a short grace period, then force-kills any residue.
+APT retries first wait in a separately logged, bounded phase for the dpkg
+frontend lock and use a longer APT-specific backoff; the full bootstrap has a
+600-second budget below the unchanged twelve-minute setup-step cap. Retry
+remains limited to idempotent APT/key-fetch work, with a verified Trivy
+signing-key fingerprint and hard ClamAV, Trivy, and exact Semgrep `1.132.0`
+checks. External package-mirror availability is still not guaranteed: a shard
+that cannot install its scanners fails closed and blocks publication.
 
 Production capacity is measured against the maximum fourteen-shard wall-time
 estimate, not against a sequential unsharded scan. The preserved 579-release
