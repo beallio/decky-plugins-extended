@@ -2149,13 +2149,19 @@ def test_prepared_source_error_is_identity_complete_release_error_without_resolu
 
 
 def test_prepared_source_error_is_bounded_before_worker_checkpointing(monkeypatch):
-    """The worker-only error seam cannot leak an unbounded diagnostic."""
+    """The worker-only error seam redacts before enforcing its output bound."""
     monkeypatch.setattr(
         ap,
         "_scanner_runtime_identities",
         lambda *_args: pytest.fail("prepared error must return before scanner probing"),
     )
-    detail = "x" * (ap.EVIDENCE_MAX_LEN * 2)
+    secret = "prepared-worker-secret-value-0123456789"
+    redacted_token = 'token="[REDACTED]"'
+    detail = (
+        "x" * (ap.EVIDENCE_MAX_LEN - len(redacted_token) - 1)
+        + f'token="{secret}"'
+        + "y" * ap.EVIDENCE_MAX_LEN
+    )
     report = ap.audit_release(
         "https://github.com/owner/repo",
         {
@@ -2182,10 +2188,62 @@ def test_prepared_source_error_is_bounded_before_worker_checkpointing(monkeypatc
 
     assert report.final_classification == "AUDIT_ERROR"
     assert report.error_scope == "release"
+    detail_output = report.errors[0]
     assert (
-        len(report.errors[0])
+        len(detail_output)
         <= len("Prepared source resolution failed: ") + ap.EVIDENCE_MAX_LEN
     )
+    assert ap.SECRET_REDACT in detail_output
+    assert secret not in detail_output
+    assert secret[:8] not in detail_output
+    assert secret[-8:] not in detail_output
+
+
+@pytest.mark.parametrize(
+    ("digest", "expected_sha256", "expected_identity_status"),
+    [
+        ("sha256:" + "a" * 64, "a" * 64, "CURRENT"),
+        (None, "", "UNKNOWN"),
+        ("sha256:not-a-valid-digest", "", "UNKNOWN"),
+    ],
+)
+def test_prepared_source_error_uses_truthful_asset_identity_fallback(
+    monkeypatch, digest, expected_sha256, expected_identity_status
+):
+    """Worker-local source failures retain only a verified asset identity."""
+    monkeypatch.setattr(
+        ap,
+        "_scanner_runtime_identities",
+        lambda *_args: pytest.fail("prepared error must return before scanner probing"),
+    )
+    asset = {
+        "id": 10,
+        "name": "plugin.zip",
+        "browser_download_url": (
+            "https://github.com/owner/repo/releases/download/v1/plugin.zip"
+        ),
+    }
+    if digest is not None:
+        asset["digest"] = digest
+
+    report = ap.audit_release(
+        "https://github.com/owner/repo",
+        {
+            "id": 1,
+            "tag_name": "v1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "assets": [asset],
+        },
+        ap._default_policy(),
+        [],
+        _repo_metadata={"full_name": "owner/repo", "archived": False},
+        _prepared_source_resolution_error="owner/repo:v1:source-resolution-failed",
+        _persist_verdict=False,
+    )
+
+    assert report.final_classification == "AUDIT_ERROR"
+    assert report.artifact_sha256 == expected_sha256
+    assert report.identity_status == expected_identity_status
 
 
 def test_worker_mode_prepared_error_checkpoints_safe_sibling_and_exit_precedence(
@@ -2837,6 +2895,112 @@ def test_worker_mode_manifest_checkpoint_failure_is_run_global(monkeypatch, tmp_
         output_dir / "progress-shard-0.json", fingerprint
     )
     assert len(progress) == 1
+
+
+def test_worker_checkpoint_promotion_rolls_back_every_visible_output(
+    monkeypatch, tmp_path
+):
+    """A later promotion failure leaves the prior worker generation intact."""
+    worklist_path, _fingerprint = _write_worker_worklist(tmp_path)
+    document = json.loads(worklist_path.read_text(encoding="utf-8"))
+    first = document["payload"]["items"][0]
+    second = copy.deepcopy(first)
+    second.update(
+        release_id=2,
+        tag_name="v2",
+        published_at="2026-02-01T00:00:00Z",
+        created_at="2026-02-01T00:00:00Z",
+        asset_id=20,
+        asset_name="plugin-v2.zip",
+        asset_url="https://github.com/owner/repo/releases/download/v2/plugin-v2.zip",
+        resolved_source_commit_sha="c" * 40,
+    )
+    document["payload"]["items"] = [second, first]
+    fingerprint = worklist.compute_worklist_fingerprint(document["payload"])
+    document["fingerprint"] = fingerprint
+    worklist_path.write_text(json.dumps(document), encoding="utf-8")
+
+    output_dir = tmp_path / "outputs"
+    progress_path = tmp_path / "state" / "progress.json"
+    delta_path = tmp_path / "deltas" / "delta.json"
+    visible_targets = (
+        progress_path,
+        output_dir / "security-report.json",
+        output_dir / "security-report.md",
+        delta_path,
+        output_dir / "shard-manifest.json",
+    )
+    monkeypatch.setattr(ap, "load_policy", lambda *_args: ap._default_policy())
+    monkeypatch.setattr(ap, "load_allowlist", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ap, "load_verdicts", lambda *_args: {})
+
+    audit_calls = 0
+    prior_generation = None
+    inject_failure = False
+
+    def completed(repository, release, **kwargs):
+        nonlocal audit_calls, prior_generation, inject_failure
+        audit_calls += 1
+        if audit_calls == 2:
+            prior_generation = {
+                target: target.read_bytes() for target in visible_targets
+            }
+            inject_failure = True
+        asset = release["assets"][0]
+        return ap.AuditReport(
+            repository=repository,
+            release=release["tag_name"],
+            release_id=f"{release['tag_name']}@{asset['id']}",
+            github_release_id=str(release["id"]),
+            asset_id=str(asset["id"]),
+            artifact_url=asset["browser_download_url"],
+            artifact_sha256="a" * 64,
+            identity_status="CURRENT",
+            resolved_tag_commit_sha=kwargs["_prepared_commit_sha"],
+            audit_context_hash="current-context",
+            final_classification="PASS",
+            completion_status="completed",
+        )
+
+    monkeypatch.setattr(ap, "audit_release", completed)
+    real_replace = ap.os.replace
+    replacement_failed = False
+
+    def fail_middle_promotion(source, destination):
+        nonlocal replacement_failed
+        if (
+            inject_failure
+            and not replacement_failed
+            and Path(destination) == delta_path
+        ):
+            replacement_failed = True
+            raise OSError("injected verdict-delta promotion failure")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(ap.os, "replace", fail_middle_promotion)
+
+    assert (
+        ap.main(
+            _worker_cli(
+                worklist_path,
+                fingerprint,
+                output_dir,
+                "--progress-manifest",
+                str(progress_path),
+                "--verdict-delta",
+                str(delta_path),
+            )
+        )
+        == 1
+    )
+    assert replacement_failed
+    assert prior_generation is not None
+    assert {
+        target: target.read_bytes() for target in visible_targets
+    } == prior_generation
+    assert not list(tmp_path.rglob(".audit-worker-checkpoint-*"))
+    assert not list(tmp_path.rglob("*.checkpoint-stage-*"))
+    assert not list(tmp_path.rglob("*.checkpoint-backup-*"))
 
 
 def test_aggregation_rejects_duplicate_and_conflicting_release_keys(tmp_path):

@@ -6506,9 +6506,87 @@ def main(argv: Optional[list[str]] = None) -> int:
                 (staged_delta_path, Path(verdict_delta_path)),
                 (staged_manifest_path, output_dir / "shard-manifest.json"),
             )
-            for staged_path, target_path in targets:
+
+            def stage_for_target(
+                source_path: Path, target_path: Path, phase: str
+            ) -> Path:
+                """Copy one already-validated file beside its live target."""
                 target_path.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(staged_path, target_path)
+                descriptor, temporary = tempfile.mkstemp(
+                    prefix=f".{target_path.name}.{phase}-",
+                    suffix=".tmp",
+                    dir=target_path.parent,
+                )
+                temporary_path = Path(temporary)
+                try:
+                    with (
+                        os.fdopen(descriptor, "wb") as output,
+                        source_path.open("rb") as source,
+                    ):
+                        shutil.copyfileobj(source, output)
+                        output.flush()
+                        os.fsync(output.fileno())
+                except Exception:
+                    if temporary_path.exists():
+                        temporary_path.unlink()
+                    raise
+                return temporary_path
+
+            # Target-local staging keeps arbitrary progress and verdict-delta
+            # paths atomic even when they are not on output_dir's filesystem.
+            staged_targets: list[tuple[Path, Path]] = []
+            backups: dict[Path, Optional[Path]] = {}
+            promoted: list[Path] = []
+            try:
+                for staged_path, target_path in targets:
+                    staged_targets.append(
+                        (
+                            stage_for_target(
+                                staged_path, target_path, "checkpoint-stage"
+                            ),
+                            target_path,
+                        )
+                    )
+
+                # Preserve every prior target before changing any visible
+                # path.  A promotion failure can then restore the complete
+                # previous generation instead of exposing mixed evidence.
+                for _staged_path, target_path in staged_targets:
+                    if target_path.exists():
+                        backups[target_path] = stage_for_target(
+                            target_path, target_path, "checkpoint-backup"
+                        )
+                    else:
+                        backups[target_path] = None
+
+                for staged_path, target_path in staged_targets:
+                    os.replace(staged_path, target_path)
+                    promoted.append(target_path)
+            except Exception as promotion_error:
+                rollback_errors: list[str] = []
+                for target_path in reversed(promoted):
+                    backup_path = backups[target_path]
+                    try:
+                        if backup_path is None:
+                            target_path.unlink()
+                        else:
+                            os.replace(backup_path, target_path)
+                            backups[target_path] = None
+                    except Exception as rollback_error:
+                        rollback_errors.append(f"{target_path}: {rollback_error}")
+                if rollback_errors:
+                    raise OSError(
+                        "Checkpoint promotion failed and rollback was incomplete: "
+                        + "; ".join(rollback_errors)
+                    ) from promotion_error
+                raise
+            finally:
+                for staged_path, _target_path in staged_targets:
+                    if staged_path.exists():
+                        staged_path.unlink()
+                for backup_path in backups.values():
+                    if backup_path is not None and backup_path.exists():
+                        backup_path.unlink()
             return report_json_path, report_markdown_path
         finally:
             shutil.rmtree(staging_dir, ignore_errors=True)
