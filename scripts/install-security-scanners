@@ -2,16 +2,26 @@
 # Install the audit scanners with bounded, named, fail-closed phases.
 set -Eeuo pipefail
 
-# The longest permitted path is two 60-second APT phases, two 30-second key
-# downloads, two 60-second Semgrep installs, and the remaining single-attempt
-# phases/backoffs: 556 seconds.  This leaves over two minutes below the calling
-# workflow's unchanged twelve-minute step cap for timeout cleanup.
+# The bootstrap has a hard 600-second total budget, leaving two minutes below
+# the calling workflow's unchanged twelve-minute step cap. Each named phase is
+# clipped to the time remaining after its 5-second forced-kill grace and an
+# equal 5-second timeout-supervisor cleanup margin; the budget therefore
+# includes the two 15-second dpkg-lock waits per APT retry, 10-second APT retry
+# backoffs, 4-second key/Semgrep retry backoffs, every timeout grace period,
+# and a 1-second clock-boundary guard. The normal cold-install APT budgets are
+# 90 seconds each.
+BOOTSTRAP_TIMEOUT_SECONDS=600
 NETWORK_ATTEMPTS=2
 RETRY_BACKOFF_SECONDS=4
-BASE_APT_TIMEOUT_SECONDS=60
+APT_RETRY_BACKOFF_SECONDS=10
+PHASE_TIMEOUT_KILL_GRACE_SECONDS=5
+DPKG_FRONTEND_LOCK_WAIT_TIMEOUT_SECONDS=15
+DPKG_FRONTEND_LOCK_POLL_SECONDS=1
+DPKG_FRONTEND_LOCK_PATH="/var/lib/dpkg/lock-frontend"
+BASE_APT_TIMEOUT_SECONDS=90
 KEY_DOWNLOAD_TIMEOUT_SECONDS=30
 KEY_INSTALL_TIMEOUT_SECONDS=30
-TRIVY_APT_TIMEOUT_SECONDS=60
+TRIVY_APT_TIMEOUT_SECONDS=90
 SEMGREP_INSTALL_TIMEOUT_SECONDS=60
 VERIFY_TIMEOUT_SECONDS=30
 FRESHCLAM_TIMEOUT_SECONDS=90
@@ -29,18 +39,66 @@ trivy_key_details="$tmp_dir/trivy-key-details.txt"
 trivy_keyring="$tmp_dir/trivy.gpg"
 cleanup() { rm -rf -- "$tmp_dir"; }
 trap cleanup EXIT
+bootstrap_started_seconds="$SECONDS"
+
+remaining_bootstrap_seconds() {
+  printf '%s\n' "$((
+    BOOTSTRAP_TIMEOUT_SECONDS - (SECONDS - bootstrap_started_seconds) - 1
+  ))"
+}
+
+retry_backoff() {
+  local phase="$1"
+  local backoff_seconds="$2"
+  local remaining_seconds
+  remaining_seconds="$(remaining_bootstrap_seconds)"
+  if (( remaining_seconds <= backoff_seconds )); then
+    printf 'phase=%s status=124 failed: bootstrap deadline exhausted before retry\n' \
+      "$phase" >&2
+    return 124
+  fi
+  sleep "$backoff_seconds"
+}
 
 phase_run() {
   local phase="$1"
   local timeout_seconds="$2"
   shift 2
-  local started ended status
+  local started ended status remaining_seconds
   started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'phase=%s start=%s\n' "$phase" "$started"
-  set +e
-  timeout --foreground "$timeout_seconds" "$@"
-  status=$?
-  set -e
+  remaining_seconds="$(remaining_bootstrap_seconds)"
+  local timeout_teardown_seconds=$((PHASE_TIMEOUT_KILL_GRACE_SECONDS * 2))
+  if (( remaining_seconds <= timeout_teardown_seconds )); then
+    status=124
+  else
+    if (( timeout_seconds + timeout_teardown_seconds > remaining_seconds )); then
+      timeout_seconds=$((remaining_seconds - timeout_teardown_seconds))
+    fi
+    set +e
+    timeout --kill-after="$((timeout_teardown_seconds))s" "$timeout_seconds" \
+      bash -c '
+        grace_seconds="$1"
+        shift
+        set -m
+        "$@" &
+        payload_pid=$!
+        terminate_payload() {
+          kill -TERM -- "-$payload_pid" 2>/dev/null || true
+          sleep "$grace_seconds"
+          kill -KILL -- "-$payload_pid" 2>/dev/null || true
+          wait "$payload_pid" 2>/dev/null || true
+          exit 124
+        }
+        trap terminate_payload TERM
+        wait "$payload_pid"
+      ' -- "$PHASE_TIMEOUT_KILL_GRACE_SECONDS" "$@"
+    status=$?
+    set -e
+    if (( status == 137 )); then
+      status=124
+    fi
+  fi
   ended="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'phase=%s end=%s status=%s\n' "$phase" "$ended" "$status"
   if (( status != 0 )); then
@@ -70,7 +128,7 @@ retry_phase() {
     if (( attempt < NETWORK_ATTEMPTS )); then
       printf 'phase=%s retry=%s/%s backoff=%ss\n' \
         "$phase" "$attempt" "$NETWORK_ATTEMPTS" "$RETRY_BACKOFF_SECONDS" >&2
-      sleep "$RETRY_BACKOFF_SECONDS"
+      retry_backoff "$phase" "$RETRY_BACKOFF_SECONDS" || return $?
     fi
   done
   return "$status"
@@ -83,12 +141,67 @@ require_retry_phase() {
   retry_phase "$phase" "$timeout_seconds" "$@" || exit $?
 }
 
+wait_for_dpkg_frontend_lock() {
+  phase_run "wait for dpkg frontend lock (${DPKG_FRONTEND_LOCK_PATH})" \
+    "$DPKG_FRONTEND_LOCK_WAIT_TIMEOUT_SECONDS" \
+    bash -c '
+      lock_path="$1"
+      poll_seconds="$2"
+      if ! command -v fuser >/dev/null 2>&1; then
+        printf "%s\\n" "dpkg frontend lock check requires fuser on PATH" >&2
+        exit 127
+      fi
+      while :; do
+        if fuser_output="$(sudo -n fuser "$lock_path" 2>&1)"; then
+          sleep "$poll_seconds"
+          continue
+        else
+          fuser_status=$?
+        fi
+        if (( fuser_status == 1 )) && [[ -z "$fuser_output" ]]; then
+          break
+        fi
+        printf "dpkg frontend lock check failed (fuser status=%s): %s\\n" \
+          "$fuser_status" "$fuser_output" >&2
+        exit "$fuser_status"
+      done
+    ' -- "$DPKG_FRONTEND_LOCK_PATH" "$DPKG_FRONTEND_LOCK_POLL_SECONDS"
+}
+
+retry_apt_phase() {
+  local phase="$1"
+  local timeout_seconds="$2"
+  shift 2
+  local attempt status=1
+  for (( attempt = 1; attempt <= NETWORK_ATTEMPTS; attempt++ )); do
+    wait_for_dpkg_frontend_lock || return $?
+    if phase_run "$phase" "$timeout_seconds" "$@"; then
+      return 0
+    else
+      status=$?
+    fi
+    if (( attempt < NETWORK_ATTEMPTS )); then
+      printf 'phase=%s retry=%s/%s backoff=%ss\n' \
+        "$phase" "$attempt" "$NETWORK_ATTEMPTS" "$APT_RETRY_BACKOFF_SECONDS" >&2
+      retry_backoff "$phase" "$APT_RETRY_BACKOFF_SECONDS" || return $?
+    fi
+  done
+  return "$status"
+}
+
+require_retry_apt_phase() {
+  local phase="$1"
+  local timeout_seconds="$2"
+  shift 2
+  retry_apt_phase "$phase" "$timeout_seconds" "$@" || exit $?
+}
+
 [[ -n "${GITHUB_PATH:-}" ]] || {
   printf '%s\n' 'GITHUB_PATH is required for the Semgrep executable' >&2
   exit 1
 }
 
-require_retry_phase "install base packages" "$BASE_APT_TIMEOUT_SECONDS" \
+require_retry_apt_phase "install base packages" "$BASE_APT_TIMEOUT_SECONDS" \
   bash -o pipefail -c '
     sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 update
     sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 install -y --no-install-recommends wget apt-transport-https gnupg lsb-release clamav
@@ -111,7 +224,7 @@ require_phase "configure Trivy repository" "$VERIFY_TIMEOUT_SECONDS" \
     printf "deb [signed-by=%s] https://aquasecurity.github.io/trivy-repo/deb %s main\\n" "$1" "$distro" \
       | sudo -n tee "$2" > /dev/null
   ' -- "$TRIVY_KEYRING_PATH" "$TRIVY_SOURCE_LIST_PATH"
-require_retry_phase "install Trivy" "$TRIVY_APT_TIMEOUT_SECONDS" \
+require_retry_apt_phase "install Trivy" "$TRIVY_APT_TIMEOUT_SECONDS" \
   bash -o pipefail -c '
     sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 update
     sudo -n apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 install -y --no-install-recommends trivy
