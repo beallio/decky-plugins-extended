@@ -5715,6 +5715,31 @@ def _hash_worker_artifact(path: str | Path, artifact_name: str) -> tuple[str, in
     return digest.hexdigest(), size_bytes
 
 
+def _verify_shard_manifest_artifact(
+    manifest: Mapping[str, Any], artifact_name: str, artifact_path: str | Path
+) -> dict[str, Any]:
+    """Return a normalised v2 manifest only when one bound artifact matches.
+
+    Aggregation consumes individual report and verdict-delta paths rather than
+    the worker's complete output set.  Keep this byte-level binding reusable so
+    callers can validate an artifact before parsing its contents.
+    """
+    normalised_manifest = _normalise_shard_manifest(manifest)
+    if (
+        not isinstance(artifact_name, str)
+        or artifact_name not in _SHARD_MANIFEST_ARTIFACT_KEYS
+    ):
+        raise ValueError(f"Unknown shard manifest artifact: {artifact_name!r}")
+
+    supplied_digest, supplied_size = _hash_worker_artifact(artifact_path, artifact_name)
+    binding = normalised_manifest["artifacts"][artifact_name]
+    if supplied_size != binding["size_bytes"]:
+        raise ValueError(f"Artifact size mismatch: {artifact_name}")
+    if supplied_digest != binding["sha256"]:
+        raise ValueError(f"Artifact digest mismatch: {artifact_name}")
+    return normalised_manifest
+
+
 def _verify_shard_manifest_artifacts(
     manifest: Mapping[str, Any], artifact_paths: Mapping[str, str | Path]
 ) -> dict[str, Any]:
@@ -5737,14 +5762,7 @@ def _verify_shard_manifest_artifacts(
         raise ValueError(f"Missing artifact paths: {missing}")
 
     for name in sorted(_SHARD_MANIFEST_ARTIFACT_KEYS):
-        supplied_digest, supplied_size = _hash_worker_artifact(
-            artifact_paths[name], name
-        )
-        binding = normalised_manifest["artifacts"][name]
-        if supplied_size != binding["size_bytes"]:
-            raise ValueError(f"Artifact size mismatch: {name}")
-        if supplied_digest != binding["sha256"]:
-            raise ValueError(f"Artifact digest mismatch: {name}")
+        _verify_shard_manifest_artifact(normalised_manifest, name, artifact_paths[name])
     return normalised_manifest
 
 

@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import itertools
 import json
 import subprocess
 import sys
@@ -1962,6 +1963,81 @@ def test_worker_mode_rejects_output_aliases_before_creating_evidence(
         assert not expected_entries
 
 
+_WORKER_OUTPUT_TARGET_NAMES = (
+    "progress",
+    "report_json",
+    "report_markdown",
+    "verdict_delta",
+    "manifest",
+)
+
+
+def _worker_output_targets_for_alias_test(tmp_path):
+    output_dir = tmp_path / "outputs"
+    return {
+        "progress": tmp_path / "state" / "progress.json",
+        "report_json": output_dir / "security-report.json",
+        "report_markdown": output_dir / "security-report.md",
+        "verdict_delta": tmp_path / "deltas" / "delta.json",
+        "manifest": output_dir / "shard-manifest.json",
+    }
+
+
+def _resolve_worker_output_targets_for_alias_test(worklist_path, targets):
+    return ap._resolve_worker_output_targets(
+        worklist_path=worklist_path,
+        progress_path=targets["progress"],
+        report_json_path=targets["report_json"],
+        report_markdown_path=targets["report_markdown"],
+        verdict_delta_path=targets["verdict_delta"],
+        manifest_path=targets["manifest"],
+    )
+
+
+def _tree_entries(path):
+    return sorted(str(entry.relative_to(path)) for entry in path.rglob("*"))
+
+
+@pytest.mark.parametrize(
+    ("first_name", "second_name"),
+    list(itertools.combinations(_WORKER_OUTPUT_TARGET_NAMES, 2)),
+)
+def test_resolve_worker_output_targets_rejects_every_output_target_pair_before_mutation(
+    tmp_path, first_name, second_name
+):
+    worklist_path, _fingerprint = _write_worker_worklist(tmp_path)
+    targets = _worker_output_targets_for_alias_test(tmp_path)
+    targets[second_name] = targets[first_name]
+    before = _tree_entries(tmp_path)
+
+    with pytest.raises(ValueError, match="five distinct paths"):
+        _resolve_worker_output_targets_for_alias_test(worklist_path, targets)
+
+    assert _tree_entries(tmp_path) == before
+
+
+@pytest.mark.parametrize("target_name", _WORKER_OUTPUT_TARGET_NAMES)
+@pytest.mark.parametrize("alias_kind", ["worklist", "worklist-symlink"])
+def test_resolve_worker_output_targets_rejects_each_worklist_alias_before_mutation(
+    tmp_path, target_name, alias_kind
+):
+    worklist_path, _fingerprint = _write_worker_worklist(tmp_path)
+    targets = _worker_output_targets_for_alias_test(tmp_path)
+    if alias_kind == "worklist":
+        targets[target_name] = worklist_path
+    else:
+        alias_path = tmp_path / "aliases" / f"{target_name}.json"
+        alias_path.parent.mkdir()
+        alias_path.symlink_to(worklist_path)
+        targets[target_name] = alias_path
+    before = _tree_entries(tmp_path)
+
+    with pytest.raises(ValueError, match="aliases the worklist input"):
+        _resolve_worker_output_targets_for_alias_test(worklist_path, targets)
+
+    assert _tree_entries(tmp_path) == before
+
+
 @pytest.mark.parametrize(
     ("case", "extra"),
     [
@@ -3146,6 +3222,130 @@ def test_worker_checkpoint_manifest_last_rejects_interrupted_data_generation(
     assert ap._verify_shard_manifest_artifacts(
         ap._load_shard_manifest(visible_targets["manifest"]),
         {name: visible_targets[name] for name in ap._SHARD_MANIFEST_ARTIFACT_KEYS},
+    )
+
+
+@pytest.mark.parametrize("failure_type", [OSError, BaseException])
+def test_worker_first_generation_interruption_reaudits_without_manifest_resume(
+    monkeypatch, tmp_path, failure_type
+):
+    """An interrupted first generation has no resumable commit record."""
+    worklist_path, fingerprint = _write_worker_worklist(tmp_path)
+    output_dir = tmp_path / "outputs"
+    progress_path = tmp_path / "state" / "progress.json"
+    delta_path = tmp_path / "deltas" / "delta.json"
+    visible_targets = {
+        "progress": progress_path,
+        "report_json": output_dir / "security-report.json",
+        "report_markdown": output_dir / "security-report.md",
+        "verdict_delta": delta_path,
+        "manifest": output_dir / "shard-manifest.json",
+    }
+    monkeypatch.setattr(ap, "load_policy", lambda *_args: ap._default_policy())
+    monkeypatch.setattr(ap, "load_allowlist", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ap, "load_verdicts", lambda *_args: {})
+
+    audit_calls = 0
+
+    def completed(repository, release, **kwargs):
+        nonlocal audit_calls
+        audit_calls += 1
+        asset = release["assets"][0]
+        return ap.AuditReport(
+            repository=repository,
+            release=release["tag_name"],
+            release_id=f"{release['tag_name']}@{asset['id']}",
+            github_release_id=str(release["id"]),
+            asset_id=str(asset["id"]),
+            artifact_url=asset["browser_download_url"],
+            artifact_sha256="a" * 64,
+            identity_status="CURRENT",
+            resolved_tag_commit_sha=kwargs["_prepared_commit_sha"],
+            audit_context_hash="current-context",
+            final_classification="PASS",
+            completion_status="completed",
+            risk_score=audit_calls,
+        )
+
+    monkeypatch.setattr(ap, "audit_release", completed)
+    real_replace = ap.os.replace
+    interrupted = False
+
+    def interrupt_after_first_data_replacement(source, destination):
+        nonlocal interrupted
+        result = real_replace(source, destination)
+        if not interrupted and Path(destination) == progress_path:
+            interrupted = True
+            raise failure_type("injected first-generation interruption")
+        return result
+
+    monkeypatch.setattr(ap.os, "replace", interrupt_after_first_data_replacement)
+    argv = _worker_cli(
+        worklist_path,
+        fingerprint,
+        output_dir,
+        "--progress-manifest",
+        str(progress_path),
+        "--verdict-delta",
+        str(delta_path),
+    )
+    if failure_type is BaseException:
+        with pytest.raises(BaseException, match="first-generation interruption"):
+            ap.main(argv)
+    else:
+        assert ap.main(argv) == 1
+
+    assert interrupted
+    assert progress_path.exists()
+    partial_progress = progress_path.read_bytes()
+    assert not visible_targets["manifest"].exists()
+    with pytest.raises(ValueError, match="Shard manifest not found"):
+        ap._load_shard_manifest(visible_targets["manifest"])
+
+    monkeypatch.setattr(ap.os, "replace", real_replace)
+    monkeypatch.setattr(
+        ap,
+        "_load_progress_manifest",
+        lambda *_args, **_kwargs: pytest.fail(
+            "first-generation recovery parsed partial progress"
+        ),
+    )
+    for name in (
+        "read_repo_urls",
+        "get_changed_repos",
+        "build_audit_worklist",
+        "get_repo_metadata",
+        "get_releases",
+        "_gh_get",
+        "_resolve_ref_to_commit_and_tree_sha",
+        "audit_repository",
+    ):
+        monkeypatch.setattr(
+            ap,
+            name,
+            lambda *_args, _name=name, **_kwargs: pytest.fail(
+                f"first-generation recovery called forbidden seam {_name}"
+            ),
+        )
+    monkeypatch.setattr(
+        ap.plugin_release_utils,
+        "get_releases",
+        lambda *_args, **_kwargs: pytest.fail(
+            "first-generation recovery called plugin release enumeration"
+        ),
+    )
+
+    assert ap.main(argv) == 0
+    assert audit_calls == 2
+    assert progress_path.read_bytes() != partial_progress
+    manifest = ap._load_shard_manifest(visible_targets["manifest"])
+    assert manifest["schema_version"] == "2"
+    assert (
+        ap._verify_shard_manifest_artifacts(
+            manifest,
+            {name: visible_targets[name] for name in ap._SHARD_MANIFEST_ARTIFACT_KEYS},
+        )
+        == manifest
     )
 
 

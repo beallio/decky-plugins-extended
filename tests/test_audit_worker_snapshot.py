@@ -576,6 +576,55 @@ def test_shard_manifest_v2_binds_and_verifies_all_worker_artifacts(tmp_path):
         ap._verify_shard_manifest_artifacts(manifest, artifact_paths)
 
 
+@pytest.mark.parametrize("artifact_name", ["report_json", "verdict_delta"])
+def test_shard_manifest_single_artifact_verifier_binds_exact_bytes(
+    tmp_path, artifact_name
+):
+    artifact_paths = {}
+    for name in ap._SHARD_MANIFEST_ARTIFACT_KEYS:
+        path = tmp_path / f"{name}.bin"
+        path.write_bytes(f"{name}-exact".encode("utf-8"))
+        artifact_paths[name] = path
+    manifest = _base_manifest(0)
+    manifest["artifacts"] = {
+        name: {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size_bytes": path.stat().st_size,
+        }
+        for name, path in artifact_paths.items()
+    }
+
+    assert (
+        ap._verify_shard_manifest_artifact(
+            manifest, artifact_name, artifact_paths[artifact_name]
+        )
+        == manifest
+    )
+
+    swapped_name = "verdict_delta" if artifact_name == "report_json" else "report_json"
+    with pytest.raises(ValueError, match="Artifact (size|digest) mismatch"):
+        ap._verify_shard_manifest_artifact(
+            manifest, artifact_name, artifact_paths[swapped_name]
+        )
+
+    artifact_paths[artifact_name].write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="Artifact (size|digest) mismatch"):
+        ap._verify_shard_manifest_artifact(
+            manifest, artifact_name, artifact_paths[artifact_name]
+        )
+
+
+def test_shard_manifest_single_artifact_verifier_rejects_unknown_artifact_name(
+    tmp_path,
+):
+    path = tmp_path / "artifact.bin"
+    path.write_bytes(b"artifact")
+    manifest = _base_manifest(0)
+
+    with pytest.raises(ValueError, match="Unknown shard manifest artifact"):
+        ap._verify_shard_manifest_artifact(manifest, "not-an-artifact", path)
+
+
 def test_shard_manifest_loader_rejects_duplicate_json_schema_keys(tmp_path):
     path = tmp_path / "manifest.json"
     path.write_text('{"schema_version":"2","schema_version":"2"}', encoding="utf-8")
