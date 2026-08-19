@@ -4063,7 +4063,9 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
         snapshot: audit_source_snapshot.SourceSnapshot,
         ref: str = "v1",
         source_open_side_effect=None,
+        executable_paths: set[str] | None = None,
     ):
+        executable_paths = executable_paths or set()
         with (
             tempfile.TemporaryDirectory() as extract_dir,
             patch.object(
@@ -4078,6 +4080,8 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
                 if isinstance(payload, str):
                     payload = payload.encode("utf-8")
                 path.write_bytes(payload)
+                if rel in executable_paths:
+                    path.chmod(path.stat().st_mode | stat.S_IXUSR)
             if source_open_side_effect is None:
                 return ap.compare_source_and_artifact_from_snapshot(
                     extract_dir,
@@ -4094,6 +4098,294 @@ class TestSourceArtifactDiffSnapshot(unittest.TestCase):
                     snapshot,
                     ref,
                 )
+
+    def _build_stamp(
+        self,
+        path: str,
+        source: dict,
+        artifact: dict,
+        version: str = "1.0.1-dev.gabc",
+    ) -> bool:
+        return ap._metadata_diff_is_build_stamped(
+            path,
+            json.dumps(source).encode(),
+            json.dumps(artifact).encode(),
+            version,
+        )
+
+    def _snapshot_metadata_compare(
+        self,
+        source_files: dict[str, bytes | str],
+        artifact_files: dict[str, bytes | str],
+        ref: str = "v1.0.1-dev.gabc",
+    ):
+        snapshot = self._mk_source_snapshot(source_files)
+        source_root = Path(snapshot.source_root).resolve()
+        original_open = open
+
+        def deny_source_open(file, *args, **kwargs):
+            absolute_path = os.path.abspath(file)
+            if absolute_path == str(source_root) or absolute_path.startswith(
+                f"{source_root}{os.path.sep}"
+            ):
+                raise AssertionError(
+                    "metadata comparison must use captured snapshot bytes"
+                )
+            return original_open(file, *args, **kwargs)
+
+        return self._snapshot_compare(
+            {f"plugin/{path}": content for path, content in artifact_files.items()},
+            snapshot,
+            ref=ref,
+            source_open_side_effect=deny_source_open,
+        )
+
+    def test_exact_package_version_build_stamp_is_allowed(self):
+        self.assertTrue(
+            self._build_stamp(
+                "package.json",
+                {"name": "plugin", "version": "1.0.0"},
+                {"name": "plugin", "version": "1.0.1-dev.gabc"},
+            )
+        )
+
+    def test_exact_debug_flag_removal_build_stamp_is_allowed(self):
+        self.assertTrue(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "flags": ["debug", "root"],
+                },
+                {"name": "Plugin", "version": "1.0.1-dev.gabc", "flags": ["root"]},
+            )
+        )
+
+    def test_exact_publish_image_build_stamp_is_allowed(self):
+        self.assertTrue(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/main/icon.png"
+                    },
+                },
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/icon.png"
+                    },
+                },
+            )
+        )
+
+    def test_arbitrary_version_build_stamp_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "package.json",
+                {"name": "plugin", "version": "1.0.0"},
+                {"name": "plugin", "version": "999.0.0"},
+            )
+        )
+
+    def test_unrelated_metadata_build_drift_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "plugin.json",
+                {"name": "Plugin", "version": "1.0.0", "flags": ["debug"]},
+                {"name": "Renamed", "version": "1.0.1-dev.gabc", "flags": []},
+            )
+        )
+
+    def test_reordered_non_debug_flags_build_stamp_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "flags": ["root", "debug", "network"],
+                },
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "flags": ["network", "root"],
+                },
+            )
+        )
+
+    def test_near_match_publish_image_build_stamp_is_rejected(self):
+        self.assertFalse(
+            self._build_stamp(
+                "plugin.json",
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/mainly/icon.png"
+                    },
+                },
+                {
+                    "name": "Plugin",
+                    "version": "1.0.1-dev.gabc",
+                    "publish": {
+                        "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/icon.png"
+                    },
+                },
+            )
+        )
+
+    def test_legacy_entropy_heuristic_remains_absent(self):
+        self.assertFalse(hasattr(ap, "_shannon_entropy"))
+
+    def test_snapshot_adapter_allows_combined_decky_metadata_stamps(self):
+        source_plugin = json.dumps(
+            {
+                "name": "Syncthing",
+                "version": "1.0.0",
+                "flags": ["debug"],
+                "publish": {
+                    "image": "https://raw.githubusercontent.com/o/r/main/assets/icon.png"
+                },
+            }
+        )
+        artifact_plugin = json.dumps(
+            {
+                "name": "Syncthing",
+                "version": "1.0.1-dev.gabc",
+                "flags": [],
+                "publish": {
+                    "image": "https://raw.githubusercontent.com/o/r/v1.0.1-dev.gabc/assets/icon.png"
+                },
+            }
+        )
+        source_package = json.dumps(
+            {"name": "syncthing", "version": "1.0.0", "private": True}
+        )
+        artifact_package = json.dumps(
+            {"name": "syncthing", "version": "1.0.1-dev.gabc", "private": True}
+        )
+
+        summary, findings, status = self._snapshot_metadata_compare(
+            {"plugin.json": source_plugin, "package.json": source_package},
+            {"plugin.json": artifact_plugin, "package.json": artifact_package},
+        )
+
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertEqual(findings, [])
+
+    def test_snapshot_adapter_flags_non_debug_metadata_drift(self):
+        source = json.dumps({"name": "Syncthing", "version": "1.0.0", "flags": []})
+        artifact = json.dumps(
+            {"name": "Syncthing", "version": "1.0.0", "flags": ["root"]}
+        )
+
+        summary, findings, status = self._snapshot_metadata_compare(
+            {"plugin.json": source}, {"plugin.json": artifact}
+        )
+
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(summary["modified_source_files"], ["plugin/plugin.json"])
+        self.assertEqual(
+            [finding.rule_id for finding in findings], ["MODIFIED_SOURCE_FILE"]
+        )
+
+    def test_snapshot_adapter_flags_malformed_metadata(self):
+        source = json.dumps({"name": "Syncthing", "version": "1.0.0", "flags": []})
+
+        summary, findings, status = self._snapshot_metadata_compare(
+            {"plugin.json": source}, {"plugin.json": "{not-json"}
+        )
+
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(summary["modified_source_files"], ["plugin/plugin.json"])
+        self.assertEqual(
+            [finding.rule_id for finding in findings], ["MODIFIED_SOURCE_FILE"]
+        )
+
+    def test_snapshot_adapter_flags_zip_only_python_script(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('source')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/extra.py": b"print('artifact')"}, snapshot
+        )
+
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(summary["zip_only_scripts"], ["plugin/extra.py"])
+        self.assertEqual(summary["zip_only_executables"], [])
+        self.assertEqual([finding.rule_id for finding in findings], ["ZIP_ONLY_SCRIPT"])
+
+    def test_snapshot_adapter_flags_zip_only_shebang_script(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('source')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/run": "#!/bin/sh\necho ok\n"}, snapshot
+        )
+
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(summary["zip_only_scripts"], ["plugin/run"])
+        self.assertEqual(summary["zip_only_executables"], [])
+        self.assertEqual([finding.rule_id for finding in findings], ["ZIP_ONLY_SCRIPT"])
+
+    def test_snapshot_adapter_flags_zip_only_executable_text_script(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('source')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/tool": "echo hi\n"},
+            snapshot,
+            executable_paths={"plugin/tool"},
+        )
+
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(summary["zip_only_scripts"], ["plugin/tool"])
+        self.assertEqual(summary["zip_only_executables"], [])
+        self.assertEqual([finding.rule_id for finding in findings], ["ZIP_ONLY_SCRIPT"])
+
+    def test_snapshot_adapter_does_not_flag_matching_source_script(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('source')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/main.py": b"print('source')"}, snapshot
+        )
+
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["zip_only_scripts"], [])
+        self.assertEqual(summary["zip_only_executables"], [])
+        self.assertEqual(findings, [])
+
+    def test_snapshot_adapter_classifies_elf_only_as_executable(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('source')"})
+        summary, findings, status = self._snapshot_compare(
+            {"plugin/helper": b"\x7fELF\x02\x01\x01\x00abc"}, snapshot
+        )
+
+        self.assertEqual(status.status, "found_issue")
+        self.assertEqual(summary["zip_only_executables"], ["plugin/helper"])
+        self.assertEqual(summary["zip_only_scripts"], [])
+        self.assertEqual(
+            [finding.rule_id for finding in findings], ["ZIP_ONLY_EXECUTABLE"]
+        )
+
+    def test_snapshot_adapter_ignores_normal_compiled_and_data_assets(self):
+        snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('source')"})
+        summary, findings, status = self._snapshot_compare(
+            {
+                "plugin/main.py": b"print('source')",
+                "plugin/dist/index.js": "var a=1; /* minified bundle */",
+                "plugin/dist/index.js.map": '{"version":3}',
+                "plugin/data.json": '{"k":1}',
+                "plugin/style.css": "body{}",
+                "plugin/assets/logo.png": b"\x89PNG\r\n\x1a\n",
+            },
+            snapshot,
+        )
+
+        self.assertEqual(status.status, "passed")
+        self.assertEqual(summary["modified_source_files"], [])
+        self.assertEqual(summary["zip_only_executables"], [])
+        self.assertEqual(summary["zip_only_scripts"], [])
+        self.assertEqual(findings, [])
 
     def test_snapshot_adapter_detects_modified_and_matching_files(self):
         snapshot = self._mk_source_snapshot({"plugin/main.py": b"print('original')"})
