@@ -160,7 +160,7 @@ class WorkflowSecurityTests(unittest.TestCase):
             )
             self.assertIn("restore_key=scanner-package-cache-v1-${runner_image}-", job)
 
-    def test_scanner_package_cache_save_is_best_effort_and_not_per_shard(self):
+    def test_scanner_package_cache_save_is_best_effort_and_allows_any_shard(self):
         plugin_workflow = (WORKFLOWS / "plugin-security-audit.yml").read_text()
         scheduled_workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
 
@@ -180,14 +180,13 @@ class WorkflowSecurityTests(unittest.TestCase):
                 job.index("name: Save scanner package cache"),
             )
 
-        self.assertIn(
-            "if: success() && matrix.shard_index == 0",
-            self._job_body(plugin_workflow, "audit-shards"),
-        )
-        self.assertIn(
-            "if: success() && matrix.shard_index == 0",
-            self._job_body(scheduled_workflow, "scheduled-audit"),
-        )
+        for workflow, job_name in (
+            (plugin_workflow, "audit-shards"),
+            (scheduled_workflow, "scheduled-audit"),
+        ):
+            job = self._job_body(workflow, job_name)
+            self.assertIn("if: success()", job)
+            self.assertNotIn("matrix.shard_index == 0", job)
 
     def test_scheduled_audit_publishes_only_changed_verdict_store(self):
         workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()

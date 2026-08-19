@@ -267,7 +267,7 @@ jobs:
         timeout-minutes: 12
 
       - name: Save scanner package cache
-        if: success() && matrix.shard_index == 0
+        if: success()
         continue-on-error: true
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684
         with:
