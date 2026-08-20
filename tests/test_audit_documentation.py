@@ -71,6 +71,8 @@ def test_configured_repository_list_uses_the_auditable_rename_target():
         "https://github.com/danielcopper/decky-romm-sync" not in configured_repositories
     )
     assert "https://github.com/danielcopper/romm-tender" in configured_repositories
+    assert "https://github.com/snoein/decky-insignia" not in configured_repositories
+    assert "https://github.com/stevensnoeijen/decky-insignia" in configured_repositories
 
 
 def test_source_inventory_proof_is_complete_and_self_consistent():
