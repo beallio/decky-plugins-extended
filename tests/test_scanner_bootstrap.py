@@ -143,9 +143,11 @@ if [[ "${FAKE_APT_PACKAGE_CACHE:-}" != "1" ]] || [[ "$*" != *"install -y --no-in
 fi
 
 archive_dir=""
+keep_downloaded_packages=false
 for argument in "$@"; do
   case "$argument" in
     Dir::Cache::archives=*) archive_dir="${argument#Dir::Cache::archives=}" ;;
+    APT::Keep-Downloaded-Packages=true) keep_downloaded_packages=true ;;
   esac
 done
 if [[ -z "$archive_dir" ]]; then
@@ -177,6 +179,9 @@ else
   printf '%s\\n' "apt-get cache-download $archive" >> "$FAKE_COMMAND_LOG"
 fi
 [[ -z "${FAKE_APT_INSTALL_MARKER:-}" ]] || : > "$FAKE_APT_INSTALL_MARKER"
+if [[ "$keep_downloaded_packages" != true ]] || [[ "${FAKE_APT_DELETE_ARCHIVES_AFTER_INSTALL:-}" == "1" ]]; then
+  rm -f -- "$archive"
+fi
 """,
     )
     for name in (
@@ -670,9 +675,55 @@ def test_scanner_bootstrap_cold_cache_downloads_and_preserves_base_archive(tmp_p
     assert (archive_dir / "fake-clamav_1.0_all.deb").read_text(
         encoding="utf-8"
     ) == "signed-indexed-archive"
-    assert "cache=cold downloaded=true" in result.stdout
+    assert "cache=cold downloaded=true archive-retained=true" in result.stdout
     commands = (tmp_path / "commands.log").read_text(encoding="utf-8")
     assert "cache-download" in commands
+    assert "APT::Keep-Downloaded-Packages=true" in commands
+
+
+def test_scanner_bootstrap_cold_cache_retention_supports_a_warm_second_run(tmp_path):
+    archive_dir = tmp_path / "apt-archives"
+    environment = _fake_environment(
+        tmp_path,
+        FAKE_APT_PACKAGE_CACHE="1",
+        BASE_APT_ARCHIVE_DIR=str(archive_dir),
+    )
+
+    cold_result = _run_bootstrap(tmp_path, environment=environment)
+
+    assert cold_result.returncode == 0, cold_result.stderr
+    assert (archive_dir / "fake-clamav_1.0_all.deb").exists()
+    assert "cache=cold downloaded=true archive-retained=true" in cold_result.stdout
+
+    environment["FAKE_APT_MIRROR_FAILURE"] = "1"
+    warm_result = _run_bootstrap(tmp_path, environment=environment)
+
+    assert warm_result.returncode == 0, warm_result.stderr
+    assert "cache=warm downloaded=false archive-retained=true" in warm_result.stdout
+    commands = (tmp_path / "commands.log").read_text(encoding="utf-8")
+    assert commands.count("apt-get cache-download") == 1
+
+
+def test_scanner_bootstrap_warns_when_retained_archives_are_unexpectedly_empty(
+    tmp_path,
+):
+    archive_dir = tmp_path / "apt-archives"
+    environment = _fake_environment(
+        tmp_path,
+        FAKE_APT_PACKAGE_CACHE="1",
+        FAKE_APT_DELETE_ARCHIVES_AFTER_INSTALL="1",
+        BASE_APT_ARCHIVE_DIR=str(archive_dir),
+    )
+
+    result = _run_bootstrap(tmp_path, environment=environment)
+
+    assert result.returncode == 0, result.stderr
+    assert not (archive_dir / "fake-clamav_1.0_all.deb").exists()
+    assert "cache=cold downloaded=true archive-retained=false" in result.stdout
+    assert (
+        "base package cache archive directory is empty after successful cold install"
+        in (result.stderr)
+    )
 
 
 def test_scanner_bootstrap_discards_tampered_cached_base_package_before_cold_install(
@@ -767,6 +818,7 @@ def test_scanner_bootstrap_never_weakens_apt_archive_verification():
     source = SCRIPT.read_text(encoding="utf-8")
 
     assert "--no-download" in source
+    assert "APT::Keep-Downloaded-Packages=true" in source
     for unsafe_option in (
         "--allow-unauthenticated",
         "--allow-insecure-repositories",

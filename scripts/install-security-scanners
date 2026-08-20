@@ -431,7 +431,23 @@ else
           -o Acquire::Retries=1 \
           -o Acquire::http::Timeout=20 \
           -o Dir::Cache::archives="$archive_dir" \
+          -o APT::Keep-Downloaded-Packages=true \
           "$@" install -y --no-install-recommends "${missing_packages[@]}"
+      }
+
+      report_base_package_cache_outcome() {
+        local cache_state="$1"
+        local downloaded="$2"
+
+        if compgen -G "$archive_dir"/*.deb > /dev/null; then
+          printf "phase=install base packages cache=%s downloaded=%s archive-retained=true archive-dir=%s\n" \
+            "$cache_state" "$downloaded" "$archive_dir"
+        else
+          printf "phase=install base packages cache=%s downloaded=%s archive-retained=false archive-dir=%s\n" \
+            "$cache_state" "$downloaded" "$archive_dir"
+          printf "base package cache archive directory is empty after successful %s install: %s\n" \
+            "$cache_state" "$archive_dir" >&2
+        fi
       }
 
       missing_packages=("$@")
@@ -441,8 +457,7 @@ else
         warm_status=${PIPESTATUS[0]}
         set -e
         if (( warm_status == 0 )); then
-          printf "phase=install base packages cache=warm downloaded=false archive-dir=%s\n" \
-            "$archive_dir"
+          report_base_package_cache_outcome warm false
           exit 0
         fi
         if grep -Fq "Hash Sum mismatch" "$apt_output"; then
@@ -462,8 +477,7 @@ else
       if (( apt_status != 0 )); then
         exit "$apt_status"
       fi
-      printf "phase=install base packages cache=cold downloaded=true archive-dir=%s\n" \
-        "$archive_dir"
+      report_base_package_cache_outcome cold true
     ' -- "$BASE_APT_ARCHIVE_DIR" "$tmp_dir/base-apt-install.log" \
     "${missing_base_packages[@]}"
 fi
