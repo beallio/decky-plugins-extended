@@ -1,0 +1,28 @@
+{
+  "date": "2026-08-19",
+  "task_objective": "Retain downloaded, signed-index-verified scanner package archives so a saved scanner cache can provide a real warm APT bootstrap.",
+  "branch": "feat/scanner-cache-retention",
+  "plan": "docs/plans/2026-08-19_scanner-cache-retention.md",
+  "scope": {
+    "production_file": "scripts/install-security-scanners",
+    "test_module": "tests/test_scanner_bootstrap.py",
+    "documentation": [
+      "README.md",
+      "docs/audit-gating-overview.md"
+    ]
+  },
+  "test_harness_change": {
+    "behavior": "The fake apt-get now removes downloaded base-package archives after a successful install unless its invocation supplies APT::Keep-Downloaded-Packages=true.",
+    "rationale": "The old fake always retained archives, so it could not reproduce the hosted APT cleanup configuration that left the workflow cache empty.",
+    "tests_changed": [
+      "test_scanner_bootstrap_cold_cache_downloads_and_preserves_base_archive now requires the retention option and archive-retained=true telemetry.",
+      "test_scanner_bootstrap_cold_cache_retention_supports_a_warm_second_run proves one cold bootstrap leaves an archive that a mirror-disabled second bootstrap verifies and consumes without downloading.",
+      "test_scanner_bootstrap_warns_when_retained_archives_are_unexpectedly_empty proves lost archives are loud but do not turn a successful scanner install into a failure.",
+      "test_scanner_bootstrap_never_weakens_apt_archive_verification now also requires the targeted retention option while retaining its no-unauthenticated-install assertions."
+    ]
+  },
+  "verification_record": {
+    "red_phase": "4 failed, 25 passed in 53.38s; the new cold-to-warm retention test failed because the cold archive directory was empty under the corrected default cleanup model.",
+    "focused_cache_and_integrity": "8 passed in 11.49s after the retention implementation, including verified warm reuse, cold retention, two-run reuse, the empty-directory warning, tamper discard and cold recovery, partial-cache recovery, cold mirror failure, and static verification controls."
+  }
+}

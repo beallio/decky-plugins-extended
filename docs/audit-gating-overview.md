@@ -61,17 +61,19 @@ base-package install to be skipped, and restricts the post-configuration Trivy
 index refresh to the Trivy source list. Base-package archives are cached at
 `.scanner-package-cache/apt-archives` (or the `BASE_APT_ARCHIVE_DIR` override).
 The cache key binds the hosted runner image identifier, the exact base-package
-set, and the bootstrap script SHA-256. A restored archive is untrusted input:
-APT still verifies it against the signed package index before installation, and
-the bootstrap never uses `dpkg -i` for cached archives. A valid warm cache logs
-that no package was downloaded; a checksum mismatch fails the named install
-phase rather than silently using the mirror. This removes repeated package
-downloads on the common path, but does not make scanner setup guaranteed: a
-cold or unusable cache still relies on the mirror and fails closed if scanner
-installation cannot complete. It verifies Trivy's signing-key fingerprint,
-retries only safe APT/key-fetch work, and fails closed for ClamAV, Trivy, or
-exact Semgrep `1.132.0` setup failures. A shard that cannot install its scanners
-blocks publication.
+set, and the bootstrap script SHA-256. On a cold install, APT retains the
+downloaded archives there for the workflow cache save; the first run after any
+key change is still cold. A restored archive is untrusted input: APT still
+verifies it against the signed package index before installation, so cache reuse
+never bypasses signed-index verification, and the bootstrap never uses `dpkg -i`
+for cached archives. A valid warm cache logs that no package was downloaded; a
+checksum mismatch discards the restored archives and triggers a cold install
+that obtains and verifies replacements. This removes repeated package downloads
+on the common path, but does not make scanner setup guaranteed: a cold or
+unusable cache still relies on the mirror. A sufficiently slow mirror on a cold
+run fails the shard closed and blocks publication. It verifies Trivy's
+signing-key fingerprint, retries only safe APT/key-fetch work, and fails closed
+for ClamAV, Trivy, or exact Semgrep `1.132.0` setup failures.
 - CI selects changed repositories only for a plugin-list-only diff. Security
   pipeline, policy, verdict, dependency, quality-gate, test, or audit-workflow
   changes select the fourteen-shard corpus. Local and CI gates use Ruff, pytest,

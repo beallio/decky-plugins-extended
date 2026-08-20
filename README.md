@@ -446,18 +446,23 @@ the workspace-local `.scanner-package-cache/apt-archives` directory (or the
 before setup and save it afterwards; its key includes the hosted runner image
 identifier, the exact base-package set (`wget`, `apt-transport-https`, `gnupg`,
 `lsb-release`, and `clamav`), and the bootstrap script's SHA-256.
+During a cold base-package install, the bootstrap tells APT to retain the
+downloaded archives in that directory and logs whether they remain available
+for the cache save. The first run after any key change is necessarily cold.
 
 That cache is untrusted input. Before a cached archive is installed, APT checks
 it against the signed package index with its normal checksum verification; the
 bootstrap never installs a cached `.deb` with `dpkg -i`. A checksum mismatch
-fails the named install phase rather than falling back to the mirror. A valid
-warm cache takes APT's no-download path and logs `cache=warm downloaded=false`,
-which removes the repeated package download on the common path. This does not
-guarantee scanner setup: a cache miss, unusable cache, or changed key takes the
-cold APT path and still depends on the mirror. Retry remains limited to
-idempotent APT/key-fetch work, with a verified Trivy signing-key fingerprint
-and hard ClamAV, Trivy, and exact Semgrep `1.132.0` checks. A shard that cannot
-install its scanners fails closed and blocks publication.
+causes the bootstrap to discard the restored archives and perform a cold,
+signed-index-verified install. Cache reuse therefore never bypasses signed-index
+verification. A valid warm cache takes APT's no-download path and logs
+`cache=warm downloaded=false`, which removes the repeated package download on
+the common path. This does not guarantee scanner setup: a cache miss, unusable
+cache, or changed key takes the cold APT path and still depends on the mirror.
+A sufficiently slow mirror on that cold run fails the shard closed and blocks
+publication. Retry remains limited to idempotent APT/key-fetch work, with a
+verified Trivy signing-key fingerprint and hard ClamAV, Trivy, and exact
+Semgrep `1.132.0` checks.
 
 Production capacity is measured against the maximum fourteen-shard wall-time
 estimate, not against a sequential unsharded scan. The preserved 579-release
