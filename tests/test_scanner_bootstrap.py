@@ -720,8 +720,9 @@ def test_scanner_bootstrap_warns_when_retained_archives_are_unexpectedly_empty(
     assert result.returncode == 0, result.stderr
     assert not (archive_dir / "fake-clamav_1.0_all.deb").exists()
     assert "cache=cold downloaded=true archive-retained=false" in result.stdout
-    assert "base package cache archive directory is empty after successful cold install" in (
-        result.stderr
+    assert (
+        "base package cache archive directory is empty after successful cold install"
+        in (result.stderr)
     )
 
 
