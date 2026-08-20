@@ -438,16 +438,49 @@ else
       report_base_package_cache_outcome() {
         local cache_state="$1"
         local downloaded="$2"
+        local archive_saveable
+
+        remove_apt_archive_working_state
+        archive_saveable="$(base_package_cache_is_saveable)"
 
         if compgen -G "$archive_dir"/*.deb > /dev/null; then
-          printf "phase=install base packages cache=%s downloaded=%s archive-retained=true archive-dir=%s\n" \
-            "$cache_state" "$downloaded" "$archive_dir"
+          printf "phase=install base packages cache=%s downloaded=%s archive-retained=true archive-saveable=%s archive-dir=%s\n" \
+            "$cache_state" "$downloaded" "$archive_saveable" "$archive_dir"
         else
-          printf "phase=install base packages cache=%s downloaded=%s archive-retained=false archive-dir=%s\n" \
-            "$cache_state" "$downloaded" "$archive_dir"
+          printf "phase=install base packages cache=%s downloaded=%s archive-retained=false archive-saveable=%s archive-dir=%s\n" \
+            "$cache_state" "$downloaded" "$archive_saveable" "$archive_dir"
           printf "base package cache archive directory is empty after successful %s install: %s\n" \
             "$cache_state" "$archive_dir" >&2
         fi
+      }
+
+      remove_apt_archive_working_state() {
+        local working_state
+        for working_state in "$archive_dir/lock" "$archive_dir/partial"; do
+          [[ -e "$working_state" || -L "$working_state" ]] || continue
+          if ! rm -rf -- "$working_state" >/dev/null 2>&1; then
+            printf "base package cache could not remove transient APT state: %s\n" \
+              "$working_state" >&2
+          fi
+        done
+      }
+
+      base_package_cache_is_saveable() {
+        local entry
+        local saveable=true
+
+        while IFS= read -r -d "" entry; do
+          if [[ ! -r "$entry" ]] || [[ -d "$entry" && ! -x "$entry" ]]; then
+            if [[ "$saveable" == true ]]; then
+              printf "base package cache archive directory contains unreadable entries: %s\n" \
+                "$archive_dir" >&2
+            fi
+            printf "base package cache unreadable entry: %s\n" "$entry" >&2
+            saveable=false
+          fi
+        done < <(find "$archive_dir" -mindepth 1 -print0 2>/dev/null)
+
+        printf "%s\n" "$saveable"
       }
 
       missing_packages=("$@")
