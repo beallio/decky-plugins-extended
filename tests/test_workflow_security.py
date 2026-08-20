@@ -1,4 +1,7 @@
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -18,6 +21,42 @@ class WorkflowSecurityTests(unittest.TestCase):
         if match is None:
             raise AssertionError(f"Workflow job is missing: {job_name}")
         return match.group("body")
+
+    @staticmethod
+    def _scanner_package_cache_key_outputs(
+        job: str, *, image_os: str, image_version: str
+    ) -> dict[str, str]:
+        step_match = re.search(
+            r"^      - name: Compute scanner package cache key\n"
+            r"(?P<body>.*?)(?=^      - name:|\Z)",
+            job,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+        if step_match is None:
+            raise AssertionError("scanner package cache key step is missing")
+        step_lines = step_match.group(0).splitlines()
+        script = "\n".join(line.removeprefix("          ") for line in step_lines[3:])
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            github_output = Path(temporary_directory) / "github-output"
+            result = subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", script],
+                cwd=ROOT,
+                env=os.environ
+                | {
+                    "GITHUB_OUTPUT": str(github_output),
+                    "ImageOS": image_os,
+                    "ImageVersion": image_version,
+                },
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise AssertionError(result.stderr)
+            return dict(
+                line.split("=", maxsplit=1)
+                for line in github_output.read_text().splitlines()
+            )
 
     def test_all_actions_are_pinned_to_full_commit_shas(self):
         unpinned = []
@@ -139,7 +178,7 @@ class WorkflowSecurityTests(unittest.TestCase):
                 job.index("name: Install required security scanners"),
             )
 
-    def test_scanner_package_cache_key_covers_runner_image_packages_and_bootstrap(self):
+    def test_scanner_package_cache_key_covers_runner_os_packages_and_bootstrap(self):
         expected_jobs = (
             ("plugin-security-audit.yml", "audit-shards"),
             ("plugin-security-audit.yml", "smoke-audit"),
@@ -150,15 +189,31 @@ class WorkflowSecurityTests(unittest.TestCase):
             workflow = (WORKFLOWS / workflow_name).read_text()
             job = self._job_body(workflow, job_name)
 
-            self.assertIn('runner_image="${ImageOS:?}-${ImageVersion:?}"', job)
+            self.assertIn('runner_os="${ImageOS:?}"', job)
+            self.assertNotIn("ImageVersion", job)
+            self.assertNotIn("runner_image=", job)
             self.assertIn(f'base_packages="{base_packages}"', job)
             self.assertIn("sha256sum scripts/install-security-scanners", job)
             self.assertIn("printf '%s' \"$base_packages\" | sha256sum", job)
             self.assertIn(
-                "key=scanner-package-cache-v1-${runner_image}-${package_set_hash}-${bootstrap_hash}",
+                "key=scanner-package-cache-v1-${runner_os}-${package_set_hash}-${bootstrap_hash}",
                 job,
             )
-            self.assertIn("restore_key=scanner-package-cache-v1-${runner_image}-", job)
+            self.assertIn("restore_key=scanner-package-cache-v1-${runner_os}-", job)
+            first_shard_outputs = self._scanner_package_cache_key_outputs(
+                job,
+                image_os="ubuntu24",
+                image_version="ubuntu24-20260810.271.1",
+            )
+            second_shard_outputs = self._scanner_package_cache_key_outputs(
+                job,
+                image_os="ubuntu24",
+                image_version="ubuntu24-20260816.277.1",
+            )
+            self.assertEqual(first_shard_outputs["key"], second_shard_outputs["key"])
+            self.assertEqual(
+                first_shard_outputs["restore_key"], second_shard_outputs["restore_key"]
+            )
 
     def test_scanner_package_cache_save_is_best_effort_and_allows_any_shard(self):
         plugin_workflow = (WORKFLOWS / "plugin-security-audit.yml").read_text()

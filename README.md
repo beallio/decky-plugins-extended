@@ -443,19 +443,25 @@ skip the base-package install; after configuring Trivy, the second index
 refresh is restricted to the Trivy source list. Base-package archives live in
 the workspace-local `.scanner-package-cache/apt-archives` directory (or the
 `BASE_APT_ARCHIVE_DIR` override). The three scanner jobs restore that directory
-before setup and save it afterwards; its key includes the hosted runner image
-identifier, the exact base-package set (`wget`, `apt-transport-https`, `gnupg`,
-`lsb-release`, and `clamav`), and the bootstrap script's SHA-256.
+before setup and save it afterwards; its key includes the runner OS identity
+(rather than an image build that can vary between shards), the exact
+base-package set (`wget`, `apt-transport-https`, `gnupg`, `lsb-release`, and
+`clamav`), and the bootstrap script's SHA-256.
 During a cold base-package install, the bootstrap tells APT to retain the
-downloaded archives in that directory and logs whether they remain available
-for the cache save. The first run after any key change is necessarily cold.
+downloaded archives in that directory, then removes APT's transient `lock`
+file and `partial/` working directory before the cache save. The install phase
+logs `cache=`, `downloaded=`, `archive-retained=`, and `archive-saveable=` so
+a failed best-effort cache save is visible in one shard's log. The first run
+after any key change is necessarily cold.
 
 That cache is untrusted input. Before a cached archive is installed, APT checks
 it against the signed package index with its normal checksum verification; the
 bootstrap never installs a cached `.deb` with `dpkg -i`. A checksum mismatch
 causes the bootstrap to discard the restored archives and perform a cold,
-signed-index-verified install. Cache reuse therefore never bypasses signed-index
-verification. A valid warm cache takes APT's no-download path and logs
+signed-index-verified install. That verification makes the OS-level cache key
+granularity safe even when a restored archive no longer matches the current
+index. Cache reuse therefore never bypasses signed-index verification. A valid
+warm cache takes APT's no-download path and logs
 `cache=warm downloaded=false`, which removes the repeated package download on
 the common path. This does not guarantee scanner setup: a cache miss, unusable
 cache, or changed key takes the cold APT path and still depends on the mirror.

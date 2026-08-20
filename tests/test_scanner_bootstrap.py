@@ -182,6 +182,14 @@ fi
 if [[ "$keep_downloaded_packages" != true ]] || [[ "${FAKE_APT_DELETE_ARCHIVES_AFTER_INSTALL:-}" == "1" ]]; then
   rm -f -- "$archive"
 fi
+if [[ "${FAKE_APT_CREATE_UNREADABLE_WORKING_STATE:-}" == "1" ]]; then
+  : > "$archive_dir/lock"
+  mkdir -p "$archive_dir/partial"
+  if [[ "${FAKE_APT_LEAVE_PARTIAL_WORKING_STATE:-}" == "1" ]]; then
+    : > "$archive_dir/partial/fake-clamav_1.0_all.deb.partial"
+  fi
+  chmod 000 "$archive_dir/lock" "$archive_dir/partial"
+fi
 """,
     )
     for name in (
@@ -386,6 +394,17 @@ def _phase_timeout_seconds(output: str, phase: str) -> int:
     )
     assert matches, f"no allocation logged for {phase}"
     return int(matches[-1])
+
+
+def _restore_apt_working_state_permissions(archive_dir: Path) -> None:
+    for entry, mode in (
+        (archive_dir / "lock", 0o600),
+        (archive_dir / "partial", 0o700),
+    ):
+        try:
+            entry.chmod(mode)
+        except FileNotFoundError:
+            pass
 
 
 def test_scanner_bootstrap_allows_apt_phase_to_use_remaining_budget(tmp_path):
@@ -681,6 +700,88 @@ def test_scanner_bootstrap_cold_cache_downloads_and_preserves_base_archive(tmp_p
     assert "APT::Keep-Downloaded-Packages=true" in commands
 
 
+def test_scanner_bootstrap_makes_package_cache_archivable_after_cold_install(
+    tmp_path,
+):
+    archive_dir = tmp_path / ".scanner-package-cache" / "apt-archives"
+    environment = _fake_environment(
+        tmp_path,
+        FAKE_APT_PACKAGE_CACHE="1",
+        FAKE_APT_CREATE_UNREADABLE_WORKING_STATE="1",
+        BASE_APT_ARCHIVE_DIR=str(archive_dir),
+    )
+
+    try:
+        result = _run_bootstrap(tmp_path, environment=environment)
+        archive_result = subprocess.run(
+            [
+                "tar",
+                "--posix",
+                "-cf",
+                "/dev/null",
+                "-C",
+                str(tmp_path),
+                ".scanner-package-cache/apt-archives",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        _restore_apt_working_state_permissions(archive_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert archive_result.returncode == 0, archive_result.stderr
+    assert "archive-saveable=true" in result.stdout
+
+
+def test_scanner_bootstrap_preserves_archives_while_clearing_apt_working_state(
+    tmp_path,
+):
+    archive_dir = tmp_path / "apt-archives"
+    archive = archive_dir / "fake-clamav_1.0_all.deb"
+    environment = _fake_environment(
+        tmp_path,
+        FAKE_APT_PACKAGE_CACHE="1",
+        FAKE_APT_CREATE_UNREADABLE_WORKING_STATE="1",
+        BASE_APT_ARCHIVE_DIR=str(archive_dir),
+    )
+
+    try:
+        result = _run_bootstrap(tmp_path, environment=environment)
+    finally:
+        _restore_apt_working_state_permissions(archive_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert archive.read_text(encoding="utf-8") == "signed-indexed-archive"
+    assert not (archive_dir / "lock").exists()
+    assert not (archive_dir / "partial").exists()
+
+
+def test_scanner_bootstrap_warns_when_working_state_cannot_be_cleared(tmp_path):
+    archive_dir = tmp_path / "apt-archives"
+    environment = _fake_environment(
+        tmp_path,
+        FAKE_APT_PACKAGE_CACHE="1",
+        FAKE_APT_CREATE_UNREADABLE_WORKING_STATE="1",
+        FAKE_APT_LEAVE_PARTIAL_WORKING_STATE="1",
+        BASE_APT_ARCHIVE_DIR=str(archive_dir),
+    )
+
+    try:
+        result = _run_bootstrap(tmp_path, environment=environment)
+    finally:
+        _restore_apt_working_state_permissions(archive_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "base package cache could not remove transient APT state" in result.stderr
+    assert (
+        "base package cache archive directory contains unreadable entries"
+        in result.stderr
+    )
+    assert "archive-saveable=false" in result.stdout
+    assert (archive_dir / "fake-clamav_1.0_all.deb").exists()
+
+
 def test_scanner_bootstrap_cold_cache_retention_supports_a_warm_second_run(tmp_path):
     archive_dir = tmp_path / "apt-archives"
     environment = _fake_environment(
@@ -690,15 +791,27 @@ def test_scanner_bootstrap_cold_cache_retention_supports_a_warm_second_run(tmp_p
     )
 
     cold_result = _run_bootstrap(tmp_path, environment=environment)
+    cold_archive_result = subprocess.run(
+        ["tar", "--posix", "-cf", "/dev/null", "-C", str(tmp_path), "apt-archives"],
+        capture_output=True,
+        text=True,
+    )
 
     assert cold_result.returncode == 0, cold_result.stderr
+    assert cold_archive_result.returncode == 0, cold_archive_result.stderr
     assert (archive_dir / "fake-clamav_1.0_all.deb").exists()
     assert "cache=cold downloaded=true archive-retained=true" in cold_result.stdout
 
     environment["FAKE_APT_MIRROR_FAILURE"] = "1"
     warm_result = _run_bootstrap(tmp_path, environment=environment)
+    warm_archive_result = subprocess.run(
+        ["tar", "--posix", "-cf", "/dev/null", "-C", str(tmp_path), "apt-archives"],
+        capture_output=True,
+        text=True,
+    )
 
     assert warm_result.returncode == 0, warm_result.stderr
+    assert warm_archive_result.returncode == 0, warm_archive_result.stderr
     assert "cache=warm downloaded=false archive-retained=true" in warm_result.stdout
     commands = (tmp_path / "commands.log").read_text(encoding="utf-8")
     assert commands.count("apt-get cache-download") == 1

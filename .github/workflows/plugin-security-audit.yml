@@ -246,12 +246,12 @@ jobs:
       - name: Compute scanner package cache key
         id: scanner-package-cache-key
         run: |
-          runner_image="${ImageOS:?}-${ImageVersion:?}"
+          runner_os="${ImageOS:?}"
           base_packages="wget apt-transport-https gnupg lsb-release clamav"
           package_set_hash="$(printf '%s' "$base_packages" | sha256sum | cut -d' ' -f1)"
           bootstrap_hash="$(sha256sum scripts/install-security-scanners | cut -d' ' -f1)"
-          echo "key=scanner-package-cache-v1-${runner_image}-${package_set_hash}-${bootstrap_hash}" >> "$GITHUB_OUTPUT"
-          echo "restore_key=scanner-package-cache-v1-${runner_image}-" >> "$GITHUB_OUTPUT"
+          echo "key=scanner-package-cache-v1-${runner_os}-${package_set_hash}-${bootstrap_hash}" >> "$GITHUB_OUTPUT"
+          echo "restore_key=scanner-package-cache-v1-${runner_os}-" >> "$GITHUB_OUTPUT"
 
       - name: Restore scanner package cache
         continue-on-error: true
@@ -459,12 +459,12 @@ jobs:
       - name: Compute scanner package cache key
         id: scanner-package-cache-key
         run: |
-          runner_image="${ImageOS:?}-${ImageVersion:?}"
+          runner_os="${ImageOS:?}"
           base_packages="wget apt-transport-https gnupg lsb-release clamav"
           package_set_hash="$(printf '%s' "$base_packages" | sha256sum | cut -d' ' -f1)"
           bootstrap_hash="$(sha256sum scripts/install-security-scanners | cut -d' ' -f1)"
-          echo "key=scanner-package-cache-v1-${runner_image}-${package_set_hash}-${bootstrap_hash}" >> "$GITHUB_OUTPUT"
-          echo "restore_key=scanner-package-cache-v1-${runner_image}-" >> "$GITHUB_OUTPUT"
+          echo "key=scanner-package-cache-v1-${runner_os}-${package_set_hash}-${bootstrap_hash}" >> "$GITHUB_OUTPUT"
+          echo "restore_key=scanner-package-cache-v1-${runner_os}-" >> "$GITHUB_OUTPUT"
 
       - name: Restore scanner package cache
         continue-on-error: true

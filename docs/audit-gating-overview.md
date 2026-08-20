@@ -60,13 +60,18 @@ configured package indexes even when local package state allows the
 base-package install to be skipped, and restricts the post-configuration Trivy
 index refresh to the Trivy source list. Base-package archives are cached at
 `.scanner-package-cache/apt-archives` (or the `BASE_APT_ARCHIVE_DIR` override).
-The cache key binds the hosted runner image identifier, the exact base-package
-set, and the bootstrap script SHA-256. On a cold install, APT retains the
-downloaded archives there for the workflow cache save; the first run after any
-key change is still cold. A restored archive is untrusted input: APT still
+The cache key binds the runner OS identity, rather than an image build that
+can vary within one run, the exact base-package set, and the bootstrap script
+SHA-256. On a cold install, APT retains the downloaded archives there, then
+removes its transient `lock` and `partial/` working state before the workflow
+cache save. The install phase logs `cache=`, `downloaded=`,
+`archive-retained=`, and `archive-saveable=`. The first run after any key
+change is still cold. A restored archive is untrusted input: APT still
 verifies it against the signed package index before installation, so cache reuse
 never bypasses signed-index verification, and the bootstrap never uses `dpkg -i`
-for cached archives. A valid warm cache logs that no package was downloaded; a
+for cached archives. That signed-index check makes the OS-level cache key
+granularity safe when a restored archive no longer matches the current index.
+A valid warm cache logs that no package was downloaded; a
 checksum mismatch discards the restored archives and triggers a cold install
 that obtains and verifies replacements. This removes repeated package downloads
 on the common path, but does not make scanner setup guaranteed: a cold or
