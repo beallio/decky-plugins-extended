@@ -252,8 +252,8 @@ does not certify a plugin.
 | Classification | Meaning |
 |---|---|
 | `PASS` | No blocking or review-required findings. Archive safe. No unexplained binaries. |
-| `PASS_WITH_WARNINGS` | Minor issues such as low/medium vulnerabilities, ordinary network usage, a named credential environment-variable read, or an unavailable optional scanner. |
-| `MANUAL_REVIEW` | Root flag, sudo, native binaries, systemd changes, obfuscated code, direct whole-environment harvesting, or a high-severity dependency vulnerability. |
+| `PASS_WITH_WARNINGS` | Minor issues such as low/medium vulnerabilities, ordinary network usage, a non-protected named credential environment-variable read, or an unavailable optional scanner. |
+| `MANUAL_REVIEW` | Root flag, sudo, native binaries, systemd changes, obfuscated code, direct whole-environment harvesting, a protected named credential environment-variable read, or a high-severity dependency vulnerability. |
 | `BLOCK` | A structural artifact fact: a malware signature; archive traversal or an escaping symlink; a compression-ratio, total-size, file-count, or single-file-size archive bomb limit; a setuid/setgid member; a device file; or a named pipe. |
 | `AUDIT_ERROR` | This release attempt or repository worklist-preparation outcome could not reach a conclusion because of a bounded-download failure, corrupt ZIP, required-scanner failure, repository-local upstream failure, or other local error. |
 

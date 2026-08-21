@@ -539,7 +539,7 @@ class TestStaticAnalysis(unittest.TestCase):
             env_finding.message, "named credential environment variable read"
         )
 
-    def test_protected_credential_env_reads_are_standard_warnings(self):
+    def test_protected_credential_env_reads_require_manual_review(self):
         for env_name in (
             "GITHUB_TOKEN",
             "AWS_SECRET_ACCESS_KEY",
@@ -553,10 +553,10 @@ class TestStaticAnalysis(unittest.TestCase):
                     for finding in findings
                     if finding.rule_id == "SENSITIVE_ENV_READ"
                 )
-                self.assertEqual(env_finding.classification, "PASS_WITH_WARNINGS")
+                self.assertEqual(env_finding.classification, "MANUAL_REVIEW")
                 self.assertEqual(
                     env_finding.message,
-                    "named credential environment variable read",
+                    "protected credential environment variable read",
                 )
 
     def test_environment_harvesting_constructs_are_manual_review(self):

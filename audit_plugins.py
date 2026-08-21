@@ -1891,6 +1891,22 @@ _JS_ENV_ACCESS_PATTERN = re.compile(
 _CREDENTIAL_ENV_NAME_PATTERN = re.compile(
     r"(?:^|_)(?:password|token|secret|key|api)(?:_|$)", re.IGNORECASE
 )
+_PROTECTED_ENV_PREFIXES = (
+    "AWS_",
+    "CF_",
+    "CLOUDFLARE_",
+    "GITHUB_",
+    "SSH_",
+    "STEAM_",
+)
+
+
+def _is_protected_credential_env(env_name: str) -> bool:
+    """Return whether a named credential is not ordinary plugin configuration."""
+    upper_name = env_name.upper()
+    return upper_name.startswith(_PROTECTED_ENV_PREFIXES) or upper_name.endswith(
+        "PRIVATE_KEY"
+    )
 
 
 def _get_env_access_patterns_for_extension(ext: str) -> tuple[re.Pattern, ...]:
@@ -1947,14 +1963,21 @@ def scan_text_content(
                 if not _CREDENTIAL_ENV_NAME_PATTERN.search(env_name):
                     continue
                 evidence = redact_secrets(_truncate(line.strip(), EVIDENCE_MAX_LEN))
+                is_protected = _is_protected_credential_env(env_name)
                 findings.append(
                     Finding(
                         rule_id="SENSITIVE_ENV_READ",
                         severity="medium",
-                        classification="PASS_WITH_WARNINGS",
+                        classification=(
+                            "MANUAL_REVIEW" if is_protected else "PASS_WITH_WARNINGS"
+                        ),
                         path=path,
                         line=lineno,
-                        message="named credential environment variable read",
+                        message=(
+                            "protected credential environment variable read"
+                            if is_protected
+                            else "named credential environment variable read"
+                        ),
                         evidence=evidence,
                         scanner="decky-static-rules",
                     )
