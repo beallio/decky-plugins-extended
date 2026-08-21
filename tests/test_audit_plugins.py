@@ -587,13 +587,13 @@ class TestStaticAnalysis(unittest.TestCase):
 
     def test_targeted_environment_reads_are_not_manual_review(self):
         fixtures = (
-            ('os.environ.get("SYNCTHING_API_KEY")', ".py"),
-            ('os.environ["SSLKEYLOGFILE"]', ".py"),
-            ("def get_environment(key): return os.environ.get(key)", ".py"),
-            ("const token = process.env.SOME_TOKEN", ".js"),
+            ('os.environ.get("SYNCTHING_API_KEY")', ".py", True),
+            ('os.environ["SSLKEYLOGFILE"]', ".py", False),
+            ("def get_environment(key): return os.environ.get(key)", ".py", False),
+            ("const token = process.env.SOME_TOKEN", ".js", True),
         )
 
-        for content, ext in fixtures:
+        for content, ext, expected_warning in fixtures:
             with self.subTest(content=content, ext=ext):
                 findings = self._scan(content + "\n", path=f"main{ext}", ext=ext)
                 self.assertFalse(
@@ -603,6 +603,14 @@ class TestStaticAnalysis(unittest.TestCase):
                         for finding in findings
                     )
                 )
+                warning_findings = [
+                    finding
+                    for finding in findings
+                    if finding.rule_id == "SENSITIVE_ENV_READ"
+                ]
+                self.assertEqual(bool(warning_findings), expected_warning)
+                for finding in warning_findings:
+                    self.assertEqual(finding.classification, "PASS_WITH_WARNINGS")
 
     def test_harvest_and_targeted_env_read_have_distinguishable_rule_ids(self):
         findings = self._scan(
