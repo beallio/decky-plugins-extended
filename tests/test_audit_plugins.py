@@ -529,17 +529,17 @@ class TestStaticAnalysis(unittest.TestCase):
         rule_ids = {f.rule_id for f in findings}
         self.assertIn("NETWORK_DISABLED_TLS", rule_ids)
 
-    def test_plugin_namespaced_env_read_is_warning(self):
+    def test_named_credential_env_read_is_warning(self):
         findings = self._scan('api_key = os.environ.get("SYNCTHING_API_KEY")\n')
-        ap._downgrade_plugin_namespaced_env_findings(findings, "Syncthing")
         env_finding = next(
-            finding
-            for finding in findings
-            if finding.rule_id == "SENSITIVE_ENV_HARVEST"
+            finding for finding in findings if finding.rule_id == "SENSITIVE_ENV_READ"
         )
         self.assertEqual(env_finding.classification, "PASS_WITH_WARNINGS")
+        self.assertEqual(
+            env_finding.message, "named credential environment variable read"
+        )
 
-    def test_well_known_sensitive_env_reads_stay_manual_review(self):
+    def test_protected_credential_env_reads_require_manual_review(self):
         for env_name in (
             "GITHUB_TOKEN",
             "AWS_SECRET_ACCESS_KEY",
@@ -548,15 +548,79 @@ class TestStaticAnalysis(unittest.TestCase):
         ):
             with self.subTest(env_name=env_name):
                 findings = self._scan(f'value = os.environ.get("{env_name}")\n')
-                ap._downgrade_plugin_namespaced_env_findings(
-                    findings, env_name.split("_", 1)[0]
-                )
                 env_finding = next(
                     finding
                     for finding in findings
-                    if finding.rule_id == "SENSITIVE_ENV_HARVEST"
+                    if finding.rule_id == "SENSITIVE_ENV_READ"
                 )
                 self.assertEqual(env_finding.classification, "MANUAL_REVIEW")
+                self.assertEqual(
+                    env_finding.message,
+                    "protected credential environment variable read",
+                )
+
+    def test_environment_harvesting_constructs_are_manual_review(self):
+        fixtures = (
+            ("dict(os.environ)", ".py"),
+            ("os.environ.copy()", ".py"),
+            ("{**os.environ}", ".py"),
+            ("for key, value in os.environ.items():", ".py"),
+            ("list(os.environ)", ".py"),
+            ("json.dumps(dict(os.environ))", ".py"),
+            ("requests.post(url, json=dict(os.environ))", ".py"),
+            ("const copied = {...process.env}", ".js"),
+            ("Object.keys(process.env)", ".js"),
+            ("Object.entries(process.env)", ".ts"),
+            ("JSON.stringify(process.env)", ".ts"),
+        )
+
+        for content, ext in fixtures:
+            with self.subTest(content=content, ext=ext):
+                findings = self._scan(content + "\n", path=f"main{ext}", ext=ext)
+                self.assertTrue(
+                    any(
+                        finding.rule_id == "SENSITIVE_ENV_HARVEST"
+                        and finding.classification == "MANUAL_REVIEW"
+                        for finding in findings
+                    )
+                )
+
+    def test_targeted_environment_reads_are_not_manual_review(self):
+        fixtures = (
+            ('os.environ.get("SYNCTHING_API_KEY")', ".py", True),
+            ('os.environ["SSLKEYLOGFILE"]', ".py", False),
+            ("def get_environment(key): return os.environ.get(key)", ".py", False),
+            ("const token = process.env.SOME_TOKEN", ".js", True),
+        )
+
+        for content, ext, expected_warning in fixtures:
+            with self.subTest(content=content, ext=ext):
+                findings = self._scan(content + "\n", path=f"main{ext}", ext=ext)
+                self.assertFalse(
+                    any(
+                        finding.rule_id == "SENSITIVE_ENV_HARVEST"
+                        and finding.classification == "MANUAL_REVIEW"
+                        for finding in findings
+                    )
+                )
+                warning_findings = [
+                    finding
+                    for finding in findings
+                    if finding.rule_id == "SENSITIVE_ENV_READ"
+                ]
+                self.assertEqual(bool(warning_findings), expected_warning)
+                for finding in warning_findings:
+                    self.assertEqual(finding.classification, "PASS_WITH_WARNINGS")
+
+    def test_harvest_and_targeted_env_read_have_distinguishable_rule_ids(self):
+        findings = self._scan(
+            'payload = dict(os.environ)\ntoken = os.environ.get("SYNCTHING_API_KEY")\n'
+        )
+        self.assertEqual(
+            {finding.rule_id for finding in findings}
+            & {"SENSITIVE_ENV_HARVEST", "SENSITIVE_ENV_READ"},
+            {"SENSITIVE_ENV_HARVEST", "SENSITIVE_ENV_READ"},
+        )
 
     def test_base64_obfuscation_large_string(self):
         large_b64 = base64.b64encode(b"A" * 200).decode()
@@ -2590,7 +2654,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         self.assertEqual(
             rule_ids,
             [
-                "SENSITIVE_ENV_HARVEST",
+                "SENSITIVE_ENV_READ",
                 "EXEC_SUBPROCESS_RUN",
                 "SECRET_GITHUB_TOKEN",
             ],
@@ -2600,7 +2664,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         env_finding = next(
             finding
             for finding in report.findings
-            if finding.rule_id == "SENSITIVE_ENV_HARVEST"
+            if finding.rule_id == "SENSITIVE_ENV_READ"
         )
         self.assertEqual(env_finding.classification, "PASS_WITH_WARNINGS")
         secret_finding = next(
