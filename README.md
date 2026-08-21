@@ -218,6 +218,10 @@ code.
   modification, and udev rule installation.
 - **Sensitive data access**: SSH private keys, Steam authentication files,
   `/etc/shadow`, and credential-file paths.
+- **Environment access**: direct copying, expansion, iteration, enumeration, or
+  serialization of the whole environment requires `MANUAL_REVIEW`; a targeted
+  read of a credential-bearing environment-variable name is recorded as
+  `PASS_WITH_WARNINGS`.
 - **Network behaviour**: extracted URLs, domains, telemetry endpoints, disabled
   TLS verification, and hard-coded authorization headers.
 - **Obfuscation**: large base64 payloads, `marshal.loads`, `pickle.loads`,
@@ -248,8 +252,8 @@ does not certify a plugin.
 | Classification | Meaning |
 |---|---|
 | `PASS` | No blocking or review-required findings. Archive safe. No unexplained binaries. |
-| `PASS_WITH_WARNINGS` | Minor issues such as low/medium vulnerabilities, ordinary network usage, or an unavailable optional scanner. |
-| `MANUAL_REVIEW` | Root flag, sudo, native binaries, systemd changes, obfuscated code, or a high-severity dependency vulnerability. |
+| `PASS_WITH_WARNINGS` | Minor issues such as low/medium vulnerabilities, ordinary network usage, a non-protected named credential environment-variable read, or an unavailable optional scanner. |
+| `MANUAL_REVIEW` | Root flag, sudo, native binaries, systemd changes, obfuscated code, direct whole-environment harvesting, a protected named credential environment-variable read, or a high-severity dependency vulnerability. |
 | `BLOCK` | A structural artifact fact: a malware signature; archive traversal or an escaping symlink; a compression-ratio, total-size, file-count, or single-file-size archive bomb limit; a setuid/setgid member; a device file; or a named pipe. |
 | `AUDIT_ERROR` | This release attempt or repository worklist-preparation outcome could not reach a conclusion because of a bounded-download failure, corrupt ZIP, required-scanner failure, repository-local upstream failure, or other local error. |
 
