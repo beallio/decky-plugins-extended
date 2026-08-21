@@ -1476,6 +1476,33 @@ def is_executable_script(data: bytes, mode: int) -> bool:
 # ---------------------------------------------------------------------------
 
 # Each rule: (rule_id, severity, classification, description, pattern)
+# These patterns intentionally do not catch aliases of os.environ/process.env,
+# os.getenv calls made while iterating a separate name list, or mappings built
+# dynamically. They cover direct whole-environment copying, expansion,
+# iteration, serialization, and enumeration only.
+_PYTHON_ENV_HARVEST_PATTERN = re.compile(
+    r"""
+    (?:
+        \bdict\s*\(\s*os\.environ\s*\)
+        | \bos\.environ\s*\.\s*copy\s*\(\s*\)
+        | \{\s*\*\*\s*os\.environ\b
+        | \bos\.environ\s*\.\s*(?:items|keys|values)\s*\(\s*\)
+        | \blist\s*\(\s*os\.environ\s*\)
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_JS_ENV_HARVEST_PATTERN = re.compile(
+    r"""
+    (?:
+        \{\s*\.\.\.\s*process\.env\b
+        | \bObject\s*\.\s*(?:keys|values|entries)\s*\(\s*process\.env\b
+        | \bJSON\s*\.\s*stringify\s*\(\s*process\.env\b
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
 _PYTHON_RULES: list[tuple[str, str, str, str, re.Pattern]] = [
     (
         "EXEC_OS_SYSTEM",
@@ -1648,9 +1675,7 @@ _PYTHON_RULES: list[tuple[str, str, str, str, re.Pattern]] = [
         "medium",
         "MANUAL_REVIEW",
         "environment variable harvesting",
-        re.compile(
-            r"\bos\.environ\b.*(?:password|token|secret|key|api)", re.IGNORECASE
-        ),
+        _PYTHON_ENV_HARVEST_PATTERN,
     ),
     (
         "NETWORK_DISABLED_TLS",
@@ -1696,6 +1721,13 @@ _PYTHON_RULES: list[tuple[str, str, str, str, re.Pattern]] = [
 ]
 
 _JS_RULES: list[tuple[str, str, str, str, re.Pattern]] = [
+    (
+        "SENSITIVE_ENV_HARVEST",
+        "medium",
+        "MANUAL_REVIEW",
+        "environment variable harvesting",
+        _JS_ENV_HARVEST_PATTERN,
+    ),
     (
         "EXEC_CHILD_EXEC",
         "high",
@@ -1842,6 +1874,34 @@ def _compose_component_detail(detail: str, max_len: int) -> str:
     return _truncate_with_ellipsis(redact_secrets(detail), max_len)
 
 
+_ENV_ACCESS_PATTERN = re.compile(
+    r"""
+    \bos\.environ\s*(?:\.\s*get\s*\(\s*|\[\s*)
+    ['\"](?P<env_name>[A-Za-z_][A-Za-z0-9_]*)['\"]
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_JS_ENV_ACCESS_PATTERN = re.compile(
+    r"""
+    \bprocess\.env\s*(?:\.\s*|\[\s*['\"])
+    (?P<env_name>[A-Za-z_][A-Za-z0-9_]*)(?:\b|['\"])
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_CREDENTIAL_ENV_NAME_PATTERN = re.compile(
+    r"(?:^|_)(?:password|token|secret|key|api)(?:_|$)", re.IGNORECASE
+)
+
+
+def _get_env_access_patterns_for_extension(ext: str) -> tuple[re.Pattern, ...]:
+    ext = ext.lower()
+    if ext in (".py", ".sh", ".bash", ".zsh", ".fish", ""):
+        return (_ENV_ACCESS_PATTERN,)
+    if ext in (".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"):
+        return (_ENV_ACCESS_PATTERN, _JS_ENV_ACCESS_PATTERN)
+    return (_ENV_ACCESS_PATTERN, _JS_ENV_ACCESS_PATTERN)
+
+
 def _get_rules_for_extension(ext: str) -> list[tuple[str, str, str, str, re.Pattern]]:
     ext = ext.lower()
     if ext in (".py",):
@@ -1861,6 +1921,7 @@ def scan_text_content(
     """Run static analysis rules against text content of a file."""
     findings: list[Finding] = []
     rules = _get_rules_for_extension(ext)
+    env_access_patterns = _get_env_access_patterns_for_extension(ext)
     lines = content.splitlines()
     for lineno, line in enumerate(lines, start=1):
         for rule_id, severity, classification, message, pattern in rules:
@@ -1875,6 +1936,25 @@ def scan_text_content(
                         path=path,
                         line=lineno,
                         message=message,
+                        evidence=evidence,
+                        scanner="decky-static-rules",
+                    )
+                )
+
+        for pattern in env_access_patterns:
+            for match in pattern.finditer(line):
+                env_name = match.group("env_name")
+                if not _CREDENTIAL_ENV_NAME_PATTERN.search(env_name):
+                    continue
+                evidence = redact_secrets(_truncate(line.strip(), EVIDENCE_MAX_LEN))
+                findings.append(
+                    Finding(
+                        rule_id="SENSITIVE_ENV_READ",
+                        severity="medium",
+                        classification="PASS_WITH_WARNINGS",
+                        path=path,
+                        line=lineno,
+                        message="named credential environment variable read",
                         evidence=evidence,
                         scanner="decky-static-rules",
                     )
@@ -1899,74 +1979,6 @@ def scan_text_content(
             )
 
     return findings
-
-
-_ENV_ACCESS_PATTERN = re.compile(
-    r"\bos\.environ(?:\.get\s*\(\s*|\s*\[\s*)['\"]([A-Za-z_][A-Za-z0-9_]*)",
-    re.IGNORECASE,
-)
-_PROTECTED_ENV_PREFIXES = (
-    "AWS_",
-    "CF_",
-    "CLOUDFLARE_",
-    "GITHUB_",
-    "SSH_",
-    "STEAM_",
-)
-_GENERIC_PLUGIN_NAME_STEMS = {"decky", "loader", "plugin", "sdh"}
-
-
-def _normalised_name_stems(plugin_name: str) -> set[str]:
-    normalised = (
-        unicodedata.normalize("NFKD", plugin_name)
-        .encode("ascii", "ignore")
-        .decode("ascii")
-    )
-    parts = [part.lower() for part in re.findall(r"[A-Za-z0-9]+", normalised)]
-    stems = {
-        part
-        for part in parts
-        if len(part) >= 4 and part not in _GENERIC_PLUGIN_NAME_STEMS
-    }
-    combined = "".join(parts)
-    if len(combined) >= 4 and combined not in _GENERIC_PLUGIN_NAME_STEMS:
-        stems.add(combined)
-    return stems
-
-
-def _is_plugin_namespaced_env(env_name: str, plugin_name: str) -> bool:
-    upper_name = env_name.upper()
-    if upper_name.startswith(_PROTECTED_ENV_PREFIXES) or upper_name.endswith(
-        "PRIVATE_KEY"
-    ):
-        return False
-
-    env_parts = [part.lower() for part in upper_name.split("_") if part]
-    env_compact = "".join(env_parts)
-    return any(
-        stem in env_parts or env_compact.startswith(stem)
-        for stem in _normalised_name_stems(plugin_name)
-    )
-
-
-def _downgrade_plugin_namespaced_env_findings(
-    findings: list[Finding], plugin_name: str
-) -> None:
-    """Downgrade only env reads clearly namespaced to this plugin."""
-    if not plugin_name:
-        return
-    for finding in findings:
-        if (
-            finding.rule_id != "SENSITIVE_ENV_HARVEST"
-            or finding.classification != "MANUAL_REVIEW"
-        ):
-            continue
-        env_names = _ENV_ACCESS_PATTERN.findall(finding.evidence)
-        if env_names and all(
-            _is_plugin_namespaced_env(env_name, plugin_name) for env_name in env_names
-        ):
-            finding.classification = "PASS_WITH_WARNINGS"
-            finding.message = "Plugin-namespaced environment variable read."
 
 
 def extract_urls_and_domains(content: str) -> tuple[list[str], list[str]]:
@@ -5202,8 +5214,6 @@ def audit_release(
                     scanner="metadata-checker",
                 )
             )
-
-        _downgrade_plugin_namespaced_env_findings(report.findings, report.plugin_name)
 
         # --- External scanners ---
         if zip_stats.safe and os.path.isdir(extract_dir):
