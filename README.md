@@ -406,6 +406,17 @@ evidence or updates the verdict store. A valid empty selection still supplies
 fourteen empty triples. This is deliberately stronger than counting uploaded
 artifacts.
 
+While a worker is traversing releases, it writes one stderr
+`release_progress phase=start` record before each release and one
+`release_progress phase=complete` record after that release's checkpoint,
+including its identity, position, classification, and elapsed time. A completed
+release taking at least 300 seconds also produces an advisory slow-release
+warning. This improves attribution of a stall but does not prevent a stall: an
+unmatched start identifies the release still in flight or abruptly terminated,
+whereas the advisory warning is emitted only after processing completes. A job
+killed by its step timeout can still lose its archived log and skip artifact
+publication.
+
 If upstream repository metadata no longer identifies the URL configured in
 `additional_plugins.txt`, or that repository's tags or releases cannot be
 resolved, or it has no catalog-eligible release, preparation records a

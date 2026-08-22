@@ -4,7 +4,7 @@
 > `docs/plans/`. Each sub-plan carries its own orchestration contract, branch, and markers.
 > Nothing here is run directly.
 
-## Current implementation state (2026-08-18)
+## Current implementation state (2026-08-22)
 
 The historical design and appendix below describe the incremental rollout at
 the time those sub-plans landed. The current authoritative behavior is:
@@ -18,6 +18,14 @@ the time those sub-plans landed. The current authoritative behavior is:
   isolated verdict deltas, and manifests that prove exact coverage before
   duplicate-rejecting aggregation. Only explicit `--repository ... --latest-only`
   uses one release.
+- Each worker logs a stderr `release_progress phase=start` record before a
+  release begins and a `release_progress phase=complete` record after its
+  checkpoint, with its identity, position, classification, and elapsed time. A
+  completed release at or above 300 seconds gets an advisory slow-release
+  warning. This improves attribution of a stall but does not prevent a stall:
+  an unmatched start identifies the in-flight or abruptly terminated release,
+  while a warning can only be emitted after completion. A job killed by its
+  step timeout can still lose its archived log and skip artifact publication.
 - If upstream metadata no longer proves that a configured repository URL has
   the same identity, or that repository's tags or releases cannot be resolved,
   or it has no catalog-eligible release, preparation records a visible
