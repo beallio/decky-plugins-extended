@@ -2,9 +2,13 @@ import copy
 import hashlib
 import itertools
 import json
+import logging
+import os
+import select
 import subprocess
 import sys
 import tarfile
+import time
 import zipfile
 from io import BytesIO
 from pathlib import Path
@@ -4881,3 +4885,597 @@ def test_main_resumes_only_an_exact_publishable_embedded_report(monkeypatch, tmp
     assert _embedded_report_identity(emitted_report) == (
         _CURRENT_EMBEDDED_REPORT_IDENTITY
     )
+
+
+# ---------------------------------------------------------------------------
+# Release-progress observability
+# ---------------------------------------------------------------------------
+
+
+BASELINE_RELEASE_PROGRESS_ARTIFACT_HASHES = {
+    "manifest": "97bff3d72a62425399291826883b482de5a845b04a0849f0cb94f4786d9e544e",
+    "progress": "6fad71650b64b6481b1a32778b33eee1a2517b4f5bc3f0a55770d44d6a6b92d6",
+    "report_json": "ae9fede5ff2195de22716dd09ea82e3bc7d4a7f2b8ec5205809d470ce4d3a8ca",
+    "report_markdown": "5dbadfcb5c6284cf6a8ccbf974fb531f019051b44ce4b35e7f1959699e277b4c",
+    "verdict_delta": "49c080f5b5a97f6d46af52f2a98f0656050d1ca3faeb903bb40c133e77b08cd2",
+}
+
+
+def _write_three_release_worker_worklist(tmp_path):
+    worklist_path, _fingerprint = _write_worker_worklist(tmp_path)
+    document = json.loads(worklist_path.read_text(encoding="utf-8"))
+    template = document["payload"]["items"][0]
+    items = []
+    for release_id, published_at in enumerate(
+        (
+            "2026-03-01T00:00:00Z",
+            "2026-02-01T00:00:00Z",
+            "2026-01-01T00:00:00Z",
+        ),
+        start=1,
+    ):
+        item = copy.deepcopy(template)
+        item.update(
+            release_id=release_id,
+            tag_name=f"v{release_id}",
+            published_at=published_at,
+            created_at=published_at,
+            asset_id=release_id * 10,
+            asset_name=f"plugin-{release_id}.zip",
+            asset_url=(
+                "https://github.com/owner/repo/releases/download/"
+                f"v{release_id}/plugin-{release_id}.zip"
+            ),
+        )
+        items.append(item)
+    document["payload"]["items"] = items
+    fingerprint = worklist.compute_worklist_fingerprint(document["payload"])
+    document["fingerprint"] = fingerprint
+    worklist_path.write_text(json.dumps(document), encoding="utf-8")
+    return worklist_path, fingerprint
+
+
+def _release_progress_report(repository, release, **kwargs):
+    asset = release["assets"][0]
+    return ap.AuditReport(
+        audit_timestamp="2026-08-22T00:00:00Z",
+        repository=repository,
+        release=release["tag_name"],
+        release_id=f"{release['tag_name']}@{asset['id']}",
+        github_release_id=str(release["id"]),
+        asset_id=str(asset["id"]),
+        artifact_url=asset["browser_download_url"],
+        artifact_sha256="a" * 64,
+        identity_status="CURRENT",
+        resolved_tag_commit_sha=kwargs.get("_prepared_commit_sha", "") or "b" * 40,
+        audit_context_hash="current-context",
+        final_classification="PASS",
+        completion_status="completed",
+    )
+
+
+def _configure_release_progress_worker(monkeypatch):
+    monkeypatch.setattr(ap, "load_policy", lambda *_args: ap._default_policy())
+    monkeypatch.setattr(ap, "load_allowlist", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ap, "load_verdicts", lambda *_args: {})
+
+
+def _release_progress_messages(caplog):
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "audit_plugins"
+        and record.getMessage().startswith("release_progress ")
+    ]
+
+
+def _assert_release_progress_pairs(messages, total):
+    assert len(messages) == total * 2
+    for position in range(1, total + 1):
+        start_index = (position - 1) * 2
+        assert messages[start_index].startswith(
+            f"release_progress phase=start position={position}/{total} "
+        )
+        assert messages[start_index + 1].startswith(
+            f"release_progress phase=complete position={position}/{total} "
+        )
+
+
+def test_release_progress_records_are_paired_and_ordered(monkeypatch, tmp_path, caplog):
+    worklist_path, fingerprint = _write_three_release_worker_worklist(tmp_path)
+    _configure_release_progress_worker(monkeypatch)
+    monkeypatch.setattr(ap, "audit_release", _release_progress_report)
+    monotonic_values = iter((10.0, 11.25, 20.0, 22.5, 30.0, 31.0))
+    monkeypatch.setattr(
+        ap,
+        "time",
+        type("Clock", (), {"monotonic": staticmethod(lambda: next(monotonic_values))}),
+        raising=False,
+    )
+    caplog.set_level(logging.INFO, logger="audit_plugins")
+
+    assert ap.main(_worker_cli(worklist_path, fingerprint, tmp_path / "outputs")) == 0
+
+    messages = _release_progress_messages(caplog)
+    assert messages == [
+        "release_progress phase=start position=1/3 "
+        "repository=https://github.com/owner/repo github_release_id=1 asset_id=10",
+        "release_progress phase=complete position=1/3 "
+        "repository=https://github.com/owner/repo github_release_id=1 asset_id=10 "
+        "classification=PASS elapsed_seconds=1.250",
+        "release_progress phase=start position=2/3 "
+        "repository=https://github.com/owner/repo github_release_id=2 asset_id=20",
+        "release_progress phase=complete position=2/3 "
+        "repository=https://github.com/owner/repo github_release_id=2 asset_id=20 "
+        "classification=PASS elapsed_seconds=2.500",
+        "release_progress phase=start position=3/3 "
+        "repository=https://github.com/owner/repo github_release_id=3 asset_id=30",
+        "release_progress phase=complete position=3/3 "
+        "repository=https://github.com/owner/repo github_release_id=3 asset_id=30 "
+        "classification=PASS elapsed_seconds=1.000",
+    ]
+    _assert_release_progress_pairs(messages, total=3)
+
+
+@pytest.mark.parametrize(
+    ("elapsed_seconds", "expected_warning_count"),
+    [(299.999, 0), (300.000, 1)],
+)
+def test_release_progress_slow_warning_uses_fixed_threshold(
+    monkeypatch, tmp_path, caplog, elapsed_seconds, expected_warning_count
+):
+    worklist_path, fingerprint = _write_three_release_worker_worklist(tmp_path)
+    _configure_release_progress_worker(monkeypatch)
+    monkeypatch.setattr(ap, "audit_release", _release_progress_report)
+    monotonic_values = iter((0.0, elapsed_seconds, 400.0, 401.0, 500.0, 501.0))
+    monkeypatch.setattr(
+        ap,
+        "time",
+        type("Clock", (), {"monotonic": staticmethod(lambda: next(monotonic_values))}),
+        raising=False,
+    )
+    caplog.set_level(logging.INFO, logger="audit_plugins")
+
+    assert ap.main(_worker_cli(worklist_path, fingerprint, tmp_path / "outputs")) == 0
+
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "audit_plugins"
+        and record.levelno == logging.WARNING
+        and record.getMessage().startswith("release_progress phase=slow ")
+    ]
+    if expected_warning_count:
+        assert warnings == [
+            "release_progress phase=slow position=1/3 "
+            "repository=https://github.com/owner/repo github_release_id=1 asset_id=10 "
+            "classification=PASS elapsed_seconds=300.000 threshold_seconds=300.000"
+        ]
+    else:
+        assert warnings == []
+    assert getattr(ap, "SLOW_RELEASE_SECONDS", None) == 300.0
+
+
+def test_release_progress_pairs_resumed_and_release_error_reports(
+    monkeypatch, tmp_path, caplog
+):
+    repository = "https://github.com/owner/repo"
+    releases = [
+        _release(f"v{release_id}", release_id, release_id * 10)
+        for release_id in range(1, 4)
+    ]
+    for release in releases:
+        release["assets"][0]["digest"] = "sha256:" + "a" * 64
+    audit_items = [ap.AuditWorkItem(repository, release, {}) for release in releases]
+    prior = _release_progress_report(repository, releases[0])
+    prior.resolved_tag_commit_sha = "commit-v1"
+    progress_path = tmp_path / "progress.json"
+    ap._write_progress_manifest(
+        progress_path,
+        {ap._report_identity_key(prior): ap._progress_record(prior)},
+    )
+    monkeypatch.setattr(ap, "load_policy", lambda *_args: ap._default_policy())
+    monkeypatch.setattr(ap, "load_allowlist", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ap, "load_verdicts", lambda *_args: {})
+    monkeypatch.setattr(ap, "read_repo_urls", lambda *_args: [repository])
+    monkeypatch.setattr(
+        ap, "build_audit_worklist", lambda *_args, **_kwargs: (audit_items, [])
+    )
+    monkeypatch.setattr(
+        ap,
+        "_resolve_ref_to_commit_and_tree_sha",
+        lambda _owner, _repo, tag: (f"commit-{tag}", "tree", None),
+    )
+    monkeypatch.setattr(ap, "_scanner_runtime_identities", lambda *_args: {})
+    monkeypatch.setattr(
+        ap, "compute_audit_context_hash", lambda *_args, **_kwargs: "current-context"
+    )
+
+    def cache_or_release_error(repository_arg, release_arg, **kwargs):
+        report = _release_progress_report(repository_arg, release_arg, **kwargs)
+        if release_arg["id"] == 3:
+            report.final_classification = "AUDIT_ERROR"
+            report.completion_status = "incomplete"
+        return report
+
+    monkeypatch.setattr(ap, "audit_release", cache_or_release_error)
+    monotonic_values = iter((0.0, 1.0, 2.0, 3.0, 4.0, 5.0))
+    monkeypatch.setattr(
+        ap,
+        "time",
+        type("Clock", (), {"monotonic": staticmethod(lambda: next(monotonic_values))}),
+        raising=False,
+    )
+    caplog.set_level(logging.INFO, logger="audit_plugins")
+
+    assert (
+        ap.main(
+            [
+                "--all",
+                "--plugins-file",
+                str(tmp_path / "plugins.txt"),
+                "--output-dir",
+                str(tmp_path / "outputs"),
+                "--cache-dir",
+                str(tmp_path / "cache"),
+                "--progress-manifest",
+                str(progress_path),
+            ]
+        )
+        == 4
+    )
+
+    messages = _release_progress_messages(caplog)
+    _assert_release_progress_pairs(messages, total=3)
+    assert "classification=AUDIT_ERROR" in messages[-1]
+
+
+def test_release_progress_unexpected_audit_failure_leaves_start_unmatched(
+    monkeypatch, tmp_path, caplog
+):
+    repository = "https://github.com/owner/repo"
+    releases = [_release("v1", 1, 10), _release("v2", 2, 20)]
+    audit_items = [ap.AuditWorkItem(repository, release, {}) for release in releases]
+    monkeypatch.setattr(ap, "load_policy", lambda *_args: ap._default_policy())
+    monkeypatch.setattr(ap, "load_allowlist", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ap, "load_verdicts", lambda *_args: {})
+    monkeypatch.setattr(ap, "read_repo_urls", lambda *_args: [repository])
+    monkeypatch.setattr(
+        ap, "build_audit_worklist", lambda *_args, **_kwargs: (audit_items, [])
+    )
+
+    def fail_second(repository_arg, release_arg, **kwargs):
+        if release_arg["id"] == 2:
+            raise OSError("unexpected test audit failure")
+        return _release_progress_report(repository_arg, release_arg, **kwargs)
+
+    monkeypatch.setattr(ap, "audit_release", fail_second)
+    monotonic_values = iter((0.0, 1.0, 2.0))
+    monkeypatch.setattr(
+        ap,
+        "time",
+        type("Clock", (), {"monotonic": staticmethod(lambda: next(monotonic_values))}),
+        raising=False,
+    )
+    caplog.set_level(logging.INFO, logger="audit_plugins")
+
+    assert (
+        ap.main(
+            [
+                "--all",
+                "--plugins-file",
+                str(tmp_path / "plugins.txt"),
+                "--output-dir",
+                str(tmp_path / "outputs"),
+                "--cache-dir",
+                str(tmp_path / "cache"),
+            ]
+        )
+        == 1
+    )
+
+    messages = _release_progress_messages(caplog)
+    assert len(messages) == 3
+    assert messages[0].startswith("release_progress phase=start position=1/2 ")
+    assert messages[1].startswith("release_progress phase=complete position=1/2 ")
+    assert messages[2].startswith("release_progress phase=start position=2/2 ")
+    error_index = next(
+        index
+        for index, record in enumerate(caplog.records)
+        if "Run-global audit failure" in record.getMessage()
+    )
+    assert error_index > max(
+        index
+        for index, record in enumerate(caplog.records)
+        if record.getMessage() == messages[2]
+    )
+
+
+def test_release_progress_checkpoint_failure_leaves_start_unmatched(
+    monkeypatch, tmp_path, caplog
+):
+    repository = "https://github.com/owner/repo"
+    release = _release("v1", 1, 10)
+    monkeypatch.setattr(ap, "load_policy", lambda *_args: ap._default_policy())
+    monkeypatch.setattr(ap, "load_allowlist", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ap, "load_verdicts", lambda *_args: {})
+    monkeypatch.setattr(ap, "read_repo_urls", lambda *_args: [repository])
+    monkeypatch.setattr(
+        ap,
+        "build_audit_worklist",
+        lambda *_args, **_kwargs: ([ap.AuditWorkItem(repository, release, {})], []),
+    )
+    monkeypatch.setattr(ap, "audit_release", _release_progress_report)
+    monkeypatch.setattr(
+        ap,
+        "_write_progress_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("checkpoint denied")),
+    )
+    monkeypatch.setattr(
+        ap,
+        "time",
+        type("Clock", (), {"monotonic": staticmethod(lambda: 0.0)}),
+        raising=False,
+    )
+    caplog.set_level(logging.INFO, logger="audit_plugins")
+
+    assert (
+        ap.main(
+            [
+                "--all",
+                "--plugins-file",
+                str(tmp_path / "plugins.txt"),
+                "--output-dir",
+                str(tmp_path / "outputs"),
+                "--cache-dir",
+                str(tmp_path / "cache"),
+            ]
+        )
+        == 1
+    )
+
+    messages = _release_progress_messages(caplog)
+    assert messages == [
+        "release_progress phase=start position=1/1 "
+        "repository=https://github.com/owner/repo github_release_id=1 asset_id=10"
+    ]
+    assert any(
+        "Failed to checkpoint audit outputs" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_release_progress_final_checkpoint_failure_keeps_all_pairs_complete(
+    monkeypatch, tmp_path, caplog
+):
+    repository = "https://github.com/owner/repo"
+    releases = [_release("v1", 1, 10), _release("v2", 2, 20)]
+    audit_items = [ap.AuditWorkItem(repository, release, {}) for release in releases]
+    monkeypatch.setattr(ap, "load_policy", lambda *_args: ap._default_policy())
+    monkeypatch.setattr(ap, "load_allowlist", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ap, "load_verdicts", lambda *_args: {})
+    monkeypatch.setattr(ap, "read_repo_urls", lambda *_args: [repository])
+    monkeypatch.setattr(
+        ap, "build_audit_worklist", lambda *_args, **_kwargs: (audit_items, [])
+    )
+    monkeypatch.setattr(ap, "audit_release", _release_progress_report)
+    real_write_progress = ap._write_progress_manifest
+    write_calls = 0
+
+    def fail_final_checkpoint(*args, **kwargs):
+        nonlocal write_calls
+        write_calls += 1
+        if write_calls == 3:
+            raise OSError("final checkpoint denied")
+        return real_write_progress(*args, **kwargs)
+
+    monkeypatch.setattr(ap, "_write_progress_manifest", fail_final_checkpoint)
+    monotonic_values = iter((0.0, 1.0, 2.0, 3.0))
+    monkeypatch.setattr(
+        ap,
+        "time",
+        type("Clock", (), {"monotonic": staticmethod(lambda: next(monotonic_values))}),
+        raising=False,
+    )
+    caplog.set_level(logging.INFO, logger="audit_plugins")
+
+    assert (
+        ap.main(
+            [
+                "--all",
+                "--plugins-file",
+                str(tmp_path / "plugins.txt"),
+                "--output-dir",
+                str(tmp_path / "outputs"),
+                "--cache-dir",
+                str(tmp_path / "cache"),
+            ]
+        )
+        == 1
+    )
+
+    messages = _release_progress_messages(caplog)
+    _assert_release_progress_pairs(messages, total=2)
+    assert any(
+        "Failed to write reports" in record.getMessage() for record in caplog.records
+    )
+
+
+def test_release_progress_field_formatter_redacts_bounds_and_neutralizes_lines():
+    secret = "progress-secret-value-0123456789"
+    raw_value = f'token="{secret}"\r\n\v\f\u0085\u2028\u2029' + "x" * (
+        ap.EVIDENCE_MAX_LEN * 2
+    )
+    formatter = getattr(ap, "_format_release_progress_field", None)
+    assert callable(formatter)
+    rendered_values = [formatter(raw_value), formatter(raw_value + " outcome")]
+
+    for rendered in rendered_values:
+        assert len(rendered) <= ap.EVIDENCE_MAX_LEN
+        assert secret not in rendered
+        assert ap.SECRET_REDACT in rendered
+        assert "\r" not in rendered
+        assert "\n" not in rendered
+        assert "\v" not in rendered
+        assert "\f" not in rendered
+        assert "\u0085" not in rendered
+        assert "\u2028" not in rendered
+        assert "\u2029" not in rendered
+        for escaped in ("\\r", "\\n", "\\v", "\\f", "\\u0085", "\\u2028", "\\u2029"):
+            assert escaped in rendered
+
+
+def test_release_progress_artifact_parity(monkeypatch, tmp_path):
+    worklist_path, fingerprint = _write_three_release_worker_worklist(tmp_path)
+    _configure_release_progress_worker(monkeypatch)
+    monkeypatch.setattr(ap, "audit_release", _release_progress_report)
+    verdict_path = ROOT / "security-verdicts.json"
+    verdict_before = verdict_path.read_bytes()
+    artifact_names = {
+        "progress": "progress-shard-0.json",
+        "report_json": "security-report.json",
+        "report_markdown": "security-report.md",
+        "verdict_delta": "verdict-delta-shard-0.json",
+        "manifest": "shard-manifest.json",
+    }
+
+    def run_worker(output_dir, cache_dir):
+        assert (
+            ap.main(
+                _worker_cli(
+                    worklist_path,
+                    fingerprint,
+                    output_dir,
+                    "--cache-dir",
+                    str(cache_dir),
+                )
+            )
+            == 0
+        )
+        return {
+            name: hashlib.sha256((output_dir / filename).read_bytes()).hexdigest()
+            for name, filename in artifact_names.items()
+        }
+
+    enabled_hashes = run_worker(tmp_path / "enabled", tmp_path / "enabled-cache")
+    previous_disable_level = logging.root.manager.disable
+    logging.disable(logging.CRITICAL)
+    try:
+        disabled_hashes = run_worker(tmp_path / "disabled", tmp_path / "disabled-cache")
+    finally:
+        logging.disable(previous_disable_level)
+
+    assert enabled_hashes == disabled_hashes
+    for name in sorted(enabled_hashes):
+        print(f"release_progress_artifact_sha256 {name}={enabled_hashes[name]}")
+    assert enabled_hashes == BASELINE_RELEASE_PROGRESS_ARTIFACT_HASHES
+    assert verdict_path.read_bytes() == verdict_before
+
+
+def test_release_progress_survives_terminated_worker(tmp_path):
+    worklist_path, fingerprint = _write_three_release_worker_worklist(tmp_path)
+    output_dir = tmp_path / "outputs"
+    child = """
+import sys
+import time
+
+sys.path.insert(0, sys.argv[1])
+import audit_plugins as ap
+
+worklist_path, fingerprint, output_dir = sys.argv[2:]
+
+def report(repository, release, **kwargs):
+    asset = release["assets"][0]
+    return ap.AuditReport(
+        audit_timestamp="2026-08-22T00:00:00Z",
+        repository=repository,
+        release=release["tag_name"],
+        release_id=f"{release['tag_name']}@{asset['id']}",
+        github_release_id=str(release["id"]),
+        asset_id=str(asset["id"]),
+        artifact_url=asset["browser_download_url"],
+        artifact_sha256="a" * 64,
+        identity_status="CURRENT",
+        resolved_tag_commit_sha=kwargs.get("_prepared_commit_sha", "") or "b" * 40,
+        audit_context_hash="current-context",
+        final_classification="PASS",
+        completion_status="completed",
+    )
+
+def block_second(repository, release, **kwargs):
+    if release["id"] == 2:
+        while True:
+            time.sleep(0.1)
+    return report(repository, release, **kwargs)
+
+ap.load_policy = lambda *_args: ap._default_policy()
+ap.load_allowlist = lambda *_args, **_kwargs: []
+ap.load_verdicts = lambda *_args: {}
+ap.audit_release = block_second
+raise SystemExit(ap.main([
+    "--worklist", worklist_path,
+    "--expected-worklist-fingerprint", fingerprint,
+    "--shard-count", "1",
+    "--shard-index", "0",
+    "--output-dir", output_dir,
+]))
+"""
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            child,
+            str(ROOT),
+            str(worklist_path),
+            fingerprint,
+            str(output_dir),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    stderr_chunks = []
+    saw_second_start = False
+    deadline = time.monotonic() + 5
+    try:
+        while time.monotonic() < deadline and process.poll() is None:
+            ready, _, _ = select.select([process.stderr], [], [], 0.1)
+            if not ready:
+                continue
+            chunk = os.read(process.stderr.fileno(), 65536)
+            if not chunk:
+                break
+            stderr_chunks.append(chunk)
+            if b"release_progress phase=start position=2/3 " in b"".join(stderr_chunks):
+                saw_second_start = True
+                break
+        if process.poll() is None:
+            process.terminate()
+        stdout, remaining_stderr = process.communicate(timeout=5)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
+    stderr = (b"".join(stderr_chunks) + remaining_stderr).decode("utf-8")
+    stdout = stdout.decode("utf-8")
+    print(f"release_progress_terminated_worker_stderr:\n{stderr}")
+    progress_lines = [
+        line.strip()
+        for line in stderr.splitlines()
+        if line.startswith("INFO release_progress ")
+    ]
+    assert saw_second_start
+    assert progress_lines[0] == (
+        "INFO release_progress phase=start position=1/3 "
+        "repository=https://github.com/owner/repo github_release_id=1 asset_id=10"
+    )
+    assert progress_lines[1].startswith(
+        "INFO release_progress phase=complete position=1/3 "
+        "repository=https://github.com/owner/repo github_release_id=1 asset_id=10 "
+        "classification=PASS elapsed_seconds="
+    )
+    assert progress_lines[2] == (
+        "INFO release_progress phase=start position=2/3 "
+        "repository=https://github.com/owner/repo github_release_id=2 asset_id=20"
+    )
+    assert stdout == ""
+    assert process.returncode != 0
