@@ -83,14 +83,6 @@ for ClamAV, Trivy, or exact Semgrep `1.132.0` setup failures.
   pipeline, policy, verdict, dependency, quality-gate, test, or audit-workflow
   changes select the fourteen-shard corpus. Local and CI gates use Ruff, pytest,
   Semgrep 1.132.0, and checksummed actionlint 1.7.12.
-- `SENSITIVE_ENV_HARVEST` requires a direct whole-environment copy, expansion,
-  iteration, enumeration, or serialization and remains `MANUAL_REVIEW`.
-  `SENSITIVE_ENV_READ` records a non-protected named credential
-  environment-variable read as `PASS_WITH_WARNINGS`. Reads with `AWS_`, `CF_`,
-  `CLOUDFLARE_`, `GITHUB_`, `SSH_`, or `STEAM_` prefixes, or a `PRIVATE_KEY`
-  suffix, remain `MANUAL_REVIEW`; plugin-name matching does not override that
-  direct classification. It deliberately does not infer indirect environment
-  access through aliases or dynamically built mappings.
 - Production capacity is measured against the largest fourteen-shard wall-time
   projection rather than sequential unsharded completion. The preserved
   579-release snapshot projects the largest shard to 16.58 minutes at the
