@@ -72,6 +72,7 @@ DOWNLOAD_TIMEOUT = 120  # seconds for ZIP downloads
 MAX_RETRIES = 3
 EVIDENCE_MAX_LEN = 256
 SECRET_REDACT = "[REDACTED]"
+SLOW_RELEASE_SECONDS = 300.0
 SEMGREP_RULES_FILE = str(Path(__file__).with_name("semgrep-rules.yml"))
 
 log = logging.getLogger("audit_plugins")
@@ -1840,6 +1841,26 @@ def _truncate_with_ellipsis(text: str, max_len: int) -> str:
 
 def _compose_component_detail(detail: str, max_len: int) -> str:
     return _truncate_with_ellipsis(redact_secrets(detail), max_len)
+
+
+_RELEASE_PROGRESS_LINE_SEPARATORS = str.maketrans(
+    {
+        "\r": "\\r",
+        "\n": "\\n",
+        "\v": "\\v",
+        "\f": "\\f",
+        "\u0085": "\\u0085",
+        "\u2028": "\\u2028",
+        "\u2029": "\\u2029",
+    }
+)
+
+
+def _format_release_progress_field(value: Any) -> str:
+    """Render one release-progress field as bounded single-line public text."""
+    return _compose_component_detail(
+        str(value).translate(_RELEASE_PROGRESS_LINE_SEPARATORS), EVIDENCE_MAX_LEN
+    )
 
 
 def _get_rules_for_extension(ext: str) -> list[tuple[str, str, str, str, re.Pattern]]:
@@ -7084,7 +7105,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             log.error("Failed to checkpoint empty worker outputs: %s", exc)
             return 1
 
-    for item in work_items:
+    total_releases = len(work_items)
+    for position, item in enumerate(work_items, start=1):
         if worklist_mode:
             (
                 repository,
@@ -7101,6 +7123,19 @@ def main(argv: Optional[list[str]] = None) -> int:
             prepared_commit_sha = None
             prepared_source_resolution_error = None
             asset = plugin_release_utils.get_zip_asset(release) or {}
+        progress_repository = _format_release_progress_field(repository)
+        progress_release_id = _format_release_progress_field(release.get("id", ""))
+        progress_asset_id = _format_release_progress_field(asset.get("id", ""))
+        started_at = time.monotonic()
+        log.info(
+            "release_progress phase=start position=%d/%d repository=%s "
+            "github_release_id=%s asset_id=%s",
+            position,
+            total_releases,
+            progress_repository,
+            progress_release_id,
+            progress_asset_id,
+        )
         key = "\0".join(
             (
                 repository,
@@ -7188,15 +7223,36 @@ def main(argv: Optional[list[str]] = None) -> int:
             log.error("Failed to checkpoint audit outputs: %s", exc)
             return 1
         cls = report.final_classification
-        cls_emoji = _CLASS_EMOJI.get(cls, "❓")
-        log.info(
-            "%s %s %s → %s (score %d)",
-            cls_emoji,
-            repository,
-            report.release_id,
-            cls,
-            report.risk_score,
+        elapsed_seconds = time.monotonic() - started_at
+        progress_classification = _format_release_progress_field(cls)
+        progress_elapsed_seconds = _format_release_progress_field(
+            f"{elapsed_seconds:.3f}"
         )
+        log.info(
+            "release_progress phase=complete position=%d/%d repository=%s "
+            "github_release_id=%s asset_id=%s classification=%s elapsed_seconds=%s",
+            position,
+            total_releases,
+            progress_repository,
+            progress_release_id,
+            progress_asset_id,
+            progress_classification,
+            progress_elapsed_seconds,
+        )
+        if elapsed_seconds >= SLOW_RELEASE_SECONDS:
+            log.warning(
+                "release_progress phase=slow position=%d/%d repository=%s "
+                "github_release_id=%s asset_id=%s classification=%s "
+                "elapsed_seconds=%s threshold_seconds=%s",
+                position,
+                total_releases,
+                progress_repository,
+                progress_release_id,
+                progress_asset_id,
+                progress_classification,
+                progress_elapsed_seconds,
+                _format_release_progress_field(f"{SLOW_RELEASE_SECONDS:.3f}"),
+            )
 
     classifications, top_rules = _run_summary_stats(reports)
     classification_tally = ", ".join(
