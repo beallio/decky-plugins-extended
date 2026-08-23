@@ -39,3 +39,4 @@ https://github.com/Rayekkk/DeckyVibranceHDR
 https://github.com/parvagans/achievement-companion
 https://github.com/lopesleo/DeckTools
 https://github.com/beallio/SDH-PlayTime-beallio-remix
+https://github.com/Flexlug/decky-controller
