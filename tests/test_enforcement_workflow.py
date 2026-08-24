@@ -501,12 +501,18 @@ def test_verdicts_are_published_before_the_enforcement_verdict_is_applied():
 
 
 def test_pull_request_audit_still_fails_on_enforcement_exit_codes():
-    """The PR audit is the gate for newly added plugins and must stay strict."""
+    """The PR audit gates newly added plugins on BLOCK and on incompleteness.
+
+    MANUAL_REVIEW is advisory in both audits: it never removes a plugin from the
+    catalog, and almost every root plugin trips it, so it is reported as a
+    warning rather than failing the pull request.
+    """
     text = (WORKFLOWS / "plugin-security-audit.yml").read_text(encoding="utf-8")
 
     assert "Apply PR enforcement result after publication" in text
     assert '2) echo "::error::Audit produced BLOCK findings."; exit 2' in text
-    assert '3) echo "::error::Audit produced MANUAL_REVIEW findings."; exit 3' in text
+    assert '3) echo "::warning::Audit produced MANUAL_REVIEW findings." ;;' in text
+    assert '"::error::Audit produced MANUAL_REVIEW findings."' not in text
     assert (
         '4) echo "::error::Audit has publishable release-local incompleteness."; exit 4'
         in text

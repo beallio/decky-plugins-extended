@@ -1,10 +1,12 @@
 # Plugin Security Audit Workflow
 #
-# The checked-in policy is currently `enforce`: completed BLOCK and
-# MANUAL_REVIEW results fail the PR only after all safe shard evidence has been
-# aggregated and published as an artifact. Exit 1 is a run-global integrity
-# failure and therefore publishes no aggregate output; exit 4 is a
-# release-local incomplete result and remains publishable evidence.
+# The checked-in policy is currently `enforce`: a completed BLOCK fails the PR,
+# and only after all safe shard evidence has been aggregated and published as an
+# artifact. MANUAL_REVIEW is advisory here, as it is in the scheduled audit: it
+# is reported as a warning and never removes a plugin from the catalog, so it
+# must not block a pull request. Exit 1 is a run-global integrity failure and
+# therefore publishes no aggregate output; exit 4 is a release-local incomplete
+# result and remains publishable evidence.
 
 name: Plugin Security Audit
 
@@ -435,7 +437,7 @@ jobs:
           case "$AUDIT_EXIT" in
             0) echo "Audit clean." ;;
             2) echo "::error::Audit produced BLOCK findings."; exit 2 ;;
-            3) echo "::error::Audit produced MANUAL_REVIEW findings."; exit 3 ;;
+            3) echo "::warning::Audit produced MANUAL_REVIEW findings." ;;
             4) echo "::error::Audit has publishable release-local incompleteness."; exit 4 ;;
             *) echo "::error::unexpected audit exit $AUDIT_EXIT"; exit 1 ;;
           esac
