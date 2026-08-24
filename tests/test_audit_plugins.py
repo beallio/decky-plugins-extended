@@ -15,6 +15,7 @@ import stat
 import sys
 import tarfile
 import tempfile
+import types
 import unittest
 import zipfile
 from contextlib import ExitStack
@@ -240,6 +241,96 @@ class TestReadRepoUrls(unittest.TestCase):
             self.assertEqual(len(urls), 1)
         finally:
             os.unlink(name)
+
+
+class TestGetChangedRepos(unittest.TestCase):
+    """Changed entries must reach the producer in the same identity form that
+    ``read_repo_urls`` produces; the strict worklist checks reject anything else."""
+
+    def _diff(self, added_lines):
+        body = "".join(f"+{line}\n" for line in added_lines)
+        return types.SimpleNamespace(
+            returncode=0,
+            stdout=("+++ b/additional_plugins.txt\n" + body),
+            stderr="",
+        )
+
+    def test_canonicalises_added_urls(self):
+        with patch.object(
+            ap.subprocess,
+            "run",
+            return_value=self._diff(
+                [
+                    "https://github.com/Flexlug/Decky-Controller",
+                    "https://github.com/owner/Repo/",
+                ]
+            ),
+        ):
+            self.assertEqual(
+                ap.get_changed_repos("additional_plugins.txt", "origin/main"),
+                [
+                    "https://github.com/flexlug/decky-controller",
+                    "https://github.com/owner/repo",
+                ],
+            )
+
+    def test_deduplicates_aliases_of_one_repository(self):
+        with patch.object(
+            ap.subprocess,
+            "run",
+            return_value=self._diff(
+                [
+                    "https://github.com/Owner/Repo",
+                    "https://github.com/owner/repo/",
+                ]
+            ),
+        ):
+            self.assertEqual(
+                ap.get_changed_repos("additional_plugins.txt", "origin/main"),
+                ["https://github.com/owner/repo"],
+            )
+
+    def test_skips_comments_and_removed_lines(self):
+        diff = types.SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "+++ b/additional_plugins.txt\n"
+                "-https://github.com/owner/gone\n"
+                "+# a comment\n"
+                "+https://github.com/owner/kept\n"
+            ),
+            stderr="",
+        )
+        with patch.object(ap.subprocess, "run", return_value=diff):
+            self.assertEqual(
+                ap.get_changed_repos("additional_plugins.txt", "origin/main"),
+                ["https://github.com/owner/kept"],
+            )
+
+    def test_malformed_url_raises_instead_of_auditing_everything(self):
+        """The git-failure fallback must not swallow a bad configured URL: a typo
+        should be reported, not silently promoted to a full-corpus audit."""
+        with patch.object(
+            ap.subprocess,
+            "run",
+            return_value=self._diff(["https://github.com/owner"]),
+        ):
+            with self.assertRaises(ValueError):
+                ap.get_changed_repos("additional_plugins.txt", "origin/main")
+
+    def test_falls_back_to_all_repos_when_git_fails(self):
+        failure = types.SimpleNamespace(returncode=1, stdout="", stderr="boom")
+        with (
+            patch.object(ap.subprocess, "run", return_value=failure),
+            patch.object(
+                ap, "read_repo_urls", return_value=["https://github.com/owner/repo"]
+            ) as read_repo_urls,
+        ):
+            self.assertEqual(
+                ap.get_changed_repos("additional_plugins.txt", "origin/main"),
+                ["https://github.com/owner/repo"],
+            )
+            read_repo_urls.assert_called_once_with("additional_plugins.txt")
 
 
 # ---------------------------------------------------------------------------
