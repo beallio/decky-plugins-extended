@@ -1006,7 +1006,14 @@ def get_changed_repos(
 ) -> list[str]:
     """Return repository URLs newly added or changed relative to base_ref.
 
-    Falls back to all repos if git diff is unavailable.
+    Added lines are canonicalized and deduplicated exactly as
+    ``read_repo_urls`` treats the configured file, so a configured spelling
+    that differs only in case or a trailing slash still reaches the worklist
+    producer in the identity form its strict checks require.
+
+    Falls back to all repos if git diff is unavailable.  Canonicalization
+    happens outside that fallback: a malformed configured URL is a
+    configuration error to report, not a reason to audit the whole corpus.
     """
     try:
         result = subprocess.run(
@@ -1025,11 +1032,21 @@ def get_changed_repos(
             if line.startswith("+") and not line.startswith("+++"):
                 url = line[1:].strip()
                 if url and not url.startswith("#") and url.startswith("https://"):
-                    added.append(url.rstrip("/"))
-        return added
+                    added.append(url)
     except Exception as exc:
         log.warning("Could not compute git diff (%s); auditing all repos.", exc)
         return read_repo_urls(plugins_file)
+
+    seen: set[str] = set()
+    changed: list[str] = []
+    for url in added:
+        canonical = plugin_release_utils.canonicalize_github_repository_url(url)
+        if canonical in seen:
+            log.warning("Duplicate changed URL skipped: %s", url)
+            continue
+        seen.add(canonical)
+        changed.append(canonical)
+    return changed
 
 
 # ---------------------------------------------------------------------------
