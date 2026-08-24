@@ -156,9 +156,11 @@ jobs:
             none) summary_state="no configured repository changes" ;;
             *) echo "::error::invalid audit mode: $audit_mode"; exit 1 ;;
           esac
-          echo "audit_mode=$audit_mode" >> "$GITHUB_OUTPUT"
-          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
-          echo "summary_state=$summary_state" >> "$GITHUB_OUTPUT"
+          {
+            echo "audit_mode=$audit_mode"
+            echo "base_ref=$base_ref"
+            echo "summary_state=$summary_state"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Record audit selection summary
         env:
