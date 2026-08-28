@@ -26,7 +26,7 @@ https://github.com/SavageCore/xone-decky-plugin
 https://github.com/kungaa/DS5-Linux-Decky
 https://github.com/Hooandee/panel-de-control
 https://github.com/AG69075/steamOS_plugin_achievements
-https://github.com/beallio/Decky-SteamAchievements
+https://github.com/beallio/Decky-UI-Restored
 https://github.com/rsore/decky-bootnext
 https://github.com/stevensnoeijen/decky-insignia
 https://github.com/Teppichseite/RetroDECKY
@@ -40,3 +40,4 @@ https://github.com/parvagans/achievement-companion
 https://github.com/lopesleo/DeckTools
 https://github.com/beallio/SDH-PlayTime-beallio-remix
 https://github.com/flexlug/decky-controller
+https://github.com/santojon/Deck-Shelves
