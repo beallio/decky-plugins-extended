@@ -41,3 +41,4 @@ https://github.com/lopesleo/DeckTools
 https://github.com/beallio/SDH-PlayTime-beallio-remix
 https://github.com/flexlug/decky-controller
 https://github.com/santojon/Deck-Shelves
+https://github.com/LucifersCircle/Decky-Cheat-Engine-Launcher
