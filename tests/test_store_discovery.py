@@ -27,12 +27,17 @@ GITMODULES = """\
 """
 
 
-def _release(*, prerelease=False, draft=False, zips=1):
+def _release(
+    *, prerelease=False, draft=False, zips=1, size=10, digest=None, tag="v1.0.0"
+):
+    asset = {"name": "plugin.zip", "size": size}
+    if digest:
+        asset["digest"] = f"sha256:{digest}"
     return {
-        "tag_name": "v1.0.0",
+        "tag_name": tag,
         "prerelease": prerelease,
         "draft": draft,
-        "assets": [{"name": f"plugin{index}.zip"} for index in range(zips)],
+        "assets": [dict(asset, name=f"plugin{index}.zip") for index in range(zips)],
     }
 
 
@@ -51,6 +56,7 @@ def _discover(**overrides):
             "sshremote": "SshRemote",
         }.get(repo),
         "releases": lambda owner, repo: [_release()],
+        "release_max_bytes": 1000,
     }
     kwargs.update(overrides)
     return store_discovery.discover_store_repositories(**kwargs)
@@ -325,6 +331,56 @@ def test_discovery_lets_only_one_repository_claim_a_plugin_name():
         _reasons(result)["https://github.com/forker/keeper"]
         == "plugin name 'Keeper' already tracked via https://github.com/owner/keeper"
     )
+
+
+def test_forces_forbidden_download_only_when_a_download_is_required():
+    limit = 1000
+
+    assert store_discovery.forces_forbidden_download(_release(size=10), limit) is False
+    assert store_discovery.forces_forbidden_download(_release(size=2000), limit) is True
+    # GitHub published a digest, so the generator never downloads the asset.
+    assert (
+        store_discovery.forces_forbidden_download(
+            _release(size=2000, digest="a" * 64), limit
+        )
+        is False
+    )
+    # Not an eligible release at all, so it never reaches a download.
+    assert (
+        store_discovery.forces_forbidden_download(_release(size=2000, zips=2), limit)
+        is False
+    )
+
+
+def test_discovery_skips_a_repository_whose_asset_exceeds_the_download_limit():
+    # bounded_stream_download refuses the asset and the generator turns that
+    # refusal into a fatal identity failure, so tracking the repository would
+    # abort every catalog build.
+    result = _discover(
+        releases=lambda owner, repo: (
+            [_release(size=2000, tag="v1.1.0")] if repo == "keeper" else [_release()]
+        )
+    )
+
+    assert result.included == ["https://github.com/owner/sshremote"]
+    assert _reasons(result)["https://github.com/owner/keeper"] == (
+        "release v1.1.0 has no digest and exceeds the 1000-byte download limit, "
+        "which would abort the catalog build"
+    )
+
+
+def test_discovery_ignores_an_oversized_release_the_store_already_publishes():
+    # A deferred version is skipped before build_version_object, so its size
+    # never forces a download.
+    result = _discover(
+        releases=lambda owner, repo: (
+            [_release(size=2000, tag="v0.9.0"), _release(tag="v1.0.0")]
+            if repo == "keeper"
+            else [_release()]
+        ),
+    )
+
+    assert "https://github.com/owner/keeper" in result.included
 
 
 def test_render_list_emits_a_generated_header_and_sorted_body():

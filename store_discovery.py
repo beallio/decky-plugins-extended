@@ -34,6 +34,7 @@ from typing import Callable, Iterable, Optional
 
 import generate_json as g
 import plugin_release_utils
+from audit_plugins import load_policy
 
 DATABASE_REPOSITORY = "SteamDeckHomebrew/decky-plugin-database"
 
@@ -147,6 +148,25 @@ def has_contributable_release(
     return False
 
 
+def forces_forbidden_download(release: dict, max_bytes: int) -> bool:
+    """Whether building this release would breach the download size policy.
+
+    The generator hashes an asset from GitHub's own digest when one exists and
+    downloads it otherwise. `bounded_stream_download` refuses anything over
+    `downloads.release_max_bytes`, and the generator treats that refusal as a
+    fatal identity failure that aborts the whole catalog build. A repository
+    holding such a release cannot be tracked at all, so discovery detects it
+    here instead of letting it blackhole a later run.
+    """
+    if not plugin_release_utils.is_release_eligible(release, allow_prerelease=True):
+        return False
+    asset = plugin_release_utils.get_zip_asset(release) or {}
+    if plugin_release_utils.normalize_github_sha256_digest(asset.get("digest")):
+        return False
+    size = asset.get("size")
+    return isinstance(size, int) and size > max_bytes
+
+
 def fetch_gitmodules(repository: str = DATABASE_REPOSITORY) -> str:
     """Read `.gitmodules` from the official plugin database's default branch."""
     owner, _, repo = repository.partition("/")
@@ -203,6 +223,7 @@ def discover_store_repositories(
     repo_metadata: Callable[[str, str], Optional[dict]],
     plugin_name: Callable[[str, str, str], Optional[str]],
     releases: Callable[[str, str], list[dict]],
+    release_max_bytes: int,
 ) -> DiscoveryResult:
     """Select the store-backed repositories this catalog can build from.
 
@@ -270,11 +291,30 @@ def discover_store_repositories(
             result.skip(url, f"plugin name {name!r} already tracked via {claimed}")
             continue
         deferred = store_versions[name.casefold()]
-        if not has_contributable_release(releases(owner, repo), deferred):
+        repo_releases = releases(owner, repo)
+        if not has_contributable_release(repo_releases, deferred):
             result.skip(
                 url,
                 "no stable single-zip release beyond what the official store "
                 "already publishes",
+            )
+            continue
+        oversized = next(
+            (
+                release
+                for release in repo_releases
+                if plugin_release_utils.normalize_version(release.get("tag_name", ""))
+                not in deferred
+                and forces_forbidden_download(release, release_max_bytes)
+            ),
+            None,
+        )
+        if oversized is not None:
+            result.skip(
+                url,
+                f"release {oversized.get('tag_name', '?')} has no digest and "
+                f"exceeds the {release_max_bytes}-byte download limit, which "
+                "would abort the catalog build",
             )
             continue
 
@@ -342,6 +382,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    download_policy = plugin_release_utils.validate_download_policy(load_policy())
+
     print(f"Reading submodules from {DATABASE_REPOSITORY}...")
     result = discover_store_repositories(
         gitmodules_text=fetch_gitmodules(),
@@ -350,6 +392,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         repo_metadata=_repo_metadata,
         plugin_name=_plugin_name,
         releases=_releases,
+        release_max_bytes=download_policy.release_max_bytes,
     )
 
     for subject, reason in result.skipped:

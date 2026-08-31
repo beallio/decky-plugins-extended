@@ -56,4 +56,3 @@ https://github.com/wtlnetwork/muon
 https://github.com/wurielle/decky-launch-options
 https://github.com/wynn1212/sdh-pausegames
 https://github.com/xfangfang/deckyinhibitscreensaver
-https://github.com/xxjsonderuloxx/decky-framegen
