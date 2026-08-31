@@ -945,6 +945,7 @@ def prepare_audit_worklist(
     api_deadline_seconds: int = 300,
     api_budget: Optional[plugin_release_utils.ApiRequestBudget] = None,
     ref_resolver: Optional[Callable[[str, int], str]] = None,
+    store_versions: Optional[Mapping[str, set[str]]] = None,
 ) -> tuple[str, dict[str, Any]]:
     if not isinstance(output_path, (str, os.PathLike)):
         raise ValueError("output_path must be a path")
@@ -1076,6 +1077,20 @@ def prepare_audit_worklist(
                         "repository-no-eligible-release",
                     )
                     continue
+                # The official store publishes its own artifact for these
+                # versions and the catalog defers to it, so nothing this run
+                # ships depends on them. A repository left with nothing to audit
+                # is a correct outcome here, not a repository error.
+                deferred = (store_versions or {}).get(repository) or set()
+                if deferred:
+                    eligible = [
+                        release
+                        for release in eligible
+                        if plugin_release_utils.normalize_version(
+                            release.get("tag_name", "")
+                        )
+                        not in deferred
+                    ]
                 for release in eligible:
                     items.append(
                         _normalise_worklist_item(repository, release, tag_map, metadata)

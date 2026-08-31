@@ -24,6 +24,7 @@ from plugin_release_utils import (
     canonicalize_github_repository_url,
     get_zip_asset,
     is_release_eligible,
+    load_store_versions,
     normalize_github_sha256_digest,
     normalize_version,
     parse_github_repository_url,
@@ -824,6 +825,10 @@ def main():
 
     repo_urls = read_repo_urls()
     verdicts = load_verdicts()
+    # Versions the official store already publishes. This catalog defers to the
+    # store's own artifact for each one, and the audit skips them for the same
+    # reason, so both read this single committed file.
+    store_versions = load_store_versions()
 
     # The catalog gate honours security-policy.yml's current enforcement mode.
     # Under report-only a CURRENT BLOCK is reported and still ships; under the
@@ -891,7 +896,16 @@ def main():
             valid_release_count = 0
             blocked_release_count = 0
 
+            deferred_versions = store_versions.get(url, set())
+
             for rel in releases:
+                # The official store publishes and ships its own artifact for
+                # this version, so republishing our build would replace bytes the
+                # store already vets. Skip before build_version_object(), which
+                # would otherwise download the asset to hash a version this
+                # catalog never offers.
+                if normalize_version(rel.get("tag_name", "1.0.0")) in deferred_versions:
+                    continue
                 v_obj = build_version_object(
                     rel, existing_testing or existing_stable, policy=policy
                 )

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import sys
@@ -29,6 +30,10 @@ from urllib.parse import unquote, urlsplit
 # repeated per module.
 PLUGIN_LIST_FILE = "additional_plugins.txt"
 DISCOVERED_PLUGIN_LIST_FILE = "store_plugins.txt"
+# Versions the official store already publishes, per discovered repository. The
+# catalog does not republish these and the audit does not re-scan them: the
+# official store ships its own artifact for each one.
+STORE_VERSIONS_FILE = "store_versions.json"
 
 # ---------------------------------------------------------------------------
 # Repository and artifact identity
@@ -457,6 +462,29 @@ def canonical_repository_key(url: str) -> str:
 def sort_repository_urls(urls: list[str]) -> list[str]:
     """Canonicalize repository URLs and return owner/repo ascending order."""
     return sorted(canonicalize_github_repository_url(url) for url in urls)
+
+
+def load_store_versions(path: str = STORE_VERSIONS_FILE) -> dict[str, set[str]]:
+    """Versions the official store publishes, keyed by canonical repository URL.
+
+    A missing file means "defer to nothing": every release is published and
+    audited, which is the behaviour from before discovery existed. The generator
+    and the audit worklist producer both read this one file so they can never
+    disagree about which artifact the official store is responsible for.
+    """
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as handle:
+        raw = json.load(handle)
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path} must contain an object")
+    resolved: dict[str, set[str]] = {}
+    for url, names in raw.items():
+        if not isinstance(names, list):
+            raise ValueError(f"{path}: versions for {url!r} must be a list")
+        canonical = canonicalize_github_repository_url(url)
+        resolved[canonical] = {name for name in names if isinstance(name, str) and name}
+    return resolved
 
 
 def normalize_github_sha256_digest(value: Any) -> Optional[str]:

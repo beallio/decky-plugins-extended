@@ -6777,6 +6777,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     tag_resolver=audit_worklist.resolve_repository_tags_via_ls_remote,
                     api_deadline_seconds=args.api_deadline_seconds,
                     api_budget=api_budget,
+                    store_versions=plugin_release_utils.load_store_versions(),
                 )
             print(f"worklist_fingerprint={fingerprint}")
             return 0
