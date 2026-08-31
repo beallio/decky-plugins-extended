@@ -50,7 +50,7 @@ The generator reads the union of two files:
   store's own catalog entry, so the extended catalog can offer a release before
   the official store has ingested it.
 
-Regenerate the second list with:
+Regenerate the derived files with:
 
 ```bash
 uv run store_discovery.py
@@ -61,14 +61,36 @@ resolves the submodule map in `SteamDeckHomebrew/decky-plugin-database`, which
 is how every plugin enters the official store. It keeps a submodule only when
 the repository is on GitHub, is not archived, is absent from
 `additional_plugins.txt`, has a `plugin.json` name that matches a published
-store plugin, and publishes at least one non-draft, non-prerelease release with
-exactly one `.zip` asset. Every rejection is printed with its reason, and
-`--check` exits 1 when the committed file is stale.
+store plugin, and publishes at least one non-draft, non-prerelease single-zip
+release the official store does not already carry. Every rejection is printed
+with its reason, and `--check` exits 1 when either generated file is stale.
 
-The result is committed rather than resolved at run time. Deriving the corpus
-live would make the audit worklist depend on a mutable external input, so two
-runs could legitimately disagree about which repositories are in scope, and a
-pull request could not show the corpus changing.
+### Versions the official store already publishes
+
+Discovery also writes `store_versions.json`, mapping each tracked repository to
+the versions the official stable and testing stores already publish. Both the
+generator and the audit worklist producer read that one file, so they can never
+disagree about which artifact the official store is responsible for:
+
+- the generator does not build or publish those versions, so the catalog serves
+  the store's own artifact for them;
+- the worklist producer does not enumerate those releases, so the audit spends
+  its budget only on the versions this catalog uniquely ships.
+
+The two halves are one decision, not two. A repository's GitHub release asset
+for a given tag is frequently *not* the artifact the official store built for
+that same version, so skipping the audit alone would ship unaudited bytes. By
+also declining to republish them, every version this catalog serves is either
+the official store's own artifact or one this repository audited.
+
+If the map is missing, nothing is deferred: every release is published and
+audited, which is the behaviour from before discovery existed. A stale map only
+means the audit re-scans a version the store has since ingested.
+
+The results are committed rather than resolved at run time. Deriving them live
+would make the audit worklist depend on a mutable external input, so two runs
+could legitimately disagree about which repositories and releases are in scope,
+and a pull request could not show the corpus changing.
 
 Because a discovered plugin is a configured repository, `check_for_updates`
 treats it as managed and stops polling the official store for it. That is

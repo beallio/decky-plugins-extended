@@ -25,6 +25,7 @@ the corpus changing.
 
 import argparse
 import base64
+import json
 import os
 import re
 import sys
@@ -62,9 +63,10 @@ class Submodule:
 
 @dataclass
 class DiscoveryResult:
-    """Repositories to track, plus why every other submodule was left out."""
+    """Repositories to track, the store versions to defer to, and every skip."""
 
     included: list[str] = field(default_factory=list)
+    versions: dict[str, list[str]] = field(default_factory=dict)
     skipped: list[tuple[str, str]] = field(default_factory=list)
 
     def skip(self, subject: str, reason: str) -> None:
@@ -113,19 +115,35 @@ def canonical_github_url(url: str) -> Optional[str]:
         return None
 
 
-def has_stable_eligible_release(releases: Iterable[dict]) -> bool:
-    """Whether any release can become a stable catalog version.
+def has_contributable_release(
+    releases: Iterable[dict], deferred_versions: Iterable[str] = ()
+) -> bool:
+    """Whether any release would actually reach the stable catalog.
 
-    Prerelease-only repositories are excluded on purpose. They can only ever
+    Prerelease-only repositories are excluded on purpose: they can only ever
     contribute testing versions, and `check_for_updates.check_custom_repos`
     evaluates stable eligibility alone, so tracking them would grow the audit
     corpus without ever refreshing the published stable catalog.
+
+    A repository whose every stable release is already published by the official
+    store is excluded for the same reason. The catalog defers to the store's own
+    artifact for those versions and the audit skips them, so tracking the
+    repository would add corpus without adding a single catalog entry.
     """
+    deferred = set(deferred_versions)
     for release in releases or []:
         if release.get("prerelease"):
             continue
-        if plugin_release_utils.is_release_eligible(release, allow_prerelease=False):
-            return True
+        if not plugin_release_utils.is_release_eligible(
+            release, allow_prerelease=False
+        ):
+            continue
+        if (
+            plugin_release_utils.normalize_version(release.get("tag_name", ""))
+            in deferred
+        ):
+            continue
+        return True
     return False
 
 
@@ -141,13 +159,24 @@ def fetch_gitmodules(repository: str = DATABASE_REPOSITORY) -> str:
     return base64.b64decode(payload["content"]).decode("utf-8")
 
 
-def fetch_store_names() -> set[str]:
-    """Casefolded names of every plugin the official stable store publishes."""
-    return {
-        plugin["name"].casefold()
-        for plugin in g.fetch_json(g.PLUGINS_URL)
-        if isinstance(plugin.get("name"), str) and plugin["name"]
-    }
+def fetch_store_versions() -> dict[str, set[str]]:
+    """Versions the official store publishes, keyed by casefolded plugin name.
+
+    Both channels count: a version the testing store already carries is one the
+    official infrastructure built and vets, so this catalog has no reason to
+    republish or re-scan its own artifact for it.
+    """
+    published: dict[str, set[str]] = {}
+    for url in (g.PLUGINS_URL, g.TESTING_PLUGINS_URL):
+        for plugin in g.fetch_json(url):
+            name = plugin.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            names = published.setdefault(name.casefold(), set())
+            for version in plugin.get("versions") or []:
+                if isinstance(version.get("name"), str) and version["name"]:
+                    names.add(version["name"])
+    return published
 
 
 def read_tracked_urls(path: str = plugin_release_utils.PLUGIN_LIST_FILE) -> set[str]:
@@ -169,7 +198,7 @@ def read_tracked_urls(path: str = plugin_release_utils.PLUGIN_LIST_FILE) -> set[
 def discover_store_repositories(
     *,
     gitmodules_text: str,
-    store_names: set[str],
+    store_versions: dict[str, set[str]],
     tracked_urls: set[str],
     repo_metadata: Callable[[str, str], Optional[dict]],
     plugin_name: Callable[[str, str, str], Optional[str]],
@@ -183,6 +212,7 @@ def discover_store_repositories(
     """
     result = DiscoveryResult()
     seen: set[str] = set()
+    claimed_names: dict[str, str] = {}
 
     for submodule in parse_gitmodules(gitmodules_text):
         subject = submodule.name or submodule.url
@@ -226,17 +256,32 @@ def discover_store_repositories(
         if not name:
             result.skip(url, "no plugin.json name on the default branch")
             continue
-        if name.casefold() not in store_names:
+        if name.casefold() not in store_versions:
             # The generator merges into an upstream entry by lowercased name, so
             # a mismatch would publish a second entry beside the store's own.
             result.skip(url, f"plugin.json name {name!r} matches no store plugin")
             continue
-        if not has_stable_eligible_release(releases(owner, repo)):
-            result.skip(url, "no stable release with exactly one zip asset")
+        claimed = claimed_names.get(name.casefold())
+        if claimed:
+            # Two submodules resolve to one plugin name, usually an original and
+            # a maintainer fork. The catalog can only merge one source into that
+            # entry, so take the first and name the loser rather than letting
+            # them overwrite each other's versions.
+            result.skip(url, f"plugin name {name!r} already tracked via {claimed}")
+            continue
+        deferred = store_versions[name.casefold()]
+        if not has_contributable_release(releases(owner, repo), deferred):
+            result.skip(
+                url,
+                "no stable single-zip release beyond what the official store "
+                "already publishes",
+            )
             continue
 
         seen.add(url.lower())
         result.included.append(url)
+        result.versions[url] = sorted(deferred)
+        claimed_names[name.casefold()] = url
 
     result.included.sort(key=plugin_release_utils.canonical_repository_key)
     return result
@@ -272,24 +317,35 @@ def _releases(owner: str, repo: str) -> list[dict]:
         return []
 
 
+def render_versions(versions: dict[str, list[str]]) -> str:
+    """Render the store-version map with a trailing newline for a clean diff."""
+    ordered = {url: versions[url] for url in sorted(versions)}
+    return json.dumps(ordered, indent=2, sort_keys=False) + "\n"
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--output",
         default=plugin_release_utils.DISCOVERED_PLUGIN_LIST_FILE,
-        help="Where to write the generated list.",
+        help="Where to write the generated repository list.",
+    )
+    parser.add_argument(
+        "--versions-output",
+        default=plugin_release_utils.STORE_VERSIONS_FILE,
+        help="Where to write the per-repository store version map.",
     )
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Exit 1 when the generated list differs from --output instead of writing.",
+        help="Exit 1 when either generated file is out of date instead of writing.",
     )
     args = parser.parse_args(argv)
 
     print(f"Reading submodules from {DATABASE_REPOSITORY}...")
     result = discover_store_repositories(
         gitmodules_text=fetch_gitmodules(),
-        store_names=fetch_store_names(),
+        store_versions=fetch_store_versions(),
         tracked_urls=read_tracked_urls(),
         repo_metadata=_repo_metadata,
         plugin_name=_plugin_name,
@@ -298,25 +354,35 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     for subject, reason in result.skipped:
         print(f"  skip {subject}: {reason}")
+    deferred = sum(len(names) for names in result.versions.values())
     print(
-        f"\n{len(result.included)} repositories tracked, {len(result.skipped)} skipped."
+        f"\n{len(result.included)} repositories tracked, {len(result.skipped)} skipped; "
+        f"{deferred} store-published versions deferred to the official store."
     )
 
-    rendered = render_list(result.included)
+    outputs = {
+        args.output: render_list(result.included),
+        args.versions_output: render_versions(result.versions),
+    }
     if args.check:
-        current = ""
-        if os.path.exists(args.output):
-            with open(args.output, encoding="utf-8") as handle:
-                current = handle.read()
-        if current != rendered:
-            print(f"{args.output} is out of date; run: uv run store_discovery.py")
+        stale = []
+        for path, rendered in outputs.items():
+            current = ""
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as handle:
+                    current = handle.read()
+            if current != rendered:
+                stale.append(path)
+        if stale:
+            print(f"out of date: {', '.join(stale)}; run: uv run store_discovery.py")
             return 1
-        print(f"{args.output} is up to date.")
+        print("generated files are up to date.")
         return 0
 
-    with open(args.output, "w", encoding="utf-8") as handle:
-        handle.write(rendered)
-    print(f"Wrote {args.output}.")
+    for path, rendered in outputs.items():
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(rendered)
+        print(f"Wrote {path}.")
     return 0
 
 

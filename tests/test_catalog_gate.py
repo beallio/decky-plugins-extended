@@ -457,6 +457,34 @@ def test_fully_blocked_repository_still_drops_the_audited_identity(
     ]
 
 
+def test_generator_defers_to_the_store_for_versions_it_publishes(monkeypatch, tmp_path):
+    # The official store builds and ships its own artifact for 1.0.0, and the
+    # audit skips that release for the same reason. Republishing our build here
+    # would replace the store's row with bytes nothing audited.
+    (tmp_path / "store_versions.json").write_text(
+        json.dumps({REPOSITORY: ["1.0.0"]}), encoding="utf-8"
+    )
+    verdicts = _verdicts()
+    verdicts[REPOSITORY]["v2.0.0@2"]["classification"] = "PASS"
+    verdicts[REPOSITORY]["v2.0.0@2"]["blocking_rule_ids"] = []
+
+    stable, _ = _run_generator(
+        monkeypatch,
+        tmp_path,
+        [
+            _release("v2.0.0", 2, BLOCKED_HASH),
+            _release("v1.0.0", 1, FALLBACK_HASH),
+        ],
+        verdicts,
+        [_version("v1.0.0", OFFICIAL_HASH)],
+    )
+
+    entry = next(plugin for plugin in stable if plugin["name"] == "Plugin")
+    rows = {version["name"]: version["hash"] for version in entry["versions"]}
+    assert rows["1.0.0"] == OFFICIAL_HASH, "the store's own artifact must survive"
+    assert rows["2.0.0"] == BLOCKED_HASH, "versions the store lacks still ship"
+
+
 def test_manual_review_and_audit_error_releases_still_ship(monkeypatch, tmp_path):
     releases = [
         _release("v2.0.0", 2, BLOCKED_HASH),

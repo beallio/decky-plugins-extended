@@ -8,16 +8,15 @@
 # official store does not carry.
 https://github.com/akazarenn/sdh-gamesync
 https://github.com/andrewburgess/steamdeck-discord-status
-https://github.com/bentemple/decky-download-all
 https://github.com/bkohler616/tunneldeck
 https://github.com/bschelst/protondb-decky
 https://github.com/cat-in-a-box/decky-translator
 https://github.com/chenx-dust/betterkeyboard
 https://github.com/chenx-dust/deckyclash
 https://github.com/chenx-dust/dimmerdeck
+https://github.com/davocarli/deck-roulette
 https://github.com/decksettings/decky-game-settings
 https://github.com/decksettings/decky-virtual-surround-sound
-https://github.com/deckthemes/sdh-audioloader
 https://github.com/deckthemes/sdh-cssloader
 https://github.com/emudeck/emudecky
 https://github.com/felipejfc/decky-wifi-locker
@@ -29,7 +28,6 @@ https://github.com/hyacz/decky-zerotier
 https://github.com/iladis/ts3-qs4sd
 https://github.com/isiah-lloyd/volumemixer-decky
 https://github.com/itsowen/playcount-decky
-https://github.com/jtdegraaf/isthereanydeal-deckyplugin
 https://github.com/jurassicplayer/decky-autoflatpaks
 https://github.com/jurassicplayer/decky-autosuspend
 https://github.com/kayon/decky-reroll
@@ -47,11 +45,9 @@ https://github.com/ohaiibuzzle/decky-spoof-dpi
 https://github.com/outpox/bluetooth
 https://github.com/s0t7x/decky-sunshine
 https://github.com/saad-alareqi/gamesprefixmanager
-https://github.com/safijari/steam-deck-battery-tracker
 https://github.com/santojon/deck-shelves
 https://github.com/sebet/decky-nonsteam-badges
 https://github.com/seraphli/decky-spy
-https://github.com/steam3d/magicblackdecky
 https://github.com/steam3d/magicpodsdecky
 https://github.com/teppichseite/deckpass
 https://github.com/tikh-iv/shadowdeck
@@ -62,5 +58,4 @@ https://github.com/wtlnetwork/muon
 https://github.com/wurielle/decky-launch-options
 https://github.com/wynn1212/sdh-pausegames
 https://github.com/xfangfang/deckyinhibitscreensaver
-https://github.com/xxjsonderuloxx/crosshair-plugin
 https://github.com/xxjsonderuloxx/decky-framegen

@@ -1,5 +1,6 @@
 """Cover store-backed repository discovery and the two-file plugin list."""
 
+import json
 import os
 
 os.environ.setdefault("GITHUB_TOKEN", "test-token")
@@ -38,7 +39,7 @@ def _release(*, prerelease=False, draft=False, zips=1):
 def _discover(**overrides):
     kwargs = {
         "gitmodules_text": GITMODULES,
-        "store_names": {"keeper", "sshremote"},
+        "store_versions": {"keeper": {"0.9.0"}, "sshremote": {"0.9.0"}},
         "tracked_urls": set(),
         "repo_metadata": lambda owner, repo: {
             "full_name": f"{owner}/{repo}",
@@ -113,8 +114,15 @@ def test_canonical_github_url_normalises_or_rejects(raw, expected):
         (None, False),
     ],
 )
-def test_has_stable_eligible_release(releases, expected):
-    assert store_discovery.has_stable_eligible_release(releases) is expected
+def test_has_contributable_release(releases, expected):
+    assert store_discovery.has_contributable_release(releases) is expected
+
+
+def test_has_contributable_release_ignores_store_published_versions():
+    releases = [_release()]  # tag v1.0.0
+
+    assert store_discovery.has_contributable_release(releases, {"1.0.0"}) is False
+    assert store_discovery.has_contributable_release(releases, {"0.9.0"}) is True
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +208,7 @@ def test_discovery_adopts_the_renamed_repository_identity():
 def test_discovery_skips_names_the_official_store_does_not_publish():
     # The generator merges into an upstream entry by lowercased name, so an
     # unmatched name would publish a second entry beside the store's own.
-    result = _discover(store_names={"sshremote"})
+    result = _discover(store_versions={"sshremote": {"0.9.0"}})
 
     assert result.included == ["https://github.com/owner/sshremote"]
     assert (
@@ -233,7 +241,8 @@ def test_discovery_skips_prerelease_only_repositories():
     assert result.included == ["https://github.com/owner/sshremote"]
     assert (
         _reasons(result)["https://github.com/owner/keeper"]
-        == "no stable release with exactly one zip asset"
+        == "no stable single-zip release beyond what the official store "
+        "already publishes"
     )
 
 
@@ -248,6 +257,74 @@ def test_discovery_collapses_two_submodules_onto_one_repository():
 
     assert result.included.count("https://github.com/owner/keeper") == 1
     assert "duplicate submodule target" in _reasons(result).values()
+
+
+def test_discovery_skips_repositories_the_store_has_caught_up_to():
+    # Every stable release is already published by the store, so the catalog
+    # would defer all of them and the repository would add corpus but no entry.
+    result = _discover(
+        store_versions={"keeper": {"1.0.0"}, "sshremote": {"0.9.0"}},
+    )
+
+    assert result.included == ["https://github.com/owner/sshremote"]
+    assert (
+        _reasons(result)["https://github.com/owner/keeper"]
+        == "no stable single-zip release beyond what the official store "
+        "already publishes"
+    )
+
+
+def test_discovery_records_the_store_versions_to_defer_to():
+    result = _discover(
+        store_versions={"keeper": {"0.9.0", "0.8.0"}, "sshremote": {"0.9.0"}}
+    )
+
+    assert result.versions == {
+        "https://github.com/owner/keeper": ["0.8.0", "0.9.0"],
+        "https://github.com/owner/sshremote": ["0.9.0"],
+    }
+
+
+def test_render_versions_is_sorted_and_newline_terminated():
+    rendered = store_discovery.render_versions(
+        {
+            "https://github.com/owner/b": ["2.0.0"],
+            "https://github.com/owner/a": ["1.0.0"],
+        }
+    )
+
+    assert rendered.endswith("\n")
+    assert list(json.loads(rendered)) == [
+        "https://github.com/owner/a",
+        "https://github.com/owner/b",
+    ]
+
+
+def test_discovery_lets_only_one_repository_claim_a_plugin_name():
+    # An original and a maintainer fork both resolve to one plugin name; the
+    # catalog can merge only one source into that entry.
+    forked = GITMODULES + (
+        '[submodule "plugins/keeper-fork"]\n'
+        "\tpath = plugins/keeper-fork\n"
+        "\turl = https://github.com/forker/keeper\n"
+    )
+
+    result = _discover(
+        gitmodules_text=forked,
+        plugin_name=lambda owner, repo, branch: {
+            "keeper": "Keeper",
+            "sshremote": "SshRemote",
+        }.get(repo),
+    )
+
+    assert result.included == [
+        "https://github.com/owner/keeper",
+        "https://github.com/owner/sshremote",
+    ]
+    assert (
+        _reasons(result)["https://github.com/forker/keeper"]
+        == "plugin name 'Keeper' already tracked via https://github.com/owner/keeper"
+    )
 
 
 def test_render_list_emits_a_generated_header_and_sorted_body():
@@ -362,3 +439,36 @@ def test_generated_list_change_selects_changed_audit_mode():
         plugin_release_utils.select_audit_mode(["additional_plugins.txt"]) == "changed"
     )
     assert plugin_release_utils.select_audit_mode(["README.md"]) == "none"
+
+
+# ---------------------------------------------------------------------------
+# The store-version map is one committed source of truth
+# ---------------------------------------------------------------------------
+
+
+def test_load_store_versions_canonicalises_and_tolerates_absence(tmp_path):
+    assert plugin_release_utils.load_store_versions(str(tmp_path / "absent.json")) == {}
+
+    path = tmp_path / "store_versions.json"
+    path.write_text(
+        json.dumps({"https://github.com/Owner/Repo/": ["1.0.0", "0.9.0", ""]}),
+        encoding="utf-8",
+    )
+
+    assert plugin_release_utils.load_store_versions(str(path)) == {
+        "https://github.com/owner/repo": {"1.0.0", "0.9.0"}
+    }
+
+
+def test_load_store_versions_rejects_malformed_documents(tmp_path):
+    path = tmp_path / "store_versions.json"
+
+    path.write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+    with pytest.raises(ValueError):
+        plugin_release_utils.load_store_versions(str(path))
+
+    path.write_text(
+        json.dumps({"https://github.com/owner/repo": "1.0.0"}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError):
+        plugin_release_utils.load_store_versions(str(path))
