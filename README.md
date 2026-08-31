@@ -39,7 +39,67 @@ The generator fetches, hashes, and merges custom GitHub releases into the
 upstream Deckbrew stable and testing catalogs. This is a minimal repository;
 do not create or store planning artifacts in a `docs/` directory.
 
-### Add a plugin
+### The two plugin lists
+
+The generator reads the union of two files:
+
+- `additional_plugins.txt` is hand-maintained and holds only plugins the
+  official Decky store does not carry.
+- `store_plugins.txt` is generated and holds the source repositories behind
+  plugins the official store already publishes. Entries here merge into the
+  store's own catalog entry, so the extended catalog can offer a release before
+  the official store has ingested it.
+
+Regenerate the derived files with:
+
+```bash
+uv run store_discovery.py
+```
+
+The official store's catalog API carries no repository field, so discovery
+resolves the submodule map in `SteamDeckHomebrew/decky-plugin-database`, which
+is how every plugin enters the official store. It keeps a submodule only when
+the repository is on GitHub, is not archived, is absent from
+`additional_plugins.txt`, has a `plugin.json` name that matches a published
+store plugin, and publishes at least one non-draft, non-prerelease single-zip
+release the official store does not already carry. Every rejection is printed
+with its reason, and `--check` exits 1 when either generated file is stale.
+
+### Versions the official store already publishes
+
+Discovery also writes `store_versions.json`, mapping each tracked repository to
+the versions the official stable and testing stores already publish. Both the
+generator and the audit worklist producer read that one file, so they can never
+disagree about which artifact the official store is responsible for:
+
+- the generator does not build or publish those versions, so the catalog serves
+  the store's own artifact for them;
+- the worklist producer does not enumerate those releases, so the audit spends
+  its budget only on the versions this catalog uniquely ships.
+
+The two halves are one decision, not two. A repository's GitHub release asset
+for a given tag is frequently *not* the artifact the official store built for
+that same version, so skipping the audit alone would ship unaudited bytes. By
+also declining to republish them, every version this catalog serves is either
+the official store's own artifact or one this repository audited.
+
+If the map is missing, nothing is deferred: every release is published and
+audited, which is the behaviour from before discovery existed. A stale map only
+means the audit re-scans a version the store has since ingested.
+
+The results are committed rather than resolved at run time. Deriving them live
+would make the audit worklist depend on a mutable external input, so two runs
+could legitimately disagree about which repositories and releases are in scope,
+and a pull request could not show the corpus changing.
+
+Because a discovered plugin is a configured repository, `check_for_updates`
+treats it as managed and stops polling the official store for it. That is
+deliberate: the merge replaces an upstream row whenever this catalog's artifact
+for the same version hashes differently, so an unsuppressed upstream check
+would report the official identity as missing on every run and trigger a
+rebuild loop.
+
+### Add a plugin the official store does not carry
 
 Add the plugin repository URL to `additional_plugins.txt`, one URL per line:
 

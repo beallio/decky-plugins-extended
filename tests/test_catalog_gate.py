@@ -12,6 +12,7 @@ import generate_json
 REPOSITORY = "https://github.com/owner/plugin"
 BLOCKED_HASH = "b" * 64
 FALLBACK_HASH = "a" * 64
+OFFICIAL_HASH = "c" * 64
 BLOCKABLE_RULES = {"ARCHIVE_TRAVERSAL"}
 
 
@@ -396,6 +397,92 @@ def test_fully_blocked_plugin_disappears_with_distinct_log(
     assert "No valid releases found for Plugin" not in output
     assert all(plugin["name"] != "Plugin" for plugin in stable)
     assert all(plugin["name"] != "Plugin" for plugin in testing)
+    assert (
+        "Removed Plugin from stable: gating left the entry with no versions" in output
+    )
+    assert (
+        "Removed Plugin from testing: gating left the entry with no versions" in output
+    )
+
+
+def test_fully_blocked_repository_keeps_the_official_store_versions(
+    monkeypatch, tmp_path, capsys
+):
+    # The official store builds its own artifact for a version, so an upstream
+    # row can share a version name with a blocked release while carrying bytes
+    # this audit never covered. Blocking every release of the configured
+    # repository must not delete a plugin the official store still ships.
+    stable, testing = _run_generator(
+        monkeypatch,
+        tmp_path,
+        [
+            _release("v2.0.0", 2, BLOCKED_HASH),
+            _release("v1.0.0", 1, FALLBACK_HASH),
+        ],
+        _verdicts(all_blocked=True),
+        [_version("v1.0.0", OFFICIAL_HASH)],
+    )
+
+    output = capsys.readouterr().out
+    assert "All valid releases for Plugin are blocked" in output
+    assert "Kept the official stable entry for Plugin" in output
+    assert "Kept the official testing entry for Plugin" in output
+    assert "Removed Plugin from stable" not in output
+
+    for catalog in (stable, testing):
+        entry = next(plugin for plugin in catalog if plugin["name"] == "Plugin")
+        assert [version["name"] for version in entry["versions"]] == ["1.0.0"]
+        assert entry["versions"][0]["hash"] == OFFICIAL_HASH
+
+
+def test_fully_blocked_repository_still_drops_the_audited_identity(
+    monkeypatch, tmp_path
+):
+    # The surviving upstream row must be the unaudited official artifact only:
+    # the exact blocked identity is still removed from the entry.
+    stable, _ = _run_generator(
+        monkeypatch,
+        tmp_path,
+        [
+            _release("v2.0.0", 2, BLOCKED_HASH),
+            _release("v1.0.0", 1, FALLBACK_HASH),
+        ],
+        _verdicts(all_blocked=True),
+        [_version("v2.0.0", BLOCKED_HASH), _version("v1.0.0", OFFICIAL_HASH)],
+    )
+
+    entry = next(plugin for plugin in stable if plugin["name"] == "Plugin")
+    assert [(version["name"], version["hash"]) for version in entry["versions"]] == [
+        ("1.0.0", OFFICIAL_HASH)
+    ]
+
+
+def test_generator_defers_to_the_store_for_versions_it_publishes(monkeypatch, tmp_path):
+    # The official store builds and ships its own artifact for 1.0.0, and the
+    # audit skips that release for the same reason. Republishing our build here
+    # would replace the store's row with bytes nothing audited.
+    (tmp_path / "store_versions.json").write_text(
+        json.dumps({REPOSITORY: ["1.0.0"]}), encoding="utf-8"
+    )
+    verdicts = _verdicts()
+    verdicts[REPOSITORY]["v2.0.0@2"]["classification"] = "PASS"
+    verdicts[REPOSITORY]["v2.0.0@2"]["blocking_rule_ids"] = []
+
+    stable, _ = _run_generator(
+        monkeypatch,
+        tmp_path,
+        [
+            _release("v2.0.0", 2, BLOCKED_HASH),
+            _release("v1.0.0", 1, FALLBACK_HASH),
+        ],
+        verdicts,
+        [_version("v1.0.0", OFFICIAL_HASH)],
+    )
+
+    entry = next(plugin for plugin in stable if plugin["name"] == "Plugin")
+    rows = {version["name"]: version["hash"] for version in entry["versions"]}
+    assert rows["1.0.0"] == OFFICIAL_HASH, "the store's own artifact must survive"
+    assert rows["2.0.0"] == BLOCKED_HASH, "versions the store lacks still ship"
 
 
 def test_manual_review_and_audit_error_releases_still_ship(monkeypatch, tmp_path):

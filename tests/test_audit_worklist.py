@@ -5479,3 +5479,78 @@ raise SystemExit(ap.main([
     )
     assert stdout == ""
     assert process.returncode != 0
+
+
+def _digested(tag: str, release_id: int, asset_id: int, digest: str) -> dict:
+    repository = "https://github.com/owner/repo"
+    return _with_digest(
+        _with_asset_urls(
+            _release(tag, release_id, asset_id, repository_url=repository), repository
+        ),
+        digest,
+    )
+
+
+def _prepare_with_store_versions(tmp_path, name, releases, store_versions):
+    return worklist.prepare_audit_worklist(
+        tmp_path / name,
+        source_revision=SOURCE_REVISION,
+        selection_mode="all",
+        repository_urls=["https://github.com/owner/repo"],
+        shard_count=14,
+        latest_only=False,
+        release_fetcher=lambda *_args: releases,
+        metadata_fetcher=lambda *_args: _release_metadata("owner", "repo"),
+        tag_resolver=lambda *_args, **_kwargs: {"v1.0.0": "e" * 40, "v2.0.0": "f" * 40},
+        api_deadline_seconds=7,
+        store_versions=store_versions,
+    )
+
+
+def test_worklist_skips_releases_the_official_store_publishes(tmp_path):
+    # The official store ships its own artifact for 1.0.0 and the catalog defers
+    # to it, so re-scanning this repository's build of it audits bytes nothing
+    # publishes.
+    _fingerprint, document = _prepare_with_store_versions(
+        tmp_path,
+        "deferred.json",
+        [
+            _digested("v2.0.0", 2, 20, "a" * 64),
+            _digested("v1.0.0", 1, 10, "b" * 64),
+        ],
+        {"https://github.com/owner/repo": {"1.0.0"}},
+    )
+
+    assert [item["tag_name"] for item in document["payload"]["items"]] == ["v2.0.0"]
+    assert "repository_errors" not in document["payload"]
+
+
+def test_worklist_leaves_no_error_when_the_store_publishes_everything(tmp_path):
+    # Nothing left to audit is a correct outcome, not a repository failure: an
+    # error here would also trip the all-repositories-failed guard.
+    _fingerprint, document = _prepare_with_store_versions(
+        tmp_path,
+        "fully-deferred.json",
+        [_digested("v1.0.0", 1, 10, "b" * 64)],
+        {"https://github.com/owner/repo": {"1.0.0"}},
+    )
+
+    assert document["payload"]["items"] == []
+    assert "repository_errors" not in document["payload"]
+
+
+def test_worklist_audits_everything_without_a_store_version_map(tmp_path):
+    _fingerprint, document = _prepare_with_store_versions(
+        tmp_path,
+        "no-map.json",
+        [
+            _digested("v2.0.0", 2, 20, "a" * 64),
+            _digested("v1.0.0", 1, 10, "b" * 64),
+        ],
+        None,
+    )
+
+    assert sorted(item["tag_name"] for item in document["payload"]["items"]) == [
+        "v1.0.0",
+        "v2.0.0",
+    ]

@@ -17,11 +17,14 @@ from audit_plugins import (
     load_verdicts,
 )
 from plugin_release_utils import (
+    DISCOVERED_PLUGIN_LIST_FILE,
+    PLUGIN_LIST_FILE,
     bounded_stream_download,
     canonicalize_github_release_asset_repository_url,
     canonicalize_github_repository_url,
     get_zip_asset,
     is_release_eligible,
+    load_store_versions,
     normalize_github_sha256_digest,
     normalize_version,
     parse_github_repository_url,
@@ -283,6 +286,53 @@ def sort_versions(versions):
     return versions
 
 
+def official_latest_version(entry):
+    """The version an upstream catalog entry leads with before this run merges.
+
+    Called before merge_plugin_versions() mutates the entry, so it reports what
+    the official store publishes rather than what this catalog assembles.
+
+    The ordering rule must match the one annotate_official_version() applies to
+    the merged side. Ranking the official side by created timestamp while
+    ranking the merged side by semver lets a late hotfix on an old release
+    branch make the note claim credit for a version the official store already
+    had. sort_versions() sorts in place, so sort a shallow list copy: the
+    element dicts are shared but never written, and the caller's own list order
+    is left intact for merge_plugin_versions().
+    """
+    versions = list((entry or {}).get("versions") or [])
+    if not versions:
+        return None
+    return sort_versions(versions)[0].get("name")
+
+
+OFFICIAL_VERSION_NOTE_PREFIX = "Official store has "
+
+
+def annotate_official_version(entry, official_version):
+    """Record the official store's newest version in the store-facing copy.
+
+    Decky renders only versions[].name in the version dropdown, and
+    PluginCard's installedVersionIndex matches that name against the installed
+    plugin's package.json version, so a label there breaks the install button.
+    The description is the only other catalog string the store card renders.
+    """
+    if not entry or not official_version:
+        return False
+    versions = entry.get("versions") or []
+    if not versions:
+        return False
+    newest = versions[0].get("name")
+    if not newest or newest == official_version:
+        return False
+    description = (entry.get("description") or "").strip()
+    note = f"{OFFICIAL_VERSION_NOTE_PREFIX}{official_version}; this store has {newest}."
+    if description == note or description.startswith(f"{note} "):
+        return False
+    entry["description"] = f"{note} {description}".strip()
+    return True
+
+
 def merge_plugin_versions(existing_plugin, new_versions):
     existing_versions = {v["name"]: v for v in existing_plugin.get("versions", [])}
 
@@ -322,6 +372,25 @@ def remove_blocked_versions(existing_plugin, blocked_identities):
     removed = len(versions) - len(retained)
     existing_plugin["versions"] = sort_versions(retained)
     return removed
+
+
+def drop_emptied_entry(catalog, entry):
+    """Remove a catalog entry that the security gate has emptied.
+
+    Called when every eligible release of a configured repository is blocked.
+    Removing the whole entry outright would delete a plugin the official store
+    still ships: remove_blocked_versions() drops only the exact audited
+    identities, and the official store's own artifacts for the surviving
+    versions were never audited under this verdict. An entry that still has
+    versions therefore stays. An entry the generator would have created never
+    reaches a catalog, because the caller skips the repository first.
+
+    Returns True when the entry was removed.
+    """
+    if entry is None or entry.get("versions") or entry not in catalog:
+        return False
+    catalog.remove(entry)
+    return True
 
 
 def _release_verdict_entry(repository, release, verdicts):
@@ -399,9 +468,24 @@ def catalog_version_is_blocked(
     )
 
 
-def read_repo_urls(path="additional_plugins.txt"):
+def _read_url_lines(path):
     with open(path, "r") as f:
         return [line.strip() for line in f if line.strip() and not line.startswith("#")]
+
+
+def read_repo_urls(path=PLUGIN_LIST_FILE, discovered=DISCOVERED_PLUGIN_LIST_FILE):
+    """Every configured repository: hand-maintained list, then the generated one.
+
+    The generated store-backed list is optional, so the catalog still builds
+    before the first discovery run and in test fixtures that only write the
+    hand-maintained file. Lines are returned verbatim rather than canonicalized:
+    main() canonicalizes inside its per-repository try block so one malformed
+    line is reported as that repository's failure instead of aborting the run.
+    """
+    urls = _read_url_lines(path)
+    if discovered and os.path.exists(discovered):
+        urls.extend(_read_url_lines(discovered))
+    return urls
 
 
 def copy_static_files(source="static", destination="public"):
@@ -741,6 +825,10 @@ def main():
 
     repo_urls = read_repo_urls()
     verdicts = load_verdicts()
+    # Versions the official store already publishes. This catalog defers to the
+    # store's own artifact for each one, and the audit skips them for the same
+    # reason, so both read this single committed file.
+    store_versions = load_store_versions()
 
     # The catalog gate honours security-policy.yml's current enforcement mode.
     # Under report-only a CURRENT BLOCK is reported and still ships; under the
@@ -808,7 +896,16 @@ def main():
             valid_release_count = 0
             blocked_release_count = 0
 
+            deferred_versions = store_versions.get(url, set())
+
             for rel in releases:
+                # The official store publishes and ships its own artifact for
+                # this version, so republishing our build would replace bytes the
+                # store already vets. Skip before build_version_object(), which
+                # would otherwise download the asset to hash a version this
+                # catalog never offers.
+                if normalize_version(rel.get("tag_name", "1.0.0")) in deferred_versions:
+                    continue
                 v_obj = build_version_object(
                     rel, existing_testing or existing_stable, policy=policy
                 )
@@ -883,13 +980,24 @@ def main():
             remove_blocked_versions(existing_testing, blocked_identities)
 
             if valid_release_count and blocked_release_count == valid_release_count:
-                if existing_stable in plugins:
-                    plugins.remove(existing_stable)
-                if existing_testing in testing_plugins:
-                    testing_plugins.remove(existing_testing)
                 print(
-                    f"  Warning: All valid releases for {plugin_name} are blocked. Removing it from both catalogs."
+                    f"  Warning: All valid releases for {plugin_name} are blocked. "
+                    "Contributing no versions."
                 )
+                for channel, catalog, entry in (
+                    ("stable", plugins, existing_stable),
+                    ("testing", testing_plugins, existing_testing),
+                ):
+                    if drop_emptied_entry(catalog, entry):
+                        print(
+                            f"    Removed {plugin_name} from {channel}: gating left "
+                            "the entry with no versions."
+                        )
+                    elif entry is not None:
+                        print(
+                            f"    Kept the official {channel} entry for {plugin_name}: "
+                            "its remaining versions carry no BLOCK verdict."
+                        )
                 continue
 
             if not testing_versions:
@@ -917,7 +1025,9 @@ def main():
             # --- TESTING PLUGINS ---
             if existing_testing:
                 print("  Found in testing plugins. Merging versions...")
+                official_testing_version = official_latest_version(existing_testing)
                 merge_plugin_versions(existing_testing, testing_versions)
+                annotate_official_version(existing_testing, official_testing_version)
             else:
                 print("  Adding to testing plugins...")
                 max_testing_id += 1
@@ -941,7 +1051,9 @@ def main():
             if stable_versions:
                 if existing_stable:
                     print("  Found in stable plugins. Merging versions...")
+                    official_stable_version = official_latest_version(existing_stable)
                     merge_plugin_versions(existing_stable, stable_versions)
+                    annotate_official_version(existing_stable, official_stable_version)
                 else:
                     print("  Adding to stable plugins...")
                     max_stable_id += 1

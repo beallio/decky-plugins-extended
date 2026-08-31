@@ -5,6 +5,7 @@ on:
     branches: [ "main" ]
     paths:
       - 'additional_plugins.txt'
+      - 'store_plugins.txt'
       - 'generate_json.py'
       - 'pyproject.toml'
       - 'uv.lock'
