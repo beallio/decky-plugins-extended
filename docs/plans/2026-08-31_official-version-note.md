@@ -216,10 +216,7 @@ def annotate_official_version(entry, official_version):
     if not newest or newest == official_version:
         return False
     description = (entry.get("description") or "").strip()
-    note = (
-        f"{OFFICIAL_VERSION_NOTE_PREFIX}{official_version}; "
-        f"this store has {newest}."
-    )
+    note = f"{OFFICIAL_VERSION_NOTE_PREFIX}{official_version}; this store has {newest}."
     if description == note or description.startswith(f"{note} "):
         return False
     entry["description"] = f"{note} {description}".strip()
