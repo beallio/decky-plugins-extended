@@ -318,19 +318,43 @@ class TestGetChangedRepos(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ap.get_changed_repos("additional_plugins.txt", "origin/main")
 
+    def test_diffs_both_plugin_lists(self):
+        with patch.object(
+            ap.subprocess, "run", return_value=self._diff([])
+        ) as subprocess_run:
+            ap.get_changed_repos("additional_plugins.txt", "origin/main")
+
+        self.assertEqual(
+            subprocess_run.call_args.args[0],
+            [
+                "git",
+                "diff",
+                "origin/main",
+                "--",
+                "additional_plugins.txt",
+                "store_plugins.txt",
+            ],
+        )
+
     def test_falls_back_to_all_repos_when_git_fails(self):
         failure = types.SimpleNamespace(returncode=1, stdout="", stderr="boom")
         with (
             patch.object(ap.subprocess, "run", return_value=failure),
             patch.object(
-                ap, "read_repo_urls", return_value=["https://github.com/owner/repo"]
-            ) as read_repo_urls,
+                ap,
+                "read_all_repo_urls",
+                return_value=["https://github.com/owner/repo"],
+            ) as read_all_repo_urls,
         ):
             self.assertEqual(
                 ap.get_changed_repos("additional_plugins.txt", "origin/main"),
                 ["https://github.com/owner/repo"],
             )
-            read_repo_urls.assert_called_once_with("additional_plugins.txt")
+            # The fallback must cover the generated list too, or a PR that only
+            # touches store_plugins.txt would silently audit nothing.
+            read_all_repo_urls.assert_called_once_with(
+                "additional_plugins.txt", "store_plugins.txt"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -3549,7 +3573,7 @@ class TestCLI(unittest.TestCase):
                     ),
                     patch.object(
                         ap,
-                        "read_repo_urls",
+                        "read_all_repo_urls",
                         return_value=["https://github.com/owner/repo"],
                     ) as read_repo_urls,
                     patch.object(
@@ -3574,12 +3598,14 @@ class TestCLI(unittest.TestCase):
                 self.assertEqual(prepare_audit_worklist.call_count, 1)
 
                 if mode == "--all":
-                    read_repo_urls.assert_called_once_with("additional_plugins.txt")
+                    read_repo_urls.assert_called_once_with(
+                        "additional_plugins.txt", "store_plugins.txt"
+                    )
                     get_changed_repos.assert_not_called()
                 elif mode == "--changed":
                     read_repo_urls.assert_not_called()
                     get_changed_repos.assert_called_once_with(
-                        "additional_plugins.txt", "HEAD~1"
+                        "additional_plugins.txt", "HEAD~1", "store_plugins.txt"
                     )
                 else:
                     read_repo_urls.assert_not_called()
@@ -3749,7 +3775,9 @@ class TestCLI(unittest.TestCase):
             resolve_base_ref.assert_called_once_with("HEAD", 300)
             read_repo_urls.assert_not_called()
             self.assertEqual(get_changed_repos.call_count, 1)
-            get_changed_repos.assert_called_with("additional_plugins.txt", "HEAD")
+            get_changed_repos.assert_called_with(
+                "additional_plugins.txt", "HEAD", "store_plugins.txt"
+            )
             get_repo_metadata.assert_not_called()
             get_releases.assert_not_called()
             resolve_tags.assert_not_called()

@@ -23,6 +23,13 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import unquote, urlsplit
 
+# The hand-maintained list of plugins the official store does not carry, and the
+# generated companion holding store-backed source repositories. Every reader
+# consumes the union of the two, so both names live here rather than being
+# repeated per module.
+PLUGIN_LIST_FILE = "additional_plugins.txt"
+DISCOVERED_PLUGIN_LIST_FILE = "store_plugins.txt"
+
 # ---------------------------------------------------------------------------
 # Repository and artifact identity
 # ---------------------------------------------------------------------------
@@ -630,7 +637,7 @@ def bounded_stream_download(
 # Pull-request audit-mode selection
 # ---------------------------------------------------------------------------
 
-_CHANGED_REPOSITORIES_PATH = "additional_plugins.txt"
+_CHANGED_REPOSITORIES_PATHS = frozenset({PLUGIN_LIST_FILE, DISCOVERED_PLUGIN_LIST_FILE})
 _FULL_AUDIT_PATHS = frozenset(
     {
         "audit_plugins.py",
@@ -680,7 +687,7 @@ def select_audit_mode(changed_paths: Iterable[str] | str) -> str:
             continue
         if _requires_full_audit(path):
             return "all"
-        if path == _CHANGED_REPOSITORIES_PATH:
+        if path in _CHANGED_REPOSITORIES_PATHS:
             plugin_list_changed = True
     return "changed" if plugin_list_changed else "none"
 

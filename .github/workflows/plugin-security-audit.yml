@@ -14,6 +14,8 @@ on:
   pull_request:
     paths:
       - additional_plugins.txt
+      - store_plugins.txt
+      - store_discovery.py
       - audit_plugins.py
       - audit_worklist.py
       - generate_json.py

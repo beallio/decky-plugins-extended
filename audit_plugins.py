@@ -60,7 +60,8 @@ import plugin_release_utils
 
 AUDIT_SCHEMA_VERSION = "1"
 POLICY_VERSION = "1"
-PLUGINS_FILE = "additional_plugins.txt"
+PLUGINS_FILE = plugin_release_utils.PLUGIN_LIST_FILE
+DISCOVERED_PLUGINS_FILE = plugin_release_utils.DISCOVERED_PLUGIN_LIST_FILE
 DEFAULT_POLICY_FILE = "security-policy.yml"
 DEFAULT_ALLOWLIST_FILE = "security-allowlist.yml"
 DEFAULT_OUTPUT_DIR = "security-reports"
@@ -1001,8 +1002,34 @@ def read_repo_urls(path: str = PLUGINS_FILE) -> list[str]:
     return urls
 
 
+def read_all_repo_urls(
+    path: str = PLUGINS_FILE, discovered: str | None = DISCOVERED_PLUGINS_FILE
+) -> list[str]:
+    """Union of the hand-maintained and generated plugin lists.
+
+    The generated store-backed list is optional, so the auditor still runs
+    before the first discovery pass. A repository present in both files is
+    dropped with a warning here rather than passed on: worklist preparation
+    rejects a repeated repository outright, so the union is the layer that has
+    to reconcile them.
+    """
+    urls = read_repo_urls(path)
+    if not discovered or not os.path.exists(discovered):
+        return urls
+    seen = set(urls)
+    for url in read_repo_urls(discovered):
+        if url in seen:
+            log.warning("Duplicate URL skipped across plugin lists: %s", url)
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
+
+
 def get_changed_repos(
-    plugins_file: str = PLUGINS_FILE, base_ref: str = "HEAD~1"
+    plugins_file: str = PLUGINS_FILE,
+    base_ref: str = "HEAD~1",
+    discovered_file: str | None = DISCOVERED_PLUGINS_FILE,
 ) -> list[str]:
     """Return repository URLs newly added or changed relative to base_ref.
 
@@ -1015,9 +1042,12 @@ def get_changed_repos(
     happens outside that fallback: a malformed configured URL is a
     configuration error to report, not a reason to audit the whole corpus.
     """
+    paths = [plugins_file]
+    if discovered_file:
+        paths.append(discovered_file)
     try:
         result = subprocess.run(
-            ["git", "diff", base_ref, "--", plugins_file],
+            ["git", "diff", base_ref, "--", *paths],
             capture_output=True,
             text=True,
             timeout=30,
@@ -1026,7 +1056,7 @@ def get_changed_repos(
             log.warning(
                 "git diff failed (exit %d); auditing all repos.", result.returncode
             )
-            return read_repo_urls(plugins_file)
+            return read_all_repo_urls(plugins_file, discovered_file)
         added: list[str] = []
         for line in result.stdout.splitlines():
             if line.startswith("+") and not line.startswith("+++"):
@@ -1035,7 +1065,7 @@ def get_changed_repos(
                     added.append(url)
     except Exception as exc:
         log.warning("Could not compute git diff (%s); auditing all repos.", exc)
-        return read_repo_urls(plugins_file)
+        return read_all_repo_urls(plugins_file, discovered_file)
 
     seen: set[str] = set()
     changed: list[str] = []
@@ -6613,6 +6643,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     expected_worklist_was_supplied = args.expected_worklist is not None
     aggregate_shard_manifests_was_supplied = args.aggregate_shard_manifests is not None
     args.plugins_file = args.plugins_file or PLUGINS_FILE
+    # An explicit --plugins-file means "audit exactly this list", so the
+    # generated store-backed list is unioned in only when the caller took the
+    # default.
+    discovered_plugins_file = (
+        None if plugins_file_was_supplied else DISCOVERED_PLUGINS_FILE
+    )
     args.api_deadline_seconds = (
         args.api_deadline_seconds if args.api_deadline_seconds is not None else 300
     )
@@ -6714,10 +6750,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.prepare_worklist:
         try:
             if args.all:
-                repository_urls = read_repo_urls(args.plugins_file)
+                repository_urls = read_all_repo_urls(
+                    args.plugins_file, discovered_plugins_file
+                )
                 selection_mode = "all"
             elif args.changed:
-                repository_urls = get_changed_repos(args.plugins_file, args.base_ref)
+                repository_urls = get_changed_repos(
+                    args.plugins_file, args.base_ref, discovered_plugins_file
+                )
                 selection_mode = "changed"
             else:
                 repository_urls = [args.repository]
@@ -6883,9 +6923,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         # must not enter this branch: its selection was authenticated above.
         try:
             if args.all:
-                repo_urls = read_repo_urls(args.plugins_file)
+                repo_urls = read_all_repo_urls(
+                    args.plugins_file, discovered_plugins_file
+                )
             elif args.changed:
-                repo_urls = get_changed_repos(args.plugins_file, args.base_ref)
+                repo_urls = get_changed_repos(
+                    args.plugins_file, args.base_ref, discovered_plugins_file
+                )
             else:
                 repo_urls = [args.repository]
         except FileNotFoundError as exc:
