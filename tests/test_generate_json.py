@@ -340,6 +340,71 @@ class GenerateJsonTests(unittest.TestCase):
             ["2.0.0", "2.0.0-beta.10", "2.0.0-beta.2", "1.0.1", "nightly"],
         )
 
+    def test_official_latest_version_uses_semver_order_not_position(self):
+        entry = {
+            "versions": [
+                {"name": "1.0.0", "created": "2026-12-31T00:00:00Z"},
+                {"name": "2.0.0", "created": "2025-01-01T00:00:00Z"},
+            ]
+        }
+        original_order = copy.deepcopy(entry["versions"])
+
+        self.assertEqual(generate_json.official_latest_version(entry), "2.0.0")
+        self.assertEqual(entry["versions"], original_order)
+
+    def test_official_latest_version_handles_empty_and_missing_entries(self):
+        for entry in (None, {}, {"versions": []}):
+            with self.subTest(entry=entry):
+                self.assertIsNone(generate_json.official_latest_version(entry))
+
+    def test_annotate_official_version_prefixes_description_when_newer_exists(self):
+        entry = {
+            "description": "Original copy",
+            "versions": [{"name": "2.0.0"}],
+        }
+
+        self.assertTrue(generate_json.annotate_official_version(entry, "1.0.0"))
+        self.assertEqual(
+            entry["description"],
+            "Official store has 1.0.0; this store has 2.0.0. Original copy",
+        )
+        self.assertIn("Original copy", entry["description"])
+
+    def test_annotate_official_version_skips_when_official_is_newest(self):
+        entry = {
+            "description": "Original copy",
+            "versions": [{"name": "2.0.0"}],
+        }
+        original_entry = copy.deepcopy(entry)
+
+        self.assertFalse(generate_json.annotate_official_version(entry, "2.0.0"))
+        self.assertEqual(entry, original_entry)
+
+    def test_annotate_official_version_is_idempotent(self):
+        entry = {
+            "description": "Official store has useful plugins.",
+            "versions": [{"name": "2.0.0"}],
+        }
+        note = "Official store has 1.0.0; this store has 2.0.0."
+
+        self.assertTrue(generate_json.annotate_official_version(entry, "1.0.0"))
+        self.assertFalse(generate_json.annotate_official_version(entry, "1.0.0"))
+        self.assertEqual(entry["description"].count(note), 1)
+        self.assertIn("Official store has useful plugins.", entry["description"])
+
+    def test_annotate_official_version_leaves_version_names_untouched(self):
+        entry = {
+            "description": "Original copy",
+            "versions": [
+                {"name": "2.0.0", "hash": "a" * 64},
+                {"name": "1.0.0", "hash": "b" * 64},
+            ],
+        }
+        original_versions = copy.deepcopy(entry["versions"])
+
+        self.assertTrue(generate_json.annotate_official_version(entry, "1.0.0"))
+        self.assertEqual(entry["versions"], original_versions)
+
     def test_parse_semver_handles_partial_and_invalid_versions(self):
         self.assertEqual(generate_json.parse_semver("1.2.3")[:3], (1, 2, 3))
         self.assertEqual(generate_json.parse_semver("0.1")[:3], (0, 1, 0))
@@ -560,6 +625,109 @@ class GenerateJsonTests(unittest.TestCase):
             "https://opengraph.githubassets.com/1/example/custom-plugin",
         )
         self.assertEqual(testing_plugin["image_url"], stable_plugin["image_url"])
+
+    def test_main_annotates_merged_entries_with_the_official_version(self):
+        base_stable = [
+            {
+                "id": 7,
+                "name": "Merged Plugin",
+                "description": "Official description",
+                "versions": [
+                    {
+                        "name": "1.0.0",
+                        "hash": "a" * 64,
+                        "artifact": "https://example.invalid/official.zip",
+                    }
+                ],
+            },
+            {
+                "id": 8,
+                "name": "Unconfigured Plugin",
+                "description": "Unconfigured description",
+                "versions": [
+                    {
+                        "name": "1.0.0",
+                        "hash": "b" * 64,
+                        "artifact": "https://example.invalid/unconfigured.zip",
+                    }
+                ],
+            },
+        ]
+        repo_info = {
+            "default_branch": "main",
+            "description": "Repository description",
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        plugin_json = {"name": "Merged Plugin"}
+        package = {
+            "name": "merged-plugin",
+            "author": {"name": "Decky Author"},
+            "description": "Plugin description",
+            "keywords": "utility",
+        }
+        releases = [{"tag_name": "v2.0.0", "prerelease": False}]
+
+        def fetch_json(url):
+            if url == generate_json.PLUGINS_URL:
+                return copy.deepcopy(base_stable)
+            return []
+
+        def build_version_object(release, existing_plugin=None, policy=None):
+            del existing_plugin, policy
+            return {
+                "name": release["tag_name"].lstrip("v"),
+                "hash": "c" * 64,
+                "artifact": "https://example.invalid/2.0.0.zip",
+                "created": "2026-01-01T00:00:00Z",
+                "downloads": 0,
+                "updates": 0,
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workdir = Path(temp_dir)
+            (workdir / "additional_plugins.txt").write_text(
+                "https://github.com/example/merged-plugin\n", encoding="utf-8"
+            )
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(workdir)
+                with (
+                    patch.object(generate_json, "fetch_json", side_effect=fetch_json),
+                    patch.object(
+                        generate_json, "get_repo_info", return_value=repo_info
+                    ),
+                    patch.object(
+                        generate_json, "get_package_json", return_value=package
+                    ),
+                    patch.object(
+                        generate_json, "get_plugin_json", return_value=plugin_json
+                    ),
+                    patch.object(generate_json, "get_releases", return_value=releases),
+                    patch.object(
+                        generate_json,
+                        "build_version_object",
+                        side_effect=build_version_object,
+                    ),
+                ):
+                    generate_json.main()
+            finally:
+                os.chdir(old_cwd)
+
+            stable = json.loads(
+                (workdir / "public/plugins.json").read_text(encoding="utf-8")
+            )
+
+        merged = next(plugin for plugin in stable if plugin["name"] == "Merged Plugin")
+        unconfigured = next(
+            plugin for plugin in stable if plugin["name"] == "Unconfigured Plugin"
+        )
+        self.assertTrue(
+            merged["description"].startswith(
+                "Official store has 1.0.0; this store has 2.0.0."
+            )
+        )
+        self.assertEqual(unconfigured["description"], "Unconfigured description")
 
 
 if __name__ == "__main__":

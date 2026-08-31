@@ -283,6 +283,53 @@ def sort_versions(versions):
     return versions
 
 
+def official_latest_version(entry):
+    """The version an upstream catalog entry leads with before this run merges.
+
+    Called before merge_plugin_versions() mutates the entry, so it reports what
+    the official store publishes rather than what this catalog assembles.
+
+    The ordering rule must match the one annotate_official_version() applies to
+    the merged side. Ranking the official side by created timestamp while
+    ranking the merged side by semver lets a late hotfix on an old release
+    branch make the note claim credit for a version the official store already
+    had. sort_versions() sorts in place, so sort a shallow list copy: the
+    element dicts are shared but never written, and the caller's own list order
+    is left intact for merge_plugin_versions().
+    """
+    versions = list((entry or {}).get("versions") or [])
+    if not versions:
+        return None
+    return sort_versions(versions)[0].get("name")
+
+
+OFFICIAL_VERSION_NOTE_PREFIX = "Official store has "
+
+
+def annotate_official_version(entry, official_version):
+    """Record the official store's newest version in the store-facing copy.
+
+    Decky renders only versions[].name in the version dropdown, and
+    PluginCard's installedVersionIndex matches that name against the installed
+    plugin's package.json version, so a label there breaks the install button.
+    The description is the only other catalog string the store card renders.
+    """
+    if not entry or not official_version:
+        return False
+    versions = entry.get("versions") or []
+    if not versions:
+        return False
+    newest = versions[0].get("name")
+    if not newest or newest == official_version:
+        return False
+    description = (entry.get("description") or "").strip()
+    note = f"{OFFICIAL_VERSION_NOTE_PREFIX}{official_version}; this store has {newest}."
+    if description == note or description.startswith(f"{note} "):
+        return False
+    entry["description"] = f"{note} {description}".strip()
+    return True
+
+
 def merge_plugin_versions(existing_plugin, new_versions):
     existing_versions = {v["name"]: v for v in existing_plugin.get("versions", [])}
 
@@ -917,7 +964,9 @@ def main():
             # --- TESTING PLUGINS ---
             if existing_testing:
                 print("  Found in testing plugins. Merging versions...")
+                official_testing_version = official_latest_version(existing_testing)
                 merge_plugin_versions(existing_testing, testing_versions)
+                annotate_official_version(existing_testing, official_testing_version)
             else:
                 print("  Adding to testing plugins...")
                 max_testing_id += 1
@@ -941,7 +990,9 @@ def main():
             if stable_versions:
                 if existing_stable:
                     print("  Found in stable plugins. Merging versions...")
+                    official_stable_version = official_latest_version(existing_stable)
                     merge_plugin_versions(existing_stable, stable_versions)
+                    annotate_official_version(existing_stable, official_stable_version)
                 else:
                     print("  Adding to stable plugins...")
                     max_stable_id += 1
