@@ -371,6 +371,25 @@ def remove_blocked_versions(existing_plugin, blocked_identities):
     return removed
 
 
+def drop_emptied_entry(catalog, entry):
+    """Remove a catalog entry that the security gate has emptied.
+
+    Called when every eligible release of a configured repository is blocked.
+    Removing the whole entry outright would delete a plugin the official store
+    still ships: remove_blocked_versions() drops only the exact audited
+    identities, and the official store's own artifacts for the surviving
+    versions were never audited under this verdict. An entry that still has
+    versions therefore stays. An entry the generator would have created never
+    reaches a catalog, because the caller skips the repository first.
+
+    Returns True when the entry was removed.
+    """
+    if entry is None or entry.get("versions") or entry not in catalog:
+        return False
+    catalog.remove(entry)
+    return True
+
+
 def _release_verdict_entry(repository, release, verdicts):
     zip_asset = get_zip_asset(release)
     if zip_asset is None:
@@ -930,13 +949,24 @@ def main():
             remove_blocked_versions(existing_testing, blocked_identities)
 
             if valid_release_count and blocked_release_count == valid_release_count:
-                if existing_stable in plugins:
-                    plugins.remove(existing_stable)
-                if existing_testing in testing_plugins:
-                    testing_plugins.remove(existing_testing)
                 print(
-                    f"  Warning: All valid releases for {plugin_name} are blocked. Removing it from both catalogs."
+                    f"  Warning: All valid releases for {plugin_name} are blocked. "
+                    "Contributing no versions."
                 )
+                for channel, catalog, entry in (
+                    ("stable", plugins, existing_stable),
+                    ("testing", testing_plugins, existing_testing),
+                ):
+                    if drop_emptied_entry(catalog, entry):
+                        print(
+                            f"    Removed {plugin_name} from {channel}: gating left "
+                            "the entry with no versions."
+                        )
+                    elif entry is not None:
+                        print(
+                            f"    Kept the official {channel} entry for {plugin_name}: "
+                            "its remaining versions carry no BLOCK verdict."
+                        )
                 continue
 
             if not testing_versions:
