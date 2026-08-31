@@ -39,7 +39,45 @@ The generator fetches, hashes, and merges custom GitHub releases into the
 upstream Deckbrew stable and testing catalogs. This is a minimal repository;
 do not create or store planning artifacts in a `docs/` directory.
 
-### Add a plugin
+### The two plugin lists
+
+The generator reads the union of two files:
+
+- `additional_plugins.txt` is hand-maintained and holds only plugins the
+  official Decky store does not carry.
+- `store_plugins.txt` is generated and holds the source repositories behind
+  plugins the official store already publishes. Entries here merge into the
+  store's own catalog entry, so the extended catalog can offer a release before
+  the official store has ingested it.
+
+Regenerate the second list with:
+
+```bash
+uv run store_discovery.py
+```
+
+The official store's catalog API carries no repository field, so discovery
+resolves the submodule map in `SteamDeckHomebrew/decky-plugin-database`, which
+is how every plugin enters the official store. It keeps a submodule only when
+the repository is on GitHub, is not archived, is absent from
+`additional_plugins.txt`, has a `plugin.json` name that matches a published
+store plugin, and publishes at least one non-draft, non-prerelease release with
+exactly one `.zip` asset. Every rejection is printed with its reason, and
+`--check` exits 1 when the committed file is stale.
+
+The result is committed rather than resolved at run time. Deriving the corpus
+live would make the audit worklist depend on a mutable external input, so two
+runs could legitimately disagree about which repositories are in scope, and a
+pull request could not show the corpus changing.
+
+Because a discovered plugin is a configured repository, `check_for_updates`
+treats it as managed and stops polling the official store for it. That is
+deliberate: the merge replaces an upstream row whenever this catalog's artifact
+for the same version hashes differently, so an unsuppressed upstream check
+would report the official identity as missing on every run and trigger a
+rebuild loop.
+
+### Add a plugin the official store does not carry
 
 Add the plugin repository URL to `additional_plugins.txt`, one URL per line:
 

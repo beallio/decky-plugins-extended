@@ -17,6 +17,8 @@ from audit_plugins import (
     load_verdicts,
 )
 from plugin_release_utils import (
+    DISCOVERED_PLUGIN_LIST_FILE,
+    PLUGIN_LIST_FILE,
     bounded_stream_download,
     canonicalize_github_release_asset_repository_url,
     canonicalize_github_repository_url,
@@ -465,9 +467,24 @@ def catalog_version_is_blocked(
     )
 
 
-def read_repo_urls(path="additional_plugins.txt"):
+def _read_url_lines(path):
     with open(path, "r") as f:
         return [line.strip() for line in f if line.strip() and not line.startswith("#")]
+
+
+def read_repo_urls(path=PLUGIN_LIST_FILE, discovered=DISCOVERED_PLUGIN_LIST_FILE):
+    """Every configured repository: hand-maintained list, then the generated one.
+
+    The generated store-backed list is optional, so the catalog still builds
+    before the first discovery run and in test fixtures that only write the
+    hand-maintained file. Lines are returned verbatim rather than canonicalized:
+    main() canonicalizes inside its per-repository try block so one malformed
+    line is reported as that repository's failure instead of aborting the run.
+    """
+    urls = _read_url_lines(path)
+    if discovered and os.path.exists(discovered):
+        urls.extend(_read_url_lines(discovered))
+    return urls
 
 
 def copy_static_files(source="static", destination="public"):
