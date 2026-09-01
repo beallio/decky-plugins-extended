@@ -28,6 +28,8 @@ from plugin_release_utils import (
     normalize_github_sha256_digest,
     normalize_version,
     parse_github_repository_url,
+    release_exceeds_download_limit,
+    validate_download_policy,
     version_sort_key,
 )
 from plugin_release_utils import get_releases as get_all_releases
@@ -530,6 +532,7 @@ def build_storefront_metadata(
     official_catalog_names,
     contributions,
     enforcement_mode,
+    warnings=None,
 ):
     """Build deterministic browser-only catalog provenance and status metadata.
 
@@ -588,7 +591,9 @@ def build_storefront_metadata(
         }
         if not all(record.values()):
             continue
-        details = by_plugin.setdefault(key, {"names": set(), "versions": []})
+        details = by_plugin.setdefault(
+            key, {"names": set(), "versions": [], "warnings": []}
+        )
         details["names"].add(display_name)
         identity = tuple(
             record[field]
@@ -603,6 +608,49 @@ def build_storefront_metadata(
         }:
             details["versions"].append(record)
 
+    catalog_keys = set(catalog_names_by_key)
+    for warning in warnings or []:
+        if not isinstance(warning, dict):
+            continue
+        display_name = str(warning.get("name", "")).strip()
+        details_record = warning.get("warning")
+        key = display_name.casefold()
+        if (
+            not display_name
+            or key not in catalog_keys
+            or not isinstance(details_record, dict)
+            or details_record.get("kind") != "large-plugin"
+        ):
+            continue
+        size_bytes = details_record.get("size_bytes")
+        limit_bytes = details_record.get("limit_bytes")
+        if (
+            isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, int)
+            or isinstance(limit_bytes, bool)
+            or not isinstance(limit_bytes, int)
+            or size_bytes <= limit_bytes
+            or limit_bytes <= 0
+        ):
+            continue
+        record = {
+            "kind": "large-plugin",
+            "name": normalize_version(str(details_record.get("name", "")).strip()),
+            "tag": str(details_record.get("tag", "")).strip(),
+            "repository": str(details_record.get("repository", "")).strip(),
+            "size_bytes": size_bytes,
+            "limit_bytes": limit_bytes,
+            "included": details_record.get("included") is True,
+            "prerelease": details_record.get("prerelease") is True,
+        }
+        if not record["name"] or not record["tag"] or not record["repository"]:
+            continue
+        details = by_plugin.setdefault(
+            key, {"names": set(), "versions": [], "warnings": []}
+        )
+        details["names"].add(display_name)
+        if record not in details["warnings"]:
+            details["warnings"].append(record)
     plugins = {}
     for key in sorted(by_plugin):
         details = by_plugin[key]
@@ -615,7 +663,7 @@ def build_storefront_metadata(
                 version["name"],
             ),
         )
-        plugins[key] = {
+        plugin_record = {
             "name": min(details["names"], key=lambda name: (name.casefold(), name)),
             # Python casefold can merge names (for example, Straße and STRASSE)
             # that JavaScript lowercasing cannot. Publish the final catalog
@@ -628,6 +676,18 @@ def build_storefront_metadata(
             "provenance": "official" if key in official_catalog_names else "extended",
             "versions": versions,
         }
+        warnings_for_plugin = sorted(
+            details["warnings"],
+            key=lambda warning: (
+                warning["prerelease"],
+                warning["repository"],
+                warning["tag"],
+                warning["size_bytes"],
+            ),
+        )
+        if warnings_for_plugin:
+            plugin_record["warnings"] = warnings_for_plugin
+        plugins[key] = plugin_record
 
     return {
         "schema_version": 1,
@@ -983,6 +1043,7 @@ def main():
             "mode"
         ) or "report-only"
         blockable_rules = set(policy.get("blockable_rules") or [])
+        download_policy = validate_download_policy(policy)
     except Exception as exc:
         print(f"Fatal: could not load catalog security policy: {exc}")
         raise SystemExit(1) from exc
@@ -996,6 +1057,7 @@ def main():
     custom_plugin_names = set()
     current_identity_records = []
     storefront_contributions = []
+    storefront_warnings = []
 
     for url in repo_urls:
         try:
@@ -1034,6 +1096,7 @@ def main():
             )
 
             releases = get_releases(owner, repo)
+            repository_slug = _repository_slug(url)
 
             stable_versions = []
             testing_versions = []
@@ -1051,6 +1114,34 @@ def main():
                 # catalog never offers.
                 if normalize_version(rel.get("tag_name", "1.0.0")) in deferred_versions:
                     continue
+                zip_asset = get_zip_asset(rel) or {}
+                large_warning = None
+                if release_exceeds_download_limit(
+                    rel, download_policy.release_max_bytes
+                ):
+                    if repository_slug:
+                        large_warning = {
+                            "name": plugin_name,
+                            "warning": {
+                                "kind": "large-plugin",
+                                "name": normalize_version(rel.get("tag_name", "")),
+                                "tag": str(rel.get("tag_name", "")).strip(),
+                                "repository": repository_slug,
+                                "size_bytes": zip_asset.get("size"),
+                                "limit_bytes": download_policy.release_max_bytes,
+                                "included": False,
+                                "prerelease": rel.get("prerelease") is True,
+                            },
+                        }
+                        storefront_warnings.append(large_warning)
+                    if not normalize_github_sha256_digest(zip_asset.get("digest")):
+                        print(
+                            f"  Warning: excluding oversized release "
+                            f"{rel.get('tag_name', '')}: {zip_asset.get('size')} bytes "
+                            f"exceeds the {download_policy.release_max_bytes}-byte "
+                            "limit and GitHub supplies no SHA-256 digest."
+                        )
+                        continue
                 v_obj = build_version_object(
                     rel, existing_testing or existing_stable, policy=policy
                 )
@@ -1065,7 +1156,6 @@ def main():
                     blockable_rules,
                     current_artifact_sha256=v_obj["hash"],
                 )
-                zip_asset = get_zip_asset(rel) or {}
                 current_identity_records.append(
                     {
                         "repository": url,
@@ -1115,7 +1205,9 @@ def main():
                     )
                     continue
 
-                repository_slug = _repository_slug(url)
+                if large_warning:
+                    large_warning["warning"]["included"] = True
+                    large_warning["warning"]["name"] = v_obj["name"]
                 if repository_slug:
                     storefront_contributions.append(
                         {
@@ -1287,6 +1379,7 @@ def main():
         official_catalog_names,
         storefront_contributions,
         enforcement_mode,
+        warnings=storefront_warnings,
     )
     write_storefront_metadata("public/storefront.json", storefront_metadata)
 

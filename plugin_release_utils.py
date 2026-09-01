@@ -817,6 +817,17 @@ def get_zip_asset(release: dict[str, Any]) -> Optional[dict[str, Any]]:
     return zips[0] if len(zips) == 1 else None
 
 
+def release_exceeds_download_limit(release: dict[str, Any], max_bytes: int) -> bool:
+    """Return whether the single ZIP asset declares more bytes than allowed."""
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
+    asset = get_zip_asset(release)
+    if asset is None:
+        return False
+    size = asset.get("size")
+    return isinstance(size, int) and not isinstance(size, bool) and size > max_bytes
+
+
 def is_release_eligible(
     release: dict[str, Any],
     allow_prerelease: bool = True,

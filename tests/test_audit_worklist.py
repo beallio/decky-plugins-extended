@@ -33,6 +33,7 @@ def _release(
     draft=False,
     zip_count=1,
     repository_url: str = "https://example.invalid",
+    size=10,
 ):
     return {
         "id": release_id,
@@ -50,6 +51,7 @@ def _release(
                     if repository_url == "https://example.invalid"
                     else f"{repository_url}/releases/download/{tag}/plugin-{offset}.zip"
                 ),
+                "size": size,
             }
             for offset in range(zip_count)
         ],
@@ -203,6 +205,72 @@ def test_worklist_prepare_and_load_roundtrip_is_stable(tmp_path):
     ]
     assert len(loaded_one["payload"]["items"]) == 3
     assert "repository_errors" not in loaded_one["payload"]
+
+
+def test_worklist_excludes_declared_oversized_releases_without_repository_error(
+    tmp_path,
+):
+    repository = "https://github.com/owner/repo"
+    releases = [
+        _with_digest(
+            _with_asset_urls(
+                _release(
+                    "v2",
+                    2,
+                    20,
+                    repository_url=repository,
+                    size=2000,
+                ),
+                repository,
+            ),
+            "b" * 64,
+        ),
+        _with_digest(
+            _with_asset_urls(
+                _release(
+                    "v1",
+                    1,
+                    10,
+                    repository_url=repository,
+                    size=500,
+                ),
+                repository,
+            ),
+            "a" * 64,
+        ),
+    ]
+
+    mixed_path = tmp_path / "mixed.json"
+    worklist.prepare_audit_worklist(
+        mixed_path,
+        source_revision=SOURCE_REVISION,
+        selection_mode="all",
+        repository_urls=[repository],
+        shard_count=14,
+        release_fetcher=lambda *_args: releases,
+        metadata_fetcher=lambda *_args: _release_metadata("owner", "repo"),
+        tag_resolver=lambda *_args, **_kwargs: {"v2": "b" * 40, "v1": "a" * 40},
+        release_max_bytes=1000,
+    )
+    mixed = worklist.load_worklist_document(mixed_path)["payload"]
+    assert [item["tag_name"] for item in mixed["items"]] == ["v1"]
+    assert "repository_errors" not in mixed
+
+    oversized_path = tmp_path / "oversized.json"
+    worklist.prepare_audit_worklist(
+        oversized_path,
+        source_revision=SOURCE_REVISION,
+        selection_mode="all",
+        repository_urls=[repository],
+        shard_count=14,
+        release_fetcher=lambda *_args: releases[:1],
+        metadata_fetcher=lambda *_args: _release_metadata("owner", "repo"),
+        tag_resolver=lambda *_args, **_kwargs: {"v2": "b" * 40},
+        release_max_bytes=1000,
+    )
+    oversized = worklist.load_worklist_document(oversized_path)["payload"]
+    assert oversized["items"] == []
+    assert "repository_errors" not in oversized
 
 
 def test_worklist_load_rejects_tampered_fingerprint(tmp_path):
@@ -2077,6 +2145,7 @@ def test_worklist_audits_every_eligible_release_in_deterministic_order():
         "owner/a": [
             _release("v1", 1, 10, "2026-01-01T00:00:00Z"),
             _release("v3", 3, 30, "2026-03-01T00:00:00Z", prerelease=True),
+            _release("large", 4, 40, "2026-04-01T00:00:00Z", size=2000),
             _release("draft", 9, 90, "2026-09-01T00:00:00Z", draft=True),
             _release("none", 8, 80, "2026-08-01T00:00:00Z", zip_count=0),
             _release("multi", 7, 70, "2026-07-01T00:00:00Z", zip_count=2),
@@ -2088,6 +2157,7 @@ def test_worklist_audits_every_eligible_release_in_deterministic_order():
         ["https://github.com/owner/b", "https://github.com/owner/a"],
         release_fetcher=lambda owner, repo: releases[f"{owner}/{repo}"],
         metadata_fetcher=lambda owner, repo: {"full_name": f"{owner}/{repo}"},
+        release_max_bytes=1000,
     )
 
     assert errors == []
