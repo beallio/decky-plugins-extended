@@ -53,9 +53,14 @@ If both stores have the same version, Decky Plugins Extended uses the official
 store's file. It only provides its own file when that version is not available
 from the official store.
 
-## Catalog links
+## Browser catalog and Decky URLs
 
-You can open the plugin lists in a browser:
+Open the [browser catalog](https://decky-extended-plugins.beallio.com/) to browse
+plugins, their source, and their audit status. It opens on **Stable**, which is
+recommended for normal use. Select **Testing** only when you want prereleases.
+
+Decky Loader continues to use these JSON endpoints as its custom-store install
+contract:
 
 - [Stable plugins](https://decky-extended-plugins.beallio.com/plugins.json)
 - [Testing plugins](https://decky-extended-plugins.beallio.com/testing_plugins.json)

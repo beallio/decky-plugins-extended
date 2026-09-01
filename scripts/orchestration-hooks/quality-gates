@@ -11,9 +11,14 @@ fail() { echo "GATE FAILED: $*" >&2; exit 1; }
 # PATH would surface as a bare "command not found" and could read as a skip.
 command -v uv >/dev/null 2>&1 || fail "uv is not on PATH"
 command -v gh >/dev/null 2>&1 || fail "gh is not on PATH"
+command -v node >/dev/null 2>&1 || fail "node is not on PATH"
+command -v npm >/dev/null 2>&1 || fail "npm is not on PATH"
+command -v ldd >/dev/null 2>&1 || fail "ldd is not on PATH"
 command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is not on PATH"
 command -v tar >/dev/null 2>&1 || fail "tar is not on PATH"
 [[ -f pyproject.toml ]] || fail "not at repo root: no pyproject.toml"
+[[ -f package.json ]] || fail "package.json is missing"
+[[ -f package-lock.json ]] || fail "package-lock.json is missing"
 
 # The suite is worthless if it silently collects nothing. tests/ must exist and
 # hold at least one test module before we trust a green run.
@@ -126,7 +131,67 @@ uv run ruff check . || fail "ruff check reported violations"
 echo "== ruff format --check =="
 uv run ruff format --check . || fail "ruff format would reformat files; run 'uv run ruff format .'"
 
+# --- storefront browser contract --------------------------------------------
+# The storefront has no runtime Node dependency. Playwright is pinned only to
+# execute the source module and its rendered browser behavior over local HTTP.
+echo "== storefront Node dependencies =="
+npm ci --ignore-scripts --no-audit --no-fund || fail "could not install storefront test dependencies"
+
+echo "== storefront Chromium =="
+# Keep the large browser payload on the repository filesystem. This workstation's
+# /tmp volume is intentionally small and Playwright can otherwise fail mid-write.
+playwright_cache="$(git rev-parse --show-toplevel)/.playwright-browsers"
+playwright_runtime="$(git rev-parse --show-toplevel)/.playwright-runtime"
+mkdir -p "$playwright_cache/tmp"
+export PLAYWRIGHT_BROWSERS_PATH="$playwright_cache"
+export TMPDIR="$playwright_cache/tmp"
+npx playwright install chromium || fail "could not install the pinned Playwright Chromium build"
+
+# Browser downloads alone do not include every system library. On Fedora
+# workstations without root access, cache the small missing RPM runtime set next
+# to Chromium and load it only for this gate. Other platforms use their normal
+# installed libraries and do not need this fallback.
+shopt -s nullglob
+playwright_bins=("$playwright_cache"/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell)
+(( ${#playwright_bins[@]} == 1 )) || fail "could not locate the installed Playwright Chromium binary"
+playwright_browser="${playwright_bins[0]}"
+if [[ -d "$playwright_runtime/root/usr/lib64" ]]; then
+  export LD_LIBRARY_PATH="$playwright_runtime/root/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+missing_browser_libraries="$(ldd "$playwright_browser" | awk '/not found/ { print $1 }')"
+if [[ -n "$missing_browser_libraries" ]]; then
+  command -v dnf >/dev/null 2>&1 || fail "Playwright Chromium is missing libraries: $missing_browser_libraries"
+  command -v rpm2cpio >/dev/null 2>&1 || fail "rpm2cpio is required for the local Playwright runtime cache"
+  command -v cpio >/dev/null 2>&1 || fail "cpio is required for the local Playwright runtime cache"
+  runtime_rpms="$playwright_runtime/rpms"
+  runtime_root="$playwright_runtime/root"
+  mkdir -p "$runtime_rpms" "$runtime_root"
+  dnf download --resolve --arch=x86_64 --destdir="$runtime_rpms" \
+    atk at-spi2-atk at-spi2-core libXcomposite libXdamage libXfixes libXrandr \
+    || fail "could not download the local Playwright runtime libraries"
+  runtime_packages=("$runtime_rpms"/*.x86_64.rpm)
+  (( ${#runtime_packages[@]} > 0 )) || fail "the local Playwright runtime download contained no x86_64 RPMs"
+  for runtime_package in "${runtime_packages[@]}"; do
+    rpm2cpio "$runtime_package" | (cd "$runtime_root" && cpio -idm --quiet) \
+      || fail "could not extract $runtime_package into the local Playwright runtime cache"
+  done
+  export LD_LIBRARY_PATH="$runtime_root/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  missing_browser_libraries="$(ldd "$playwright_browser" | awk '/not found/ { print $1 }')"
+  [[ -z "$missing_browser_libraries" ]] || fail "Playwright Chromium still lacks libraries: $missing_browser_libraries"
+fi
+
+echo "== storefront JavaScript =="
+node --check static/storefront.js || fail "storefront JavaScript has a syntax error"
+node --test tests/storefront_logic.test.mjs || fail "storefront logic tests failed"
+npx playwright test tests/storefront_surface.spec.mjs || fail "storefront browser surface tests failed"
+
 # --- tests -------------------------------------------------------------------
+# The browser uses its large repository-local cache above. Pytest must instead
+# use a local POSIX filesystem: scanner-bootstrap cases test an unreadable
+# directory, and the synchronized repository filesystem does not model chmod
+# denial faithfully. /var/tmp also avoids this workstation's constrained /tmp.
+[[ -d /var/tmp && -w /var/tmp ]] || fail "/var/tmp is required for pytest temporary files"
+export TMPDIR="/var/tmp"
 # pythonpath=["."] in pyproject makes bare `pytest` able to import the root-level
 # modules. Without it pytest collects nothing and exits 5, which is caught below.
 echo "== pytest =="
