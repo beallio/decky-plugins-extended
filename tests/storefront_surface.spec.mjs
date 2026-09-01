@@ -352,11 +352,27 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
   assert.match(focusStyle.boxShadow, /49, 230, 242/);
   await detailButton.click();
   await expect(page.locator("#detail-backdrop")).toBeVisible();
-  await expect(page.getByRole("link", { name: "View source" })).toHaveAttribute(
-    "href",
-    "https://github.com/owner/alpha",
+  await expect(page.locator("#detail-name")).toHaveText("Alpha Tool");
+  await expect(page.locator(".detail-meta")).toHaveText(
+    "by Decky Author · Latest v2.0.0 · Updated 2026-08-30",
   );
+  const repositoryLink = page.getByRole("link", { name: "View repository" });
+  await expect(repositoryLink).toHaveAttribute("href", "https://github.com/owner/alpha");
   const versionHistory = page.getByRole("table", { name: "Version history" });
+  assert.equal(
+    await repositoryLink.evaluate(
+      (link) =>
+        Boolean(
+          link.compareDocumentPosition(document.querySelector(".version-history")) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+    ),
+    true,
+  );
+  const totals = page.locator(".detail-totals");
+  await expect(totals.locator(".detail-total-value")).toHaveText(["10", "2"]);
+  await expect(totals.locator("[data-icon='download']")).toHaveCount(1);
+  await expect(totals.locator("[data-icon='updates']")).toHaveCount(1);
   await expect(versionHistory).toBeVisible();
   await expect(versionHistory.getByRole("columnheader")).toHaveText([
     "Version",
@@ -375,9 +391,19 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
   );
   await expect(versionHistory.getByText("Official catalog", { exact: true })).toBeVisible();
   await expect(versionHistory.getByRole("columnheader", { name: "Audit" })).toHaveCount(0);
-  await expect(page.getByRole("link", { name: "Open audit result" })).toHaveAttribute("href", "audit.html");
-  await page.getByRole("button", { name: "Copy SHA-256" }).click();
+  const auditBox = page.locator(".detail-box").filter({ hasText: "Audit outcome" });
+  await expect(auditBox.getByRole("link", { name: "Open audit log" })).toHaveAttribute(
+    "href",
+    "audit.html",
+  );
+  const hashBox = page.locator(".detail-box").filter({ hasText: "Latest hash" });
+  await expect(hashBox.getByRole("button", { name: "Copy latest SHA-256" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy SHA-256", exact: true })).toHaveCount(0);
+  await hashBox.getByRole("button", { name: "Copy latest SHA-256" }).click();
   await expect(page.locator("#detail-copy-status")).toContainText("SHA-256 hash copied");
+  await page
+    .locator("#detail-dialog")
+    .screenshot({ path: join(SCREENSHOT_DIR, "storefront-detail-modal.png") });
   await page.keyboard.press("Escape");
   await expect(page.locator("#detail-backdrop")).toBeHidden();
   await expect(detailButton).toBeFocused();
@@ -396,7 +422,7 @@ test("dialog copy failures are announced inside the active dialog", async ({ pag
   await page.keyboard.press("Escape");
 
   await page.getByRole("button", { name: "View Alpha Tool details" }).click();
-  await page.getByRole("button", { name: "Copy SHA-256" }).click();
+  await page.getByRole("button", { name: "Copy latest SHA-256" }).click();
   await expect(page.locator("#detail-copy-status")).toContainText(
     "Could not copy the SHA-256 hash",
   );
@@ -417,8 +443,21 @@ test("open detail refreshes source links after delayed metadata without resettin
     await expect
       .poll(() => detailImage.evaluate((image) => image.complete && image.naturalWidth))
       .toBeGreaterThan(0);
+    const artLayout = await page.locator(".detail-art").evaluate((art) => {
+      const body = art.closest(".modal-body");
+      const artRect = art.getBoundingClientRect();
+      const bodyRect = body.getBoundingClientRect();
+      return {
+        leftPadding: artRect.left - bodyRect.left,
+        rightPadding: bodyRect.right - artRect.right,
+        artWidth: artRect.width,
+      };
+    });
+    assert.equal(artLayout.leftPadding, 22);
+    assert.equal(artLayout.rightPadding, 22);
+    assert.ok(artLayout.artWidth > 500);
     await expect(versionHistory.getByText("Source unavailable", { exact: true })).toBeVisible();
-    const copyHash = page.getByRole("button", { name: "Copy SHA-256" });
+    const copyHash = page.getByRole("button", { name: "Copy latest SHA-256" });
     await copyHash.focus();
     await expect(copyHash).toBeFocused();
     await page.waitForTimeout(900);

@@ -301,14 +301,22 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = [], channe
   const latestHistory = versionHistory[0] || null;
   const latest = latestHistory?.version || null;
   const source = latestHistory?.source || null;
-  const audit = source && latest ? findMatchingAuditRecord(source, latest, auditRecords) : null;
   const metadataPlugin = metadataPluginFor(plugin, metadata);
+  const repositoryUrls = new Set(
+    (Array.isArray(metadataPlugin?.versions) ? metadataPlugin.versions : [])
+      .map((version) => stringValue(version?.source_url))
+      .filter(Boolean),
+  );
+  const repositorySourceUrl =
+    repositoryUrls.size === 1 ? repositoryUrls.values().next().value : "";
+  const audit = source && latest ? findMatchingAuditRecord(source, latest, auditRecords) : null;
   const largePluginWarnings = largePluginWarningsFor(plugin, metadata, channel);
   const provenance = provenanceForPlugin(plugin, metadata);
   return {
     plugin,
     latest,
     source,
+    repositorySourceUrl,
     sourceAmbiguous: latestHistory?.sourceAmbiguous === true,
     versionHistory,
     provenance,
@@ -416,6 +424,7 @@ function startStorefront() {
     setupDialog: document.getElementById("setup-dialog"),
     detailBackdrop: document.getElementById("detail-backdrop"),
     detailDialog: document.getElementById("detail-dialog"),
+    detailName: document.getElementById("detail-name"),
     detailContent: document.getElementById("detail-content"),
   };
   if (!elements.grid || !elements.search || !elements.sort) {
@@ -691,10 +700,44 @@ function startStorefront() {
     if (name === "detail") state.detailPluginName = "";
   }
 
-  function detailBox(label, value) {
+  const DETAIL_ICON_PATHS = Object.freeze({
+    clipboard: ["M9 5h6v4H9z", "M7 7H5v14h14V7h-2"],
+    download: ["M12 3v12", "M7 10l5 5 5-5", "M5 21h14"],
+    updates: ["M20 11a8 8 0 1 0-2.34 5.66", "M20 5v6h-6"],
+  });
+
+  function detailIcon(name) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.classList.add("detail-icon");
+    svg.dataset.icon = name;
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    for (const commands of DETAIL_ICON_PATHS[name] || []) {
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", commands);
+      svg.append(path);
+    }
+    return svg;
+  }
+
+  function detailBox(label, value, action = null) {
     const box = createElement("div", "detail-box");
-    box.append(createElement("div", "detail-label", label), createElement("div", "detail-value", value || "Not available"));
+    const valueRow = createElement("div", "detail-value-row");
+    valueRow.append(createElement("div", "detail-value", value || "Not available"));
+    if (action) valueRow.append(action);
+    box.append(createElement("div", "detail-label", label), valueRow);
     return box;
+  }
+
+  function detailTotal(label, value, iconName) {
+    const total = createElement("div", "detail-total");
+    const copy = createElement("div", "detail-total-copy");
+    copy.append(
+      createElement("strong", "detail-total-value", Number(value).toLocaleString()),
+      createElement("span", "detail-total-label", label),
+    );
+    total.append(detailIcon(iconName), copy);
+    return total;
   }
 
   function versionHistoryTable(history) {
@@ -750,7 +793,9 @@ function startStorefront() {
   function renderDetail(plugin) {
     const detail = buildDetailViewModel(plugin, state.metadata, state.auditRecords, state.channel);
     const badge = classifyPrimaryBadge(plugin, detail, state.channel);
+    elements.detailName.textContent = plugin.name;
     elements.detailContent.replaceChildren();
+
     const hero = createElement("div", "detail-hero");
     const detailArt = createElement("div", "detail-art");
     if (plugin.imageUrl) {
@@ -766,25 +811,93 @@ function startStorefront() {
     } else {
       addMonogram(detailArt, plugin.name);
     }
-    hero.append(detailArt);
-    const title = document.createElement("h2");
-    title.id = "detail-name";
-    title.textContent = plugin.name;
-    const titleGroup = document.createElement("div");
-    titleGroup.append(title, createElement("p", "detail-meta", `by ${plugin.author}${detail.latest?.name ? ` · v${detail.latest.name}` : ""}`));
-    hero.append(titleGroup);
-    elements.detailContent.append(hero, createElement("p", "detail-description", plugin.description || "No description provided."));
+    const meta = [`by ${plugin.author}`];
+    if (detail.latest?.name) meta.push(`Latest v${detail.latest.name}`);
+    if (plugin.updated) meta.push(`Updated ${plugin.updated.slice(0, 10)}`);
+    hero.append(detailArt, createElement("p", "detail-meta", meta.join(" · ")));
+    const repositoryUrl =
+      detail.repositorySourceUrl || stringValue(detail.source?.source_url);
+    if (repositoryUrl) {
+      const actions = createElement("div", "detail-actions detail-primary-actions");
+      const source = createElement("a", "btn btn-secondary", "View repository");
+      source.dataset.detailFocus = "view-source";
+      source.href = repositoryUrl;
+      source.target = "_blank";
+      source.rel = "noopener";
+      actions.append(source);
+      hero.append(actions);
+    }
+    elements.detailContent.append(
+      hero,
+      createElement(
+        "p",
+        "detail-description",
+        plugin.description || "No description provided.",
+      ),
+    );
+
+    const detailCopyStatus = createElement(
+      "p",
+      "copy-status dialog-copy-status detail-copy-status",
+    );
+    detailCopyStatus.id = "detail-copy-status";
+    detailCopyStatus.setAttribute("role", "status");
+    detailCopyStatus.setAttribute("aria-live", "polite");
+    let copyHash = null;
+    if (detail.latest?.hash) {
+      copyHash = createElement("button", "detail-icon-button");
+      copyHash.type = "button";
+      copyHash.dataset.detailFocus = "copy-hash";
+      copyHash.setAttribute("aria-label", "Copy latest SHA-256");
+      copyHash.title = "Copy latest SHA-256";
+      copyHash.append(detailIcon("clipboard"));
+      copyHash.addEventListener("click", () =>
+        copyText(detail.latest.hash, detailCopyStatus, {
+          success: "SHA-256 hash copied to the clipboard.",
+          failure: "Could not copy the SHA-256 hash. Use the visible hash instead.",
+        }),
+      );
+    }
+
+    const auditLink = createElement("a", "detail-box-action", "Open audit log");
+    auditLink.dataset.detailFocus = "open-audit";
+    auditLink.href = "audit.html";
+    const hashBox = detailBox("Latest hash", detail.latest?.hash || "", copyHash);
+    hashBox.classList.add("detail-hash-box");
+    if (detail.latest?.hash) hashBox.append(detailCopyStatus);
     const grid = createElement("div", "detail-grid");
     grid.append(
       detailBox("Catalog status", badge?.label || "Catalog entry"),
       detailBox("Provenance", detail.provenanceLabel),
-      detailBox("Latest hash", detail.latest?.hash || ""),
-      detailBox("Audit outcome", detail.audit?.classification || "No matching audit record"),
+      hashBox,
+      detailBox(
+        "Audit outcome",
+        detail.audit?.classification || "No matching audit record",
+        auditLink,
+      ),
     );
     elements.detailContent.append(grid);
-    elements.detailContent.append(versionHistoryTable(detail.versionHistory));
-    if (detail.officialNote) elements.detailContent.append(createElement("p", "warning", detail.officialNote));
-    if (detail.sourceAmbiguous) elements.detailContent.append(createElement("p", "warning", "Multiple source records match this artifact, so no source-specific audit result is shown."));
+
+
+    const totals = createElement("div", "detail-totals");
+    totals.setAttribute("aria-label", "Plugin totals");
+    totals.append(
+      detailTotal("Total downloads", plugin.downloads, "download"),
+      detailTotal("Total updates", plugin.updates, "updates"),
+    );
+    elements.detailContent.append(totals, versionHistoryTable(detail.versionHistory));
+    if (detail.officialNote) {
+      elements.detailContent.append(createElement("p", "warning", detail.officialNote));
+    }
+    if (detail.sourceAmbiguous) {
+      elements.detailContent.append(
+        createElement(
+          "p",
+          "warning",
+          "Multiple source records match this artifact, so no source-specific audit result is shown.",
+        ),
+      );
+    }
     detail.largePluginWarnings.forEach((warning) => {
       const size = `${(warning.sizeBytes / 1024 ** 2).toFixed(1)} MiB`;
       const limit = `${(warning.limitBytes / 1024 ** 2).toFixed(0)} MiB`;
@@ -799,39 +912,6 @@ function startStorefront() {
         ),
       );
     });
-    const actions = createElement("div", "detail-actions");
-    const detailCopyStatus = createElement("p", "copy-status dialog-copy-status");
-    detailCopyStatus.id = "detail-copy-status";
-    detailCopyStatus.setAttribute("role", "status");
-    detailCopyStatus.setAttribute("aria-live", "polite");
-    if (detail.source?.source_url) {
-      const source = createElement("a", "btn btn-secondary", "View source");
-      source.dataset.detailFocus = "view-source";
-      source.href = detail.source.source_url;
-      source.target = "_blank";
-      source.rel = "noopener";
-      actions.append(source);
-    }
-    if (detail.latest?.hash) {
-      const copyHash = createElement("button", "btn btn-secondary", "Copy SHA-256");
-      copyHash.type = "button";
-      copyHash.dataset.detailFocus = "copy-hash";
-      copyHash.addEventListener("click", () =>
-        copyText(detail.latest.hash, detailCopyStatus, {
-          success: "SHA-256 hash copied to the clipboard.",
-          failure: "Could not copy the SHA-256 hash. Use the visible hash instead.",
-        }),
-      );
-      actions.append(copyHash);
-    }
-    if (detail.audit) {
-      const audit = createElement("a", "btn btn-secondary", "Open audit result");
-      audit.dataset.detailFocus = "open-audit";
-      audit.href = "audit.html";
-      actions.append(audit);
-    }
-    if (actions.childElementCount) elements.detailContent.append(actions);
-    elements.detailContent.append(detailCopyStatus);
   }
 
   function openDetail(plugin, trigger) {
