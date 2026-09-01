@@ -1,6 +1,11 @@
 __pycache__/
 *.py[cod]
 .venv/
+node_modules/
+.playwright-browsers/
+.playwright-runtime/
+test-results/
+playwright-report/
 public/
 .wrangler/
 security-reports/
