@@ -506,6 +506,129 @@ def copy_static_files(source="static", destination="public"):
     return copied
 
 
+def _catalog_name_keys(catalog):
+    """Return the case-insensitive names present in a catalog snapshot."""
+    return {
+        str(entry.get("name", "")).strip().casefold()
+        for entry in catalog or []
+        if isinstance(entry, dict) and str(entry.get("name", "")).strip()
+    }
+
+
+def _visible_catalog_entries(catalog):
+    """Return catalog entries published to browser users in their channel."""
+    return [
+        entry
+        for entry in catalog or []
+        if isinstance(entry, dict) and entry.get("visible") is not False
+    ]
+
+
+def build_storefront_metadata(
+    stable_plugins,
+    testing_plugins,
+    official_catalog_names,
+    contributions,
+    enforcement_mode,
+):
+    """Build deterministic browser-only catalog provenance and status metadata.
+
+    Decky's catalog schema remains unchanged. This sidecar records only the
+    configured repositories that supplied an eligible artifact, keyed by the
+    plugin's stable case-insensitive identity. Multiple repositories can publish
+    distinct artifacts for one name, so versions are kept as records rather
+    than overwriting one plugin-level source field.
+    """
+    official_catalog_names = {
+        str(name).strip().casefold()
+        for name in official_catalog_names or set()
+        if str(name).strip()
+    }
+    stable_visible = _visible_catalog_entries(stable_plugins)
+    testing_visible = _visible_catalog_entries(testing_plugins)
+
+    def extended_count(entries):
+        return len(
+            {
+                str(entry.get("name", "")).strip().casefold()
+                for entry in entries
+                if str(entry.get("name", "")).strip().casefold()
+                not in official_catalog_names
+                and str(entry.get("name", "")).strip()
+            }
+        )
+
+    by_plugin = {}
+    for contribution in contributions or []:
+        if not isinstance(contribution, dict):
+            continue
+        display_name = str(contribution.get("name", "")).strip()
+        version = contribution.get("version")
+        if not display_name or not isinstance(version, dict):
+            continue
+        key = display_name.casefold()
+        normalized_name = normalize_version(str(version.get("name", "")).strip())
+        normalized_tag = normalize_version(str(version.get("tag", "")).strip())
+        record = {
+            "name": normalized_name,
+            "hash": str(version.get("hash", "")).strip().lower(),
+            "tag": normalized_tag,
+            "repository": str(version.get("repository", "")).strip(),
+            "source_url": str(version.get("source_url", "")).strip(),
+        }
+        if not all(record.values()):
+            continue
+        details = by_plugin.setdefault(key, {"names": set(), "versions": []})
+        details["names"].add(display_name)
+        identity = tuple(
+            record[field]
+            for field in ("name", "hash", "tag", "repository", "source_url")
+        )
+        if identity not in {
+            tuple(
+                item[field]
+                for field in ("name", "hash", "tag", "repository", "source_url")
+            )
+            for item in details["versions"]
+        }:
+            details["versions"].append(record)
+
+    plugins = {}
+    for key in sorted(by_plugin):
+        details = by_plugin[key]
+        versions = sorted(
+            details["versions"],
+            key=lambda version: (
+                version["hash"],
+                version["repository"],
+                version["tag"],
+                version["name"],
+            ),
+        )
+        plugins[key] = {
+            "name": min(details["names"], key=lambda name: (name.casefold(), name)),
+            "provenance": "official" if key in official_catalog_names else "extended",
+            "versions": versions,
+        }
+
+    return {
+        "schema_version": 1,
+        "enforcement_mode": enforcement_mode,
+        "stable_count": len(stable_visible),
+        "testing_count": len(testing_visible),
+        "stable_extended_count": extended_count(stable_visible),
+        "testing_extended_count": extended_count(testing_visible),
+        "plugins": plugins,
+    }
+
+
+def write_storefront_metadata(path, metadata):
+    """Write browser metadata with fixed formatting for reproducible builds."""
+    with open(path, "w", encoding="utf-8") as metadata_file:
+        json.dump(metadata, metadata_file, indent=2)
+        metadata_file.write("\n")
+
+
 def _public_audit_records(
     verdicts, blockable_rules=None, current_identity_records=None
 ):
@@ -816,6 +939,9 @@ def main():
     print("Fetching base JSON lists...")
     plugins = fetch_json(PLUGINS_URL)
     testing_plugins = fetch_json(TESTING_PLUGINS_URL)
+    official_catalog_names = _catalog_name_keys(plugins) | _catalog_name_keys(
+        testing_plugins
+    )
 
     # Maintain independent ID spaces
     max_stable_id = max([p.get("id", 0) for p in plugins]) if plugins else 0
@@ -851,6 +977,7 @@ def main():
     errors = []
     custom_plugin_names = set()
     current_identity_records = []
+    storefront_contributions = []
 
     for url in repo_urls:
         try:
@@ -969,6 +1096,21 @@ def main():
                         f"  Blocking {plugin_name} release {rel.get('tag_name', '')}: {rule_ids}"
                     )
                     continue
+
+                repository_slug = _repository_slug(url)
+                if repository_slug:
+                    storefront_contributions.append(
+                        {
+                            "name": plugin_name,
+                            "version": {
+                                "name": v_obj["name"],
+                                "hash": v_obj["hash"],
+                                "tag": normalize_version(rel.get("tag_name", "")),
+                                "repository": repository_slug,
+                                "source_url": f"https://github.com/{repository_slug}",
+                            },
+                        }
+                    )
 
                 # Testing includes stable + prereleases
                 testing_versions.append(v_obj.copy())
@@ -1120,6 +1262,15 @@ def main():
         json.dump(plugins, f, indent=2)
     with open("public/testing_plugins.json", "w") as f:
         json.dump(testing_plugins, f, indent=2)
+
+    storefront_metadata = build_storefront_metadata(
+        plugins,
+        testing_plugins,
+        official_catalog_names,
+        storefront_contributions,
+        enforcement_mode,
+    )
+    write_storefront_metadata("public/storefront.json", storefront_metadata)
 
     # Write Cloudflare Pages _headers file for Decky Loader CORS preflight
     with open("public/_headers", "w") as f:

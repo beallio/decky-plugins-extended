@@ -456,21 +456,117 @@ class GenerateJsonTests(unittest.TestCase):
         self.assertEqual(plugin["versions"][1]["downloads"], 10)
         self.assertEqual(plugin["versions"][1]["updates"], 4)
 
-    def test_copy_static_files_publishes_the_landing_page(self):
+    def test_copy_static_files_publishes_storefront_assets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "static"
             destination = Path(temp_dir) / "public"
             source.mkdir()
             destination.mkdir()
             (source / "index.html").write_text("<h1>hi</h1>", encoding="utf-8")
+            (source / "storefront.css").write_text("body {}", encoding="utf-8")
+            (source / "storefront.js").write_text("export {};", encoding="utf-8")
             (source / "nested").mkdir()
 
             copied = generate_json.copy_static_files(str(source), str(destination))
 
-            self.assertEqual(copied, ["index.html"])
+            self.assertEqual(copied, ["index.html", "storefront.css", "storefront.js"])
             self.assertEqual(
                 (destination / "index.html").read_text(encoding="utf-8"), "<h1>hi</h1>"
             )
+            self.assertTrue((destination / "storefront.css").is_file())
+            self.assertTrue((destination / "storefront.js").is_file())
+
+    def test_build_storefront_metadata_keeps_per_version_provenance(self):
+        stable = [
+            {"name": "Official Plugin", "visible": True},
+            {"name": "Extended One", "visible": True},
+            {"name": "extended one", "visible": True},
+            {"name": "Hidden Stable", "visible": False},
+        ]
+        testing = [
+            {"name": "official plugin", "visible": True},
+            {"name": "Extended Two", "visible": True},
+            {"name": "Hidden Test", "visible": False},
+        ]
+        contributions = [
+            {
+                "name": "Official Plugin",
+                "version": {
+                    "name": "2.0.0",
+                    "hash": "b" * 64,
+                    "tag": "2.0.0",
+                    "repository": "owner/two",
+                    "source_url": "https://github.com/owner/two",
+                },
+            },
+            {
+                "name": "official plugin",
+                "version": {
+                    "name": "1.0.0",
+                    "hash": "a" * 64,
+                    "tag": "1.0.0",
+                    "repository": "owner/one",
+                    "source_url": "https://github.com/owner/one",
+                },
+            },
+            {
+                "name": "Extended One",
+                "version": {
+                    "name": "1.0.0",
+                    "hash": "c" * 64,
+                    "tag": "1.0.0",
+                    "repository": "owner/extended",
+                    "source_url": "https://github.com/owner/extended",
+                },
+            },
+        ]
+
+        metadata = generate_json.build_storefront_metadata(
+            stable,
+            testing,
+            {"OFFICIAL PLUGIN".casefold()},
+            contributions,
+            "enforce",
+        )
+
+        self.assertEqual(metadata["schema_version"], 1)
+        self.assertEqual(metadata["stable_count"], 3)
+        self.assertEqual(metadata["testing_count"], 2)
+        self.assertEqual(metadata["stable_extended_count"], 1)
+        self.assertEqual(metadata["testing_extended_count"], 1)
+        self.assertEqual(
+            metadata["plugins"]["official plugin"]["provenance"], "official"
+        )
+        self.assertEqual(metadata["plugins"]["extended one"]["provenance"], "extended")
+        self.assertEqual(
+            [
+                version["hash"]
+                for version in metadata["plugins"]["official plugin"]["versions"]
+            ],
+            ["a" * 64, "b" * 64],
+        )
+
+    def test_storefront_metadata_empty_output_and_writer_are_deterministic(self):
+        empty = generate_json.build_storefront_metadata([], [], set(), [], "enforce")
+        self.assertEqual(
+            empty,
+            {
+                "schema_version": 1,
+                "enforcement_mode": "enforce",
+                "stable_count": 0,
+                "testing_count": 0,
+                "stable_extended_count": 0,
+                "testing_extended_count": 0,
+                "plugins": {},
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = Path(temp_dir) / "first.json"
+            second = Path(temp_dir) / "second.json"
+            generate_json.write_storefront_metadata(first, empty)
+            generate_json.write_storefront_metadata(second, empty)
+            self.assertEqual(first.read_bytes(), second.read_bytes())
 
     def test_copy_static_files_without_a_static_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -625,6 +721,153 @@ class GenerateJsonTests(unittest.TestCase):
             "https://opengraph.githubassets.com/1/example/custom-plugin",
         )
         self.assertEqual(testing_plugin["image_url"], stable_plugin["image_url"])
+
+    def test_main_publishes_storefront_metadata_for_same_name_repositories(self):
+        base_stable = [
+            {
+                "id": 7,
+                "name": "Shared Plugin",
+                "versions": [
+                    {
+                        "name": "0.9.0",
+                        "hash": "f" * 64,
+                        "artifact": "https://example.invalid/official.zip",
+                    }
+                ],
+            }
+        ]
+        repository_releases = {
+            ("owner", "one"): [
+                {
+                    "tag_name": "v2.0.0",
+                    "prerelease": False,
+                    "metadata_hash": "b" * 64,
+                }
+            ],
+            ("owner", "two"): [
+                {
+                    "tag_name": "v1.0.0",
+                    "prerelease": False,
+                    "metadata_hash": "a" * 64,
+                }
+            ],
+        }
+        repo_info = {
+            "default_branch": "main",
+            "description": "Repository description",
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        package = {"name": "shared-plugin", "author": "Decky Author"}
+        plugin_json = {"name": "Shared Plugin"}
+
+        def fetch_json(url):
+            if url == generate_json.PLUGINS_URL:
+                return copy.deepcopy(base_stable)
+            return []
+
+        def build_version_object(release, existing_plugin=None, policy=None):
+            del existing_plugin, policy
+            name = release["tag_name"].lstrip("v")
+            return {
+                "name": name,
+                "hash": release["metadata_hash"],
+                "artifact": f"https://example.invalid/{name}.zip",
+                "created": "2026-01-01T00:00:00Z",
+                "downloads": 0,
+                "updates": 0,
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workdir = Path(temp_dir)
+            (workdir / "additional_plugins.txt").write_text(
+                "\n".join(
+                    (
+                        "https://github.com/owner/one",
+                        "https://github.com/owner/two",
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            static = workdir / "static"
+            static.mkdir()
+            for name in ("index.html", "storefront.css", "storefront.js"):
+                (static / name).write_text(name, encoding="utf-8")
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(workdir)
+                with (
+                    patch.object(generate_json, "fetch_json", side_effect=fetch_json),
+                    patch.object(
+                        generate_json, "get_repo_info", return_value=repo_info
+                    ),
+                    patch.object(
+                        generate_json, "get_package_json", return_value=package
+                    ),
+                    patch.object(
+                        generate_json, "get_plugin_json", return_value=plugin_json
+                    ),
+                    patch.object(
+                        generate_json,
+                        "get_releases",
+                        side_effect=lambda owner, repo: repository_releases[
+                            (owner, repo)
+                        ],
+                    ),
+                    patch.object(
+                        generate_json,
+                        "build_version_object",
+                        side_effect=build_version_object,
+                    ),
+                ):
+                    generate_json.main()
+            finally:
+                os.chdir(old_cwd)
+
+            storefront = json.loads(
+                (workdir / "public/storefront.json").read_text(encoding="utf-8")
+            )
+            stable = json.loads(
+                (workdir / "public/plugins.json").read_text(encoding="utf-8")
+            )
+            published = {path.name for path in (workdir / "public").iterdir()}
+
+        self.assertEqual(storefront["schema_version"], 1)
+        self.assertEqual(
+            storefront["plugins"]["shared plugin"]["provenance"], "official"
+        )
+        self.assertEqual(
+            storefront["plugins"]["shared plugin"]["versions"],
+            [
+                {
+                    "name": "1.0.0",
+                    "hash": "a" * 64,
+                    "tag": "1.0.0",
+                    "repository": "owner/two",
+                    "source_url": "https://github.com/owner/two",
+                },
+                {
+                    "name": "2.0.0",
+                    "hash": "b" * 64,
+                    "tag": "2.0.0",
+                    "repository": "owner/one",
+                    "source_url": "https://github.com/owner/one",
+                },
+            ],
+        )
+        self.assertTrue(
+            {
+                "plugins.json",
+                "testing_plugins.json",
+                "storefront.json",
+                "audit.json",
+                "index.html",
+                "storefront.css",
+                "storefront.js",
+            }.issubset(published)
+        )
+        self.assertFalse(any("storefront" in entry for entry in stable))
 
     def test_main_annotates_merged_entries_with_the_official_version(self):
         base_stable = [
