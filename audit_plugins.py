@@ -4284,6 +4284,7 @@ def build_audit_worklist(
     latest_only: bool = False,
     release_fetcher: Any = None,
     metadata_fetcher: Any = None,
+    release_max_bytes: int = plugin_release_utils.DEFAULT_RELEASE_MAX_BYTES,
 ) -> tuple[list[AuditWorkItem], list[AuditReport]]:
     """Build the complete deterministic eligible-release worklist."""
     if release_fetcher is None:
@@ -4325,6 +4326,13 @@ def build_audit_worklist(
                 )
             )
             continue
+        eligible = [
+            release
+            for release in eligible
+            if not plugin_release_utils.release_exceeds_download_limit(
+                release, release_max_bytes
+            )
+        ]
         worklist.extend(
             AuditWorkItem(repository, release, metadata) for release in eligible
         )
@@ -6763,6 +6771,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 repository_urls = [args.repository]
                 selection_mode = "repository"
 
+            release_max_bytes = plugin_release_utils.validate_download_policy(
+                load_policy(args.policy)
+            ).release_max_bytes
             with _producer_api_budget_scope(args.api_deadline_seconds) as api_budget:
                 fingerprint, _ = audit_worklist.prepare_audit_worklist(
                     args.prepare_worklist,
@@ -6778,6 +6789,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     api_deadline_seconds=args.api_deadline_seconds,
                     api_budget=api_budget,
                     store_versions=plugin_release_utils.load_store_versions(),
+                    release_max_bytes=release_max_bytes,
                 )
             print(f"worklist_fingerprint={fingerprint}")
             return 0
@@ -6974,7 +6986,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         log.info("Enumerating %d repository/repositories.", len(repo_urls))
         try:
             work_items, repository_errors = build_audit_worklist(
-                repo_urls, latest_only=args.latest_only
+                repo_urls,
+                latest_only=args.latest_only,
+                release_max_bytes=plugin_release_utils.validate_download_policy(
+                    policy
+                ).release_max_bytes,
             )
             work_items = select_audit_shard(
                 work_items, args.shard_count, args.shard_index
