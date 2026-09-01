@@ -11,9 +11,13 @@ fail() { echo "GATE FAILED: $*" >&2; exit 1; }
 # PATH would surface as a bare "command not found" and could read as a skip.
 command -v uv >/dev/null 2>&1 || fail "uv is not on PATH"
 command -v gh >/dev/null 2>&1 || fail "gh is not on PATH"
+command -v node >/dev/null 2>&1 || fail "node is not on PATH"
+command -v npm >/dev/null 2>&1 || fail "npm is not on PATH"
 command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is not on PATH"
 command -v tar >/dev/null 2>&1 || fail "tar is not on PATH"
 [[ -f pyproject.toml ]] || fail "not at repo root: no pyproject.toml"
+[[ -f package.json ]] || fail "package.json is missing"
+[[ -f package-lock.json ]] || fail "package-lock.json is missing"
 
 # The suite is worthless if it silently collects nothing. tests/ must exist and
 # hold at least one test module before we trust a green run.
@@ -125,6 +129,20 @@ uv run ruff check . || fail "ruff check reported violations"
 
 echo "== ruff format --check =="
 uv run ruff format --check . || fail "ruff format would reformat files; run 'uv run ruff format .'"
+
+# --- storefront browser contract --------------------------------------------
+# The storefront has no runtime Node dependency. Playwright is pinned only to
+# execute the source module and its rendered browser behavior over local HTTP.
+echo "== storefront Node dependencies =="
+npm ci --ignore-scripts --no-audit --no-fund || fail "could not install storefront test dependencies"
+
+echo "== storefront Chromium =="
+npx playwright install chromium || fail "could not install the pinned Playwright Chromium build"
+
+echo "== storefront JavaScript =="
+node --check static/storefront.js || fail "storefront JavaScript has a syntax error"
+node --test tests/storefront_logic.test.mjs || fail "storefront logic tests failed"
+npx playwright test tests/storefront_surface.spec.mjs || fail "storefront browser surface tests failed"
 
 # --- tests -------------------------------------------------------------------
 # pythonpath=["."] in pyproject makes bare `pytest` able to import the root-level
