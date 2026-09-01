@@ -51,13 +51,12 @@ def test_storefront_has_unique_ids_and_referenced_local_assets():
     assert STOREFRONT_JS.is_file()
 
 
-def test_storefront_keeps_visible_stable_and_testing_fallback_urls():
+def test_storefront_removes_redundant_install_panel_endpoint_links():
     html = _html()
 
     assert "https://decky-extended-plugins.beallio.com/plugins.json" in html
-    assert "https://decky-extended-plugins.beallio.com/testing_plugins.json" in html
-    assert 'data-fallback-channel="stable"' in html
-    assert 'data-fallback-channel="testing"' in html
+    assert "https://decky-extended-plugins.beallio.com/testing_plugins.json" not in html
+    assert "data-fallback-channel" not in html
 
 
 def test_storefront_semantics_controls_and_accessible_dialogs():
@@ -67,6 +66,7 @@ def test_storefront_semantics_controls_and_accessible_dialogs():
     assert _has_element(parser, "section", **{"aria-label": "Store status"})
     assert _has_element(parser, "input", id="search", type="search")
     assert _has_element(parser, "select", id="sort")
+    assert _has_element(parser, "select", id="sort-direction")
     assert _has_element(parser, "div", id="plugin-grid")
     assert _has_element(parser, "p", id="copy-status", role="status")
     assert _has_element(parser, "p", id="setup-copy-status", role="status")
