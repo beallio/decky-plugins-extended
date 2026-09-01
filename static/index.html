@@ -1,276 +1,153 @@
-
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Decky Extended Plugins</title>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Varela+Round&display=swap');
-
-        body {
-            background-color: #0d0d0d;
-            background-image: linear-gradient(0deg, transparent 24%, rgba(255, 0, 255, 0.3) 25%, rgba(255, 0, 255, 0.3) 26%, transparent 27%, transparent 74%, rgba(255, 0, 255, 0.3) 75%, rgba(255, 0, 255, 0.3) 76%, transparent 77%, transparent), linear-gradient(90deg, transparent 24%, rgba(0, 255, 255, 0.3) 25%, rgba(0, 255, 255, 0.3) 26%, transparent 27%, transparent 74%, rgba(0, 255, 255, 0.3) 75%, rgba(0, 255, 255, 0.3) 76%, transparent 77%, transparent);
-            background-size: 50px 50px;
-            color: #fff;
-            font-family: 'Varela Round', sans-serif;
-            text-align: center;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            margin: 0;
-            padding: 40px 0;
-            box-sizing: border-box;
-            overflow-x: hidden;
-        }
-
-        .container {
-            background: rgba(0, 0, 0, 0.8);
-            border: 4px solid #ff00ff;
-            border-radius: 15px;
-            padding: 72px 40px 40px;
-            box-shadow: 0 0 20px #ff00ff, inset 0 0 20px #00ffff;
-            max-width: 800px;
-            width: 90%;
-            position: relative;
-            z-index: 10;
-            animation: pulse 2s infinite alternate;
-        }
-
-        @keyframes pulse {
-            0% { box-shadow: 0 0 20px #ff00ff, inset 0 0 20px #00ffff; }
-            100% { box-shadow: 0 0 40px #ff00ff, inset 0 0 40px #00ffff; }
-        }
-
-        h1 {
-            font-family: 'Press Start 2P', cursive;
-            color: #00ffff;
-            text-shadow: 3px 3px #ff00ff, -2px -2px #ffff00;
-            margin-bottom: 20px;
-            font-size: 2.5em;
-            line-height: 1.5;
-        }
-
-        p {
-            font-size: 1.2em;
-            color: #ffff00;
-            text-shadow: 1px 1px #ff00ff;
-            margin-bottom: 40px;
-            line-height: 1.6;
-        }
-
-        .urls {
-            margin-top: 30px;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            font-size: 0.95em;
-            word-break: break-all;
-        }
-
-        .urls a {
-            color: #00ffff;
-            text-decoration: none;
-            text-shadow: 1px 1px #ff00ff;
-        }
-
-        .urls a:hover {
-            text-decoration: underline;
-        }
-
-        .links-container {
-            display: flex;
-            justify-content: center;
-            gap: 20px;
-            flex-wrap: wrap;
-        }
-
-        .utility-links {
-            position: absolute;
-            top: 18px;
-            right: 22px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            z-index: 2;
-        }
-
-        .utility-link {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 6px 8px;
-            border: 1px solid rgba(0, 255, 255, 0.45);
-            border-radius: 6px;
-            background: rgba(13, 13, 13, 0.65);
-            color: rgba(255, 255, 255, 0.72);
-            font-size: 0.75em;
-            text-decoration: none;
-            text-transform: uppercase;
-            transition: color 0.15s, border-color 0.15s, transform 0.15s;
-        }
-
-        .utility-link:hover,
-        .utility-link:focus-visible {
-            transform: translateY(-1px);
-            border-color: #00ffff;
-            color: #00ffff;
-            outline: none;
-        }
-
-        .utility-icon {
-            width: 1.15em;
-            height: 1.15em;
-            flex: 0 0 auto;
-        }
-
-        .github-icon {
-            fill: currentColor;
-        }
-
-        .audit-icon {
-            fill: none;
-            stroke: currentColor;
-            stroke-linecap: round;
-            stroke-linejoin: round;
-            stroke-width: 1.8;
-        }
-
-        .link-button {
-            display: inline-block;
-            background-color: #ff00ff;
-            color: #000;
-            font-family: 'Press Start 2P', cursive;
-            font-size: 0.9em;
-            padding: 15px 20px;
-            text-decoration: none;
-            border: 4px solid #00ffff;
-            border-radius: 10px;
-            box-shadow: 5px 5px 0 #ffff00;
-            transition: transform 0.1s, box-shadow 0.1s;
-            cursor: pointer;
-            outline: none;
-        }
-
-        .link-button:hover {
-            transform: translate(5px, 5px);
-            box-shadow: 0 0 0 #ffff00;
-            background-color: #00ffff;
-            color: #000;
-            border-color: #ff00ff;
-        }
-
-        .link-button.dev {
-            background-color: #ffff00;
-            border-color: #ff00ff;
-            box-shadow: 5px 5px 0 #00ffff;
-        }
-        
-        .link-button.dev:hover {
-            background-color: #ff00ff;
-            border-color: #ffff00;
-            box-shadow: 0 0 0 #00ffff;
-        }
-
-        /* Decorative background elements */
-        .sun {
-            position: fixed;
-            bottom: -100px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 400px;
-            height: 400px;
-            background: linear-gradient(to bottom, #ff00ff, #ffff00);
-            border-radius: 50%;
-            z-index: 1;
-            box-shadow: 0 0 100px #ff00ff;
-            mask-image: linear-gradient(to bottom, black 40%, transparent 60%);
-            -webkit-mask-image: linear-gradient(to bottom, black 40%, transparent 60%);
-        }
-        
-        .grid-floor {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            width: 100%;
-            height: 30vh;
-            background-image: 
-                linear-gradient(to top, rgba(255,0,255,1) 0%, transparent 100%),
-                linear-gradient(to right, #00ffff 1px, transparent 1px),
-                linear-gradient(to bottom, #00ffff 1px, transparent 1px);
-            background-size: 100% 100%, 40px 100%, 100% 40px;
-            transform: perspective(500px) rotateX(60deg);
-            transform-origin: bottom center;
-            z-index: 2;
-        }
-
-        @media (max-width: 600px) {
-            .container {
-                padding: 76px 20px 30px;
-            }
-
-            .utility-links {
-                top: 14px;
-                right: 14px;
-                gap: 6px;
-            }
-
-            .utility-link {
-                padding: 5px 6px;
-                font-size: 0.68em;
-            }
-        }
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A browser catalog for Decky Extended Plugins.">
+  <title>Decky Extended Plugins</title>
+  <link rel="stylesheet" href="storefront.css">
 </head>
 <body>
-    
-    <div class="sun"></div>
-    <div class="grid-floor"></div>
-
-    <div class="container">
-        <div class="utility-links" aria-label="Site links">
-            <a href="audit.html" class="utility-link audit" aria-label="View audit log" title="View audit log">
-                <svg class="utility-icon audit-icon" viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M12 3.5 19 6v5.2c0 4.4-2.8 7.8-7 9.3-4.2-1.5-7-4.9-7-9.3V6z"></path>
-                    <path d="m8.5 12 2.2 2.2 4.8-5"></path>
-                </svg>
-                <span>Audit</span>
-            </a>
-            <a href="https://github.com/beallio/decky-plugins-extended" class="utility-link github" aria-label="View source on GitHub" title="View source on GitHub" target="_blank" rel="noopener">
-                <svg class="utility-icon github-icon" viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.722 3.633 18.44 3.633 18.44c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.418-1.305.762-1.605-2.665-.3-5.466-1.335-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.21 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"></path>
-                </svg>
-                <span>GitHub</span>
-            </a>
-        </div>
-        <h1>Decky Extended Plugins</h1>
-        <p>A custom Decky Loader store that merges the official Deckbrew catalog with community plugins that aren't in it, installed and updated the normal way. Copy a URL below and paste it into Decky under <strong>Settings &rarr; General &rarr; Store Channel &rarr; Custom</strong>. Use stable unless you want prereleases.</p>
-        
-        <div class="links-container">
-            <button class="link-button" onclick="copyText('https://decky-extended-plugins.beallio.com/plugins.json', this, 'COPY STABLE')">COPY STABLE</button>
-            <button class="link-button dev" onclick="copyText('https://decky-extended-plugins.beallio.com/testing_plugins.json', this, 'COPY TEST/DEV')">COPY TEST/DEV</button>
-        </div>
-
-        <div class="urls">
-            <a href="https://decky-extended-plugins.beallio.com/plugins.json">decky-extended-plugins.beallio.com/plugins.json</a>
-            <a href="https://decky-extended-plugins.beallio.com/testing_plugins.json">decky-extended-plugins.beallio.com/testing_plugins.json</a>
-        </div>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="#top" aria-label="Decky Extended Plugins home">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4zM8 10h8M8 14h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>
+        <span>Decky <span class="brand-accent">Extended</span> Plugins</span>
+      </a>
+      <nav class="nav" aria-label="Primary navigation">
+        <a href="#catalog">Plugins</a>
+        <a href="audit.html">Audit</a>
+        <a class="github-link" href="https://github.com/beallio/decky-plugins-extended" target="_blank" rel="noopener">GitHub</a>
+      </nav>
     </div>
+  </header>
 
-    <script>
-        function copyText(textToCopy, buttonElement, originalText) {
-            navigator.clipboard.writeText(textToCopy).then(() => {
-                buttonElement.innerText = "COPIED!";
-                setTimeout(() => {
-                    buttonElement.innerText = originalText;
-                }, 2000); // Resets back to original text after 2 seconds
-            }).catch(err => {
-                console.error('Failed to copy: ', err);
-                buttonElement.innerText = "ERROR!";
-            });
-        }
-    </script>
+  <main id="top">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="shell hero-grid">
+        <div>
+          <p class="eyebrow">Community catalog for Decky Loader</p>
+          <h1 id="hero-title">More plugins.<br><span class="gradient-text">Clearer choices.</span></h1>
+          <p class="hero-copy">Browse newer releases and selected community plugins with their source, version difference, and audit state visible before you add the store to Decky Loader.</p>
+          <p class="hero-links"><a href="#catalog">Browse the catalog</a> <a href="audit.html">How security review works</a></p>
+        </div>
+
+        <aside class="install-panel" aria-labelledby="install-title">
+          <p class="panel-kicker">Add to Decky Loader</p>
+          <h2 id="install-title">Choose your channel</h2>
+          <div class="channel-switch" aria-label="Store channel">
+            <button type="button" data-channel="stable" aria-pressed="true">Stable</button>
+            <button type="button" data-channel="testing" aria-pressed="false">Testing</button>
+          </div>
+          <p class="channel-description" id="channel-description">Stable releases only. This channel is recommended for daily use.</p>
+          <button class="btn btn-primary" id="copy-store" type="button" aria-describedby="copy-status">Copy Stable URL</button>
+          <button class="btn btn-quiet setup-button" id="open-setup" type="button">Show setup steps</button>
+          <p class="copy-status" id="copy-status" role="status" aria-live="polite"></p>
+          <div class="fallback-links" aria-label="Direct store catalog links">
+            <a data-fallback-channel="stable" href="https://decky-extended-plugins.beallio.com/plugins.json">https://decky-extended-plugins.beallio.com/plugins.json</a>
+            <a data-fallback-channel="testing" href="https://decky-extended-plugins.beallio.com/testing_plugins.json">https://decky-extended-plugins.beallio.com/testing_plugins.json</a>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="shell status-strip" aria-label="Store status">
+      <div class="status-item">
+        <div class="status-value" id="catalog-status-value"><span class="status-dot" aria-hidden="true"></span><span>Loading</span></div>
+        <div class="status-label">Catalog status</div>
+      </div>
+      <div class="status-item">
+        <div class="status-value" id="available-count">—</div>
+        <div class="status-label">Available now</div>
+      </div>
+      <div class="status-item">
+        <div class="status-value" id="extended-count">—</div>
+        <div class="status-label">Community sources</div>
+      </div>
+      <div class="status-item" id="audit-status">
+        <div class="status-value" id="security-policy">Checking</div>
+        <div class="status-label">Security policy</div>
+      </div>
+    </section>
+
+    <section class="shell catalog" id="catalog" aria-labelledby="catalog-title">
+      <div class="catalog-heading">
+        <div>
+          <p class="eyebrow">Explore</p>
+          <h2 id="catalog-title">Plugin catalog</h2>
+          <p id="catalog-introduction">Search by name, author, or purpose.</p>
+        </div>
+        <p class="result-total" id="result-total" aria-live="polite">Loading catalog</p>
+      </div>
+
+      <div class="toolbar" aria-label="Catalog controls">
+        <label class="search-wrap" for="search">
+          <span class="sr-only">Search plugins</span>
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m20 20-4.3-4.3m1.3-5.2a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <input class="control" id="search" type="search" placeholder="Search plugins, authors, or tags" autocomplete="off">
+        </label>
+        <label class="sort-wrap" for="sort"><span class="sr-only">Sort plugins</span>
+          <select class="control" id="sort">
+            <option value="updated">Recently updated</option>
+            <option value="name">Name</option>
+            <option value="installs">Most installs</option>
+          </select>
+        </label>
+      </div>
+      <div class="chips" id="chips" aria-label="Plugin categories">
+        <button class="chip" type="button" data-category="all" aria-pressed="true">All</button>
+        <button class="chip" type="button" data-category="newer" aria-pressed="false">Newer than official</button>
+        <button class="chip" type="button" data-category="extended" aria-pressed="false">Extended only</button>
+        <button class="chip" type="button" data-category="library" aria-pressed="false">Library</button>
+        <button class="chip" type="button" data-category="utilities" aria-pressed="false">Utilities</button>
+        <button class="chip" type="button" data-category="media" aria-pressed="false">Media</button>
+      </div>
+      <p class="catalog-state" id="catalog-loading" role="status">Loading the Stable catalog.</p>
+      <div class="catalog-state catalog-error" id="catalog-error" role="alert" hidden>
+        <p>We could not load this catalog.</p>
+        <button class="btn btn-secondary" id="retry-catalog" type="button">Try again</button>
+      </div>
+      <div class="plugin-grid" id="plugin-grid" aria-live="polite" aria-busy="true"></div>
+      <p class="catalog-state" id="empty-state" hidden>No plugins match these filters.</p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="shell footer-inner">
+      <span>Decky Extended Plugins</span>
+      <span><a href="#top">Back to top</a> <a href="audit.html">Audit policy</a> <a href="https://github.com/beallio/decky-plugins-extended">Source</a></span>
+    </div>
+  </footer>
+
+  <div class="modal-backdrop" id="setup-backdrop" hidden>
+    <section class="modal" id="setup-dialog" role="dialog" aria-modal="true" aria-labelledby="setup-title" tabindex="-1">
+      <header class="modal-head">
+        <h2 id="setup-title">Set up the custom store</h2>
+        <button class="close-button" type="button" data-close="setup" aria-label="Close setup instructions">×</button>
+      </header>
+      <div class="modal-body">
+        <ol class="steps">
+          <li>Open Decky Loader from the Quick Access Menu.</li>
+          <li>Open <strong>Settings</strong>, then <strong>General</strong>.</li>
+          <li>Set <strong>Store Channel</strong> to <strong>Custom</strong>.</li>
+          <li>Paste the selected URL and return to the store.</li>
+        </ol>
+        <div class="code-box"><code id="setup-url">https://decky-extended-plugins.beallio.com/plugins.json</code><button class="btn btn-quiet" id="copy-setup" type="button">Copy</button></div>
+        <p class="warning" id="setup-warning">Stable contains normal releases. Testing can include prereleases.</p>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="detail-backdrop" hidden>
+    <section class="modal" id="detail-dialog" role="dialog" aria-modal="true" aria-labelledby="detail-name" tabindex="-1">
+      <header class="modal-head">
+        <p class="panel-kicker">Plugin details</p>
+        <button class="close-button" type="button" data-close="detail" aria-label="Close plugin details">×</button>
+      </header>
+      <div class="modal-body" id="detail-content"><h2 id="detail-name">Plugin details</h2></div>
+    </section>
+  </div>
+
+  <script type="module" src="storefront.js"></script>
 </body>
 </html>
