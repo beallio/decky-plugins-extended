@@ -258,7 +258,7 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = []) {
         sourceAmbiguous: sources.length > 1,
         sourceFallback: source?.source_url
           ? ""
-          : sources.length
+          : sources.length || stringValue(version?.artifact)
             ? "Source unavailable"
             : "Official catalog",
       };
@@ -587,7 +587,10 @@ function startStorefront() {
     if (auditResult.status === "fulfilled") {
       state.auditRecords = auditRecordsFrom(auditResult.value);
     }
-    if (state.catalogByChannel.has(state.channel)) render();
+    if (state.catalogByChannel.has(state.channel)) {
+      render();
+      refreshOpenDetail();
+    }
   }
 
   async function copyText(value, feedback = elements.copyStatus, messages = {}) {
@@ -682,6 +685,7 @@ function startStorefront() {
           "version-source",
           `View ${entry.version.name || "version"} source`,
         );
+        source.dataset.detailFocus = `version-source-${entry.version.hash}`;
         source.href = entry.source.source_url;
         source.target = "_blank";
         source.rel = "noopener";
@@ -697,8 +701,7 @@ function startStorefront() {
     return section;
   }
 
-  function openDetail(plugin, trigger) {
-    state.detailPluginName = plugin.name;
+  function renderDetail(plugin) {
     const detail = buildDetailViewModel(plugin, state.metadata, state.auditRecords);
     const badge = classifyPrimaryBadge(plugin, detail, state.channel);
     elements.detailContent.replaceChildren();
@@ -729,6 +732,7 @@ function startStorefront() {
     detailCopyStatus.setAttribute("aria-live", "polite");
     if (detail.source?.source_url) {
       const source = createElement("a", "btn btn-secondary", "View source");
+      source.dataset.detailFocus = "view-source";
       source.href = detail.source.source_url;
       source.target = "_blank";
       source.rel = "noopener";
@@ -737,6 +741,7 @@ function startStorefront() {
     if (detail.latest?.hash) {
       const copyHash = createElement("button", "btn btn-secondary", "Copy SHA-256");
       copyHash.type = "button";
+      copyHash.dataset.detailFocus = "copy-hash";
       copyHash.addEventListener("click", () =>
         copyText(detail.latest.hash, detailCopyStatus, {
           success: "SHA-256 hash copied to the clipboard.",
@@ -747,12 +752,34 @@ function startStorefront() {
     }
     if (detail.audit) {
       const audit = createElement("a", "btn btn-secondary", "Open audit result");
+      audit.dataset.detailFocus = "open-audit";
       audit.href = "audit.html";
       actions.append(audit);
     }
     if (actions.childElementCount) elements.detailContent.append(actions);
     elements.detailContent.append(detailCopyStatus);
+  }
+
+  function openDetail(plugin, trigger) {
+    state.detailPluginName = plugin.name;
+    renderDetail(plugin);
     openDialog("detail", trigger);
+  }
+
+  function refreshOpenDetail() {
+    if (elements.detailBackdrop.hidden || !state.detailPluginName) return;
+    const plugin = (state.catalogByChannel.get(state.channel) || []).find(
+      (entry) => entry.name === state.detailPluginName,
+    );
+    if (!plugin) return;
+    const active = document.activeElement;
+    const focusKey = elements.detailContent.contains(active) ? active.dataset.detailFocus : "";
+    renderDetail(plugin);
+    if (!focusKey) return;
+    const replacement = [...elements.detailContent.querySelectorAll("[data-detail-focus]")].find(
+      (element) => element.dataset.detailFocus === focusKey,
+    );
+    if (replacement) replacement.focus();
   }
 
   elements.channelButtons.forEach((button) => {

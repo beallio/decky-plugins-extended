@@ -43,6 +43,11 @@
     "version_history": "The detail dialog now renders every normalized catalog version in a semantic Version, Released, Downloads, Updates, and Source table. Per-version counters preserve zero. One exact provenance record becomes a source link; absent metadata is labelled Official catalog; ambiguous or malformed source data never receives that fallback. The table has no Audit column and scrolls inside its own narrow-screen container.",
     "verification": "The final orchestration quality hook passed: actionlint and all three mutation controls, Ruff check/format, Node 14/14, Playwright 7/7, pytest 1104 passed plus 66 subtests, and review-note deletion validation."
   },
+  "review_round_03": {
+    "source_truthfulness": "A version with a catalog artifact now shows Source unavailable whenever exact storefront provenance is absent or rejected. Only artifactless versions retain the Official catalog fallback, so an Extended artifact cannot be mislabeled as official.",
+    "optional_metadata_refresh": "When optional storefront or audit data settles, an open detail dialog rebuilds from the active catalog entry without reopening. Dynamic detail controls carry stable focus keys, so the focused action is restored after the table changes; the stored trigger and body overflow state are untouched.",
+    "verification": "The final orchestration quality hook passed: actionlint 1.7.12 with all three mutation controls, Ruff check/format, Node 14/14, Playwright 8/8, pytest 1104 passed plus 66 subtests, and review-note deletion validation. The new surface coverage verifies rejected provenance and delayed metadata updating the open version table while its Copy SHA-256 action retains focus."
+  },
   "deferred_or_unverified": [
     "Steam Deck gamepad and spatial navigation, Cloudflare dashboard bindings, DNS, and production deployment remain outside this local implementation scope.",
     "Human visual approval of color, spacing, and content density remains deferred to review."

@@ -244,7 +244,7 @@ test("detail models keep exact source provenance and reject same-version collisi
   assert.equal(detail.sourceAmbiguous, true);
 });
 
-test("detail models retain every catalog version with counters and an official fallback", () => {
+test("detail models retain every catalog version with counters and truthful source fallbacks", () => {
   const entry = plugin({
     versions: [
       {
@@ -289,6 +289,25 @@ test("detail models retain every catalog version with counters and an official f
   assert.equal(detail.versionHistory[1].version.updates, 0);
   assert.equal(detail.versionHistory[1].source, null);
   assert.equal(detail.versionHistory[1].sourceFallback, "Official catalog");
+
+  const extendedArtifact = plugin({
+    versions: [
+      {
+        name: "3.0.0",
+        hash: "c".repeat(64),
+        artifact: "https://github.com/owner/example/releases/download/v3.0.0/example.zip",
+      },
+    ],
+  });
+  assert.equal(
+    buildDetailViewModel(extendedArtifact, null).versionHistory[0].sourceFallback,
+    "Source unavailable",
+  );
+  assert.equal(
+    buildDetailViewModel(extendedArtifact, { schema_version: 1, plugins: {} }).versionHistory[0]
+      .sourceFallback,
+    "Source unavailable",
+  );
 });
 
 test("catalog lookup names preserve Unicode provenance without lower-case guessing", () => {
