@@ -1,0 +1,45 @@
+{
+  "date": "2026-08-31",
+  "task_objective": "Implement the Cloudflare Pages browser storefront while preserving the two Decky Loader JSON catalog contracts.",
+  "branch": "feat/storefront-redesign",
+  "plan": "docs/plans/2026-08-31_storefront-redesign.md",
+  "implemented_files": [
+    ".gitignore",
+    "generate_json.py",
+    "static/index.html",
+    "static/storefront.css",
+    "static/storefront.js",
+    "tests/test_generate_json.py",
+    "tests/test_landing_page.py",
+    "tests/storefront_logic.test.mjs",
+    "tests/storefront_surface.spec.mjs",
+    "package.json",
+    "package-lock.json",
+    "scripts/orchestration-hooks/quality-gates",
+    "tests/test_audit_documentation.py",
+    "README.md"
+  ],
+  "documentation_test_repair": {
+    "preexisting_baseline": "5 failed, 5 passed in 0.12s. The failing assertions still required developer-only audit details in README.md after commit 2f48ead moved those details to Developer.md.",
+    "repair": "Moved only the detailed quality-gate, identity/outcome, worklist, progress, and preparation-error assertions to Developer.md and docs/audit-gating-overview.md. README user-facing setup and safety coverage remains in README.md.",
+    "result": "10 passed in 0.08s."
+  },
+  "verification_record": {
+    "generator_full": "33 passed, 21 subtests passed in 0.06s.",
+    "v1_python_contracts": "49 passed, 21 subtests passed in 0.15s for test_audit_documentation.py, test_generate_json.py, and test_landing_page.py.",
+    "v2_node_logic": "11 passed, 0 failed in 122.132277ms after node --check static/storefront.js.",
+    "v3_mutation": "Replacing the official-version parser extraction branch caused the required 2 expected failures: the official-version parsing test and the badge-precedence test. The mutation run had 9 passed and 2 failed; the exact implementation was restored by hand and the 11/11 Node suite passed again.",
+    "v4_storefront_generator": "4 passed, 29 deselected in 0.02s. This includes main() publishing parseable plugins.json, testing_plugins.json, storefront.json, audit.json, index.html, storefront.css, and storefront.js without storefront-only catalog fields.",
+    "playwright": "7 passed in 5.2s against the actual static assets over HTTP. It verified the production audit envelope, catalog-error retry, stale channel rejection, controls, image fallback, dialog-specific clipboard success and failure messages, focus restoration after optional-data rerender, in-card keyboard focus, mobile hierarchy and spacing, responsive centering, and no overflow. Screenshots: /tmp/decky-plugins-extended/storefront-redesign/storefront-desktop.png and /tmp/decky-plugins-extended/storefront-redesign/storefront-mobile.png.",
+    "full_quality_gates": "actionlint 1.7.12 and its three negative controls passed; Ruff check and format passed; Node logic was 11 passed; Playwright was 7 passed in 5.2s; repository pytest was 1103 passed with 66 subtests in 82.10s. Review-note deletion check passed."
+  },
+  "review_round_01": {
+    "audit_and_identity": "The storefront accepts releases from the production audit envelope, also tolerates wrapped payload.releases data, and matches version tags with the producer's two-or-three numeric-component normalization. Source and provenance lookup use the serialized display name, so Python casefold keys cannot cause JavaScript lower-case guessing for names such as Straße.",
+    "accessibility_and_resilience": "Unknown or missing storefront metadata never reads as official. Setup and detail dialogs each announce value-specific clipboard success or failure. The textarea fallback restores the original focused control, and detail close resolves the replacement trigger after optional metadata or audit data rerenders cards.",
+    "surface_and_gate": "Status assertions now measure centered content groups; cards use an unclipped in-card focus ring; the narrow header shows Decky Plugins and hides optional links; and the mobile catalog heading gap is 8px. Playwright Chromium is cached under ignored .playwright-browsers, with an ignored Fedora runtime-library fallback when host libraries are unavailable. The hook runs pytest in local POSIX /var/tmp because the synced repository filesystem cannot represent the scanner test's chmod-denied cache case."
+  },
+  "deferred_or_unverified": [
+    "Steam Deck gamepad and spatial navigation, Cloudflare dashboard bindings, DNS, and production deployment remain outside this local implementation scope.",
+    "Human visual approval of color, spacing, and content density remains deferred to review."
+  ]
+}

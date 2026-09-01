@@ -1,0 +1,11 @@
+{
+  "name": "decky-plugins-extended-storefront-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:storefront": "node --test tests/storefront_logic.test.mjs && playwright test tests/storefront_surface.spec.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}

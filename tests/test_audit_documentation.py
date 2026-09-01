@@ -33,19 +33,19 @@ def _canonical_digest(value) -> str:
     ).hexdigest()
 
 
-def test_readme_documents_authoritative_local_and_ci_gates():
-    readme = README_PATH.read_text(encoding="utf-8")
+def test_developer_guide_documents_authoritative_local_and_ci_gates():
+    developer_guide = (ROOT / "Developer.md").read_text(encoding="utf-8")
 
-    assert "python -m unittest discover" not in readme
-    assert "uv run ruff check ." in readme
-    assert "uv run ruff format --check ." in readme
-    assert "GITHUB_TOKEN=test-token uv run pytest -q" in readme
-    assert "actionlint v1.7.12" in readme
-    assert "Semgrep 1.132.0" in readme
+    assert "python -m unittest discover" not in developer_guide
+    assert "uv run ruff check ." in developer_guide
+    assert "uv run ruff format --check ." in developer_guide
+    assert "GITHUB_TOKEN=test-token uv run pytest -q" in developer_guide
+    assert "actionlint v1.7.12" in developer_guide
+    assert "Semgrep 1.132.0" in developer_guide
 
 
-def test_readme_documents_current_identity_and_outcome_contract():
-    readme = README_PATH.read_text(encoding="utf-8")
+def test_developer_guide_documents_current_identity_and_outcome_contract():
+    developer_guide = (ROOT / "Developer.md").read_text(encoding="utf-8")
 
     for contract in (
         "enforcement.mode: enforce",
@@ -59,7 +59,7 @@ def test_readme_documents_current_identity_and_outcome_contract():
         "67,108,864 bytes",
         "268,435,456 bytes",
     ):
-        assert contract in readme
+        assert contract in developer_guide
 
 
 def test_configured_repository_list_uses_the_auditable_rename_target():
@@ -369,10 +369,10 @@ def test_current_gating_overview_supersedes_historical_rollout_text():
 
 
 def test_current_docs_describe_the_quota_safe_worklist_data_plane():
-    readme = README_PATH.read_text(encoding="utf-8")
+    developer_guide = (ROOT / "Developer.md").read_text(encoding="utf-8")
     overview = OVERVIEW_PATH.read_text(encoding="utf-8")
 
-    for text in (readme, overview):
+    for text in (developer_guide, overview):
         for required_statement in (
             "immutable run-global worklist",
             "API-free shard",
@@ -387,15 +387,18 @@ def test_current_docs_describe_the_quota_safe_worklist_data_plane():
         ):
             assert required_statement in text
 
-    assert "Fourteen shards repeat the 83-request baseline enumeration" not in readme
+    assert (
+        "Fourteen shards repeat the 83-request baseline enumeration"
+        not in developer_guide
+    )
 
 
 def test_current_docs_describe_release_progress_observability():
-    readme = README_PATH.read_text(encoding="utf-8")
+    developer_guide = (ROOT / "Developer.md").read_text(encoding="utf-8")
     overview = OVERVIEW_PATH.read_text(encoding="utf-8")
 
     assert "Current implementation state (2026-08-22)" in overview
-    for text in (readme, overview):
+    for text in (developer_guide, overview):
         normalized = " ".join(text.split())
         for required_statement in (
             "release_progress phase=start",
@@ -412,10 +415,10 @@ def test_current_docs_describe_release_progress_observability():
 
 
 def test_current_docs_describe_repository_local_preparation_errors():
-    readme = README_PATH.read_text(encoding="utf-8")
+    developer_guide = (ROOT / "Developer.md").read_text(encoding="utf-8")
     overview = OVERVIEW_PATH.read_text(encoding="utf-8")
 
-    for text in (readme, overview):
+    for text in (developer_guide, overview):
         normalized_text = " ".join(text.split())
         for required_statement in (
             "tags or releases cannot be resolved",
