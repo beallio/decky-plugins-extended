@@ -946,6 +946,7 @@ def prepare_audit_worklist(
     api_budget: Optional[plugin_release_utils.ApiRequestBudget] = None,
     ref_resolver: Optional[Callable[[str, int], str]] = None,
     store_versions: Optional[Mapping[str, set[str]]] = None,
+    release_max_bytes: int = plugin_release_utils.DEFAULT_RELEASE_MAX_BYTES,
 ) -> tuple[str, dict[str, Any]]:
     if not isinstance(output_path, (str, os.PathLike)):
         raise ValueError("output_path must be a path")
@@ -975,6 +976,9 @@ def prepare_audit_worklist(
         )
     if api_deadline_seconds <= 0:
         raise ValueError("api_deadline_seconds must be greater than zero")
+    release_max_bytes = plugin_release_utils.validate_download_policy(
+        {"release_max_bytes": release_max_bytes}
+    ).release_max_bytes
 
     ref_resolver = ref_resolver or _resolve_base_ref_to_commit
     original_selection_mode = selection_mode
@@ -1091,6 +1095,23 @@ def prepare_audit_worklist(
                         )
                         not in deferred
                     ]
+                retained = []
+                for release in eligible:
+                    if plugin_release_utils.release_exceeds_download_limit(
+                        release, release_max_bytes
+                    ):
+                        asset = plugin_release_utils.get_zip_asset(release) or {}
+                        log.warning(
+                            "Excluding oversized release %s@%s from the audit worklist: "
+                            "%s bytes exceeds %s bytes",
+                            repository,
+                            release.get("tag_name", ""),
+                            asset.get("size"),
+                            release_max_bytes,
+                        )
+                        continue
+                    retained.append(release)
+                eligible = retained
                 for release in eligible:
                     items.append(
                         _normalise_worklist_item(repository, release, tag_map, metadata)

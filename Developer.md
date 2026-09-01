@@ -402,8 +402,13 @@ falls back to `.audit-cache`.
 
 Downloads are streamed once with policy limits: release ZIPs are capped at
 67,108,864 bytes, source archives at 268,435,456 bytes, connect/read timeouts are
-10/60 seconds, and chunks are 1,048,576 bytes. Declared and observed overflows
-fail closed and partial files are removed.
+10/60 seconds, and chunks are 1,048,576 bytes. A release whose GitHub metadata
+already declares a larger ZIP is excluded from the audit worklist. If GitHub
+provides its SHA-256 digest, the catalog can still publish that release without
+downloading it and the storefront labels it as a large, unaudited release. A
+large release without a digest is omitted from the catalog. Missing, incorrect,
+or changed size metadata can still cause a bounded worker download to fail
+closed; partial files are removed.
 
 ## Why untrusted plugin code is never executed
 
@@ -432,6 +437,13 @@ exact coverage of every assigned release identity before it writes aggregate
 evidence or updates the verdict store. A valid empty selection still supplies
 fourteen empty triples. This is deliberately stronger than counting uploaded
 artifacts.
+
+Worklist preparation excludes each release whose single ZIP asset has a declared
+size above the release download limit. This is release-level: normal releases
+from the same repository remain assigned. The generated `storefront.json`
+sidecar records the oversized release, byte size, limit, channel, and whether a
+GitHub digest allowed it to remain in the catalog. Decky's catalog JSON schemas
+remain unchanged.
 
 While a worker is traversing releases, it writes one stderr
 `release_progress phase=start` record before each release and one

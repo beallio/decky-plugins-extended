@@ -679,8 +679,44 @@ class GenerateJsonTests(unittest.TestCase):
             "keywords": "utility",
         }
         releases = [
-            {"tag_name": "v2.0.0-beta.1", "prerelease": True},
-            {"tag_name": "v1.0.0", "prerelease": False},
+            {
+                "tag_name": "v3.0.0",
+                "prerelease": False,
+                "assets": [
+                    {
+                        "id": 30,
+                        "name": "plugin.zip",
+                        "size": 70_000_000,
+                        "browser_download_url": "https://example.invalid/v3.zip",
+                    }
+                ],
+            },
+            {
+                "tag_name": "v2.0.0-beta.1",
+                "prerelease": True,
+                "assets": [
+                    {
+                        "id": 20,
+                        "name": "plugin.zip",
+                        "size": 70_000_000,
+                        "digest": f"sha256:{'c' * 64}",
+                        "browser_download_url": "https://example.invalid/v2.zip",
+                    }
+                ],
+            },
+            {
+                "tag_name": "v1.0.0",
+                "prerelease": False,
+                "assets": [
+                    {
+                        "id": 10,
+                        "name": "plugin.zip",
+                        "size": 1_000,
+                        "digest": f"sha256:{'d' * 64}",
+                        "browser_download_url": "https://example.invalid/v1.zip",
+                    }
+                ],
+            },
         ]
 
         def fetch_json(url):
@@ -688,8 +724,11 @@ class GenerateJsonTests(unittest.TestCase):
                 return copy.deepcopy(base_stable)
             return copy.deepcopy(base_testing)
 
+        built_tags = []
+
         def build_version_object(release, existing_plugin=None, policy=None):
             del existing_plugin, policy
+            built_tags.append(release["tag_name"])
             name = release["tag_name"].lstrip("v")
             return {
                 "name": name,
@@ -737,6 +776,9 @@ class GenerateJsonTests(unittest.TestCase):
             testing = json.loads(
                 (workdir / "public/testing_plugins.json").read_text(encoding="utf-8")
             )
+            storefront = json.loads(
+                (workdir / "public/storefront.json").read_text(encoding="utf-8")
+            )
 
         stable_plugin = next(
             plugin for plugin in stable if plugin["name"] == "Custom Plugin"
@@ -754,6 +796,32 @@ class GenerateJsonTests(unittest.TestCase):
         self.assertEqual(
             [version["name"] for version in testing_plugin["versions"]],
             ["2.0.0-beta.1", "1.0.0"],
+        )
+        self.assertEqual(built_tags, ["v2.0.0-beta.1", "v1.0.0"])
+        self.assertEqual(
+            storefront["plugins"]["custom plugin"]["warnings"],
+            [
+                {
+                    "kind": "large-plugin",
+                    "name": "3.0.0",
+                    "tag": "v3.0.0",
+                    "repository": "example/custom-plugin",
+                    "size_bytes": 70_000_000,
+                    "limit_bytes": 67_108_864,
+                    "included": False,
+                    "prerelease": False,
+                },
+                {
+                    "kind": "large-plugin",
+                    "name": "2.0.0-beta.1",
+                    "tag": "v2.0.0-beta.1",
+                    "repository": "example/custom-plugin",
+                    "size_bytes": 70_000_000,
+                    "limit_bytes": 67_108_864,
+                    "included": True,
+                    "prerelease": True,
+                },
+            ],
         )
         self.assertEqual(testing_plugin["author"], "Decky Author")
         self.assertEqual(testing_plugin["tags"], ["utility"])

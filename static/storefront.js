@@ -226,6 +226,40 @@ export function findSourceVersions(plugin, metadata) {
   );
 }
 
+export function largePluginWarningsFor(plugin, metadata, channel = "stable") {
+  const warnings = metadataPluginFor(plugin, metadata)?.warnings;
+  if (!Array.isArray(warnings)) return [];
+  return warnings.flatMap((warning) => {
+    const sizeBytes = Number(warning?.size_bytes);
+    const limitBytes = Number(warning?.limit_bytes);
+    const prerelease = warning?.prerelease === true;
+    if (
+      warning?.kind !== "large-plugin" ||
+      !Number.isSafeInteger(sizeBytes) ||
+      !Number.isSafeInteger(limitBytes) ||
+      sizeBytes <= limitBytes ||
+      limitBytes <= 0 ||
+      (prerelease && channel !== "testing")
+    ) {
+      return [];
+    }
+    const name = stringValue(warning.name);
+    const tag = stringValue(warning.tag);
+    const repository = stringValue(warning.repository);
+    if (!name || !tag || !repository) return [];
+    return [{
+      kind: "large-plugin",
+      name,
+      tag,
+      repository,
+      sizeBytes,
+      limitBytes,
+      included: warning.included === true,
+      prerelease,
+    }];
+  });
+}
+
 export function findMatchingAuditRecord(source, version, auditRecords) {
   if (!source || !version?.hash || !Array.isArray(auditRecords)) {
     return null;
@@ -242,12 +276,13 @@ export function findMatchingAuditRecord(source, version, auditRecords) {
   return matches.length === 1 ? matches[0] : null;
 }
 
-export function buildDetailViewModel(plugin, metadata, auditRecords = []) {
+export function buildDetailViewModel(plugin, metadata, auditRecords = [], channel = "stable") {
   const latest = plugin?.versions?.[0] || null;
   const sources = findSourceVersions(plugin, metadata);
   const source = sources.length === 1 ? sources[0] : null;
   const audit = source && latest ? findMatchingAuditRecord(source, latest, auditRecords) : null;
   const metadataPlugin = metadataPluginFor(plugin, metadata);
+  const largePluginWarnings = largePluginWarningsFor(plugin, metadata, channel);
   const provenance = provenanceForPlugin(plugin, metadata);
   return {
     plugin,
@@ -263,6 +298,7 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = []) {
         ? "Unknown"
         : "Unavailable",
     audit,
+    largePluginWarnings,
     officialNote:
       plugin?.officialVersion && plugin?.storeVersion
         ? `Official store has ${plugin.officialVersion}; this store has ${plugin.storeVersion}.`
@@ -274,6 +310,9 @@ export function classifyPrimaryBadge(plugin, detail, channel) {
   const classification = stringValue(detail?.audit?.classification).toUpperCase();
   if (classification === "BLOCK" || classification === "MANUAL_REVIEW") {
     return { kind: "warning", label: classification === "BLOCK" ? "Audit block" : "Manual review" };
+  }
+  if (detail?.largePluginWarnings?.length) {
+    return { kind: "warning", label: "Large release" };
   }
   if (channel === "testing" && /-/.test(detail?.latest?.name || "")) {
     return { kind: "testing", label: "Testing prerelease" };
@@ -454,7 +493,12 @@ function startStorefront() {
   }
 
   function renderCard(plugin) {
-    const detail = buildDetailViewModel(plugin, state.metadata, state.auditRecords);
+    const detail = buildDetailViewModel(
+      plugin,
+      state.metadata,
+      state.auditRecords,
+      state.channel,
+    );
     const badge = classifyPrimaryBadge(plugin, detail, state.channel);
     const card = createElement("article", "plugin-card");
     const button = createElement("button", "card-button");
@@ -630,7 +674,12 @@ function startStorefront() {
 
   function openDetail(plugin, trigger) {
     state.detailPluginName = plugin.name;
-    const detail = buildDetailViewModel(plugin, state.metadata, state.auditRecords);
+    const detail = buildDetailViewModel(
+      plugin,
+      state.metadata,
+      state.auditRecords,
+      state.channel,
+    );
     const badge = classifyPrimaryBadge(plugin, detail, state.channel);
     elements.detailContent.replaceChildren();
     const hero = createElement("div", "detail-hero");
@@ -652,6 +701,20 @@ function startStorefront() {
     elements.detailContent.append(grid);
     if (detail.officialNote) elements.detailContent.append(createElement("p", "warning", detail.officialNote));
     if (detail.sourceAmbiguous) elements.detailContent.append(createElement("p", "warning", "Multiple source records match this artifact, so no source-specific audit result is shown."));
+    detail.largePluginWarnings.forEach((warning) => {
+      const size = `${(warning.sizeBytes / 1024 ** 2).toFixed(1)} MiB`;
+      const limit = `${(warning.limitBytes / 1024 ** 2).toFixed(0)} MiB`;
+      const disposition = warning.included
+        ? "It is listed using GitHub's SHA-256 digest, but automated security scanning was skipped."
+        : "It is not included in this catalog.";
+      elements.detailContent.append(
+        createElement(
+          "p",
+          "warning",
+          `Release ${warning.tag} is ${size}, above the ${limit} download and automated-audit limit. ${disposition}`,
+        ),
+      );
+    });
     const actions = createElement("div", "detail-actions");
     const detailCopyStatus = createElement("p", "copy-status dialog-copy-status");
     detailCopyStatus.id = "detail-copy-status";

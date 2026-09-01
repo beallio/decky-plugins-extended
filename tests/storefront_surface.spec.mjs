@@ -89,6 +89,18 @@ const storefrontMetadata = {
           source_url: "https://github.com/owner/radio",
         },
       ],
+      warnings: [
+        {
+          kind: "large-plugin",
+          name: "1.0.0",
+          tag: "v1.0.0",
+          repository: "owner/radio",
+          size_bytes: 157_248_535,
+          limit_bytes: 67_108_864,
+          included: true,
+          prerelease: false,
+        },
+      ],
     },
   },
 };
@@ -185,6 +197,9 @@ test("actual static assets load over HTTP and publish every direct artifact", as
   await expect(page.getByText("Alpha Tool", { exact: true })).toBeVisible();
   await expect(page.locator("#catalog-status-value")).toContainText("Operational");
   await expect(page.locator("[data-plugin-key='alpha tool'] .badge")).toHaveText("Manual review");
+  await expect(page.locator("[data-plugin-key='radio deck'] .badge")).toHaveText(
+    "Large release",
+  );
   const responses = await page.evaluate(async () =>
     Promise.all(
       [
@@ -204,6 +219,18 @@ test("actual static assets load over HTTP and publish every direct artifact", as
     ),
   );
   assert.deepEqual(responses.map((entry) => entry.status), Array(7).fill(200));
+});
+
+test("large release warnings explain the skipped automated audit", async ({ page }) => {
+  await loadStorefront(page);
+  await page.getByRole("button", { name: "View Radio Deck details" }).click();
+  await expect(page.locator("#detail-backdrop")).toBeVisible();
+  await expect(
+    page.getByText(
+      "Release v1.0.0 is 150.0 MiB, above the 64 MiB download and automated-audit limit. It is listed using GitHub's SHA-256 digest, but automated security scanning was skipped.",
+      { exact: true },
+    ),
+  ).toBeVisible();
 });
 
 test("a catalog failure is visible and the retry control recovers", async ({ page }) => {

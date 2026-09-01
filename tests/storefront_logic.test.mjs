@@ -95,6 +95,59 @@ test("audit badge precedence requires an exact current artifact identity", () =>
   });
 });
 
+test("large release warnings are channel-aware and explicit", () => {
+  const entry = plugin();
+  const metadata = {
+    schema_version: 1,
+    plugins: {
+      "example plugin": {
+        name: "Example Plugin",
+        provenance: "extended",
+        versions: [],
+        warnings: [
+          {
+            kind: "large-plugin",
+            name: "2.0.0",
+            tag: "v2.0.0",
+            repository: "owner/example",
+            size_bytes: 157_248_535,
+            limit_bytes: 67_108_864,
+            included: true,
+            prerelease: false,
+          },
+          {
+            kind: "large-plugin",
+            name: "3.0.0-beta.1",
+            tag: "v3.0.0-beta.1",
+            repository: "owner/example",
+            size_bytes: 80_000_000,
+            limit_bytes: 67_108_864,
+            included: false,
+            prerelease: true,
+          },
+          { kind: "large-plugin", size_bytes: "invalid" },
+        ],
+      },
+    },
+  };
+
+  const stableDetail = buildDetailViewModel(entry, metadata, [], "stable");
+  assert.deepEqual(
+    stableDetail.largePluginWarnings.map((warning) => warning.tag),
+    ["v2.0.0"],
+  );
+  assert.deepEqual(classifyPrimaryBadge(entry, stableDetail, "stable"), {
+    kind: "warning",
+    label: "Large release",
+  });
+
+  const testingDetail = buildDetailViewModel(entry, metadata, [], "testing");
+  assert.deepEqual(
+    testingDetail.largePluginWarnings.map((warning) => warning.tag),
+    ["v2.0.0", "v3.0.0-beta.1"],
+  );
+});
+
 test("audit envelopes and producer-normalized tags retain exact current identities", () => {
   const entry = plugin({
     name: "Release Notes",
