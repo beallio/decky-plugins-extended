@@ -1,0 +1,40 @@
+{
+  "date": "2026-08-31",
+  "task_objective": "Implement the Cloudflare Pages browser storefront while preserving the two Decky Loader JSON catalog contracts.",
+  "branch": "feat/storefront-redesign",
+  "plan": "docs/plans/2026-08-31_storefront-redesign.md",
+  "implemented_files": [
+    "generate_json.py",
+    "static/index.html",
+    "static/storefront.css",
+    "static/storefront.js",
+    "tests/test_generate_json.py",
+    "tests/test_landing_page.py",
+    "tests/storefront_logic.test.mjs",
+    "tests/storefront_surface.spec.mjs",
+    "package.json",
+    "package-lock.json",
+    "scripts/orchestration-hooks/quality-gates",
+    "tests/test_audit_documentation.py",
+    "README.md"
+  ],
+  "documentation_test_repair": {
+    "preexisting_baseline": "5 failed, 5 passed in 0.12s. The failing assertions still required developer-only audit details in README.md after commit 2f48ead moved those details to Developer.md.",
+    "repair": "Moved only the detailed quality-gate, identity/outcome, worklist, progress, and preparation-error assertions to Developer.md and docs/audit-gating-overview.md. README user-facing setup and safety coverage remains in README.md.",
+    "result": "10 passed in 0.08s."
+  },
+  "verification_record": {
+    "generator_full": "33 passed, 21 subtests passed in 0.06s.",
+    "v1_python_contracts": "49 passed, 21 subtests passed in 0.12s for test_audit_documentation.py, test_generate_json.py, and test_landing_page.py.",
+    "v2_node_logic": "8 passed, 0 failed in 119.093795ms after node --check static/storefront.js.",
+    "v3_mutation": "Replacing the official-version parser extraction branch caused 2 expected failures: the official-version parsing test and the badge-precedence test. The exact implementation was restored by hand, then the 8/8 Node suite passed again.",
+    "v4_storefront_generator": "4 passed, 29 deselected in 0.02s. This includes main() publishing parseable plugins.json, testing_plugins.json, storefront.json, audit.json, index.html, storefront.css, and storefront.js without storefront-only catalog fields.",
+    "playwright": "Blocked before browser startup. npx playwright install chromium failed repeatedly at 40 percent with host error -122 (EDQUOT). The 114.7 MiB Chromium headless-shell fallback also failed repeatedly at 70 percent, about 80 MiB written. The mandatory test command then reported the missing Chromium executable; no browser assertions were treated as passing."
+  },
+  "deferred_or_unverified": [
+    "The Playwright local-HTTP interaction, focus, retry, responsive-centering, overflow, and screenshot checks remain unverified until this host can store a Chromium browser archive larger than its current approximately 80 MiB write quota.",
+    "Required desktop and mobile screenshots were not created because Chromium could not start.",
+    "Steam Deck gamepad and spatial navigation, Cloudflare dashboard bindings, DNS, and production deployment remain outside this local implementation scope.",
+    "Human visual approval of color, spacing, and content density remains deferred to review."
+  ]
+}
