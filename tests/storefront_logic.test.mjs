@@ -289,12 +289,18 @@ test("detail models keep exact source provenance and reject same-version collisi
     plugins: { "example plugin": { name: "Example Plugin", provenance: "extended", versions: [matching] } },
   };
   assert.equal(buildDetailViewModel(entry, metadata).source.source_url, matching.source_url);
+  assert.equal(buildDetailViewModel(entry, metadata).repositorySourceUrl, matching.source_url);
 
   const collision = structuredClone(metadata);
-  collision.plugins["example plugin"].versions.push({ ...matching, repository: "owner/two" });
+  collision.plugins["example plugin"].versions.push({
+    ...matching,
+    repository: "owner/two",
+    source_url: "https://github.com/owner/two",
+  });
   const detail = buildDetailViewModel(entry, collision);
   assert.equal(detail.source, null);
   assert.equal(detail.sourceAmbiguous, true);
+  assert.equal(detail.repositorySourceUrl, "");
 });
 
 test("detail models retain every catalog version with counters and truthful source fallbacks", () => {
