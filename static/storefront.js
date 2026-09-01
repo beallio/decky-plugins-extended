@@ -68,6 +68,8 @@ export function normalizeCatalogEntry(entry) {
           hash: stringValue(version.hash).toLowerCase(),
           artifact: stringValue(version.artifact),
           created: stringValue(version.created),
+          downloads: numberValue(version.downloads),
+          updates: numberValue(version.updates),
         }))
         .filter((version) => version.name || version.hash)
     : [];
@@ -213,17 +215,20 @@ function repositorySlug(value) {
   return source.toLowerCase();
 }
 
-export function findSourceVersions(plugin, metadata) {
-  const latest = plugin?.versions?.[0] || {};
+function findSourceVersionsForVersion(plugin, version, metadata) {
   const records = metadataPluginFor(plugin, metadata)?.versions;
-  if (!Array.isArray(records) || !latest.name || !latest.hash) {
+  if (!Array.isArray(records) || !version?.name || !version?.hash) {
     return [];
   }
   return records.filter(
     (record) =>
-      normalizeVersionName(record?.name) === normalizeVersionName(latest.name) &&
-      stringValue(record?.hash).toLowerCase() === latest.hash.toLowerCase(),
+      normalizeVersionName(record?.name) === normalizeVersionName(version.name) &&
+      stringValue(record?.hash).toLowerCase() === stringValue(version.hash).toLowerCase(),
   );
+}
+
+export function findSourceVersions(plugin, metadata) {
+  return findSourceVersionsForVersion(plugin, plugin?.versions?.[0], metadata);
 }
 
 export function findMatchingAuditRecord(source, version, auditRecords) {
@@ -243,9 +248,25 @@ export function findMatchingAuditRecord(source, version, auditRecords) {
 }
 
 export function buildDetailViewModel(plugin, metadata, auditRecords = []) {
-  const latest = plugin?.versions?.[0] || null;
-  const sources = findSourceVersions(plugin, metadata);
-  const source = sources.length === 1 ? sources[0] : null;
+  const versionHistory = (Array.isArray(plugin?.versions) ? plugin.versions : []).map(
+    (version) => {
+      const sources = findSourceVersionsForVersion(plugin, version, metadata);
+      const source = sources.length === 1 ? sources[0] : null;
+      return {
+        version,
+        source,
+        sourceAmbiguous: sources.length > 1,
+        sourceFallback: source?.source_url
+          ? ""
+          : sources.length
+            ? "Source unavailable"
+            : "Official catalog",
+      };
+    },
+  );
+  const latestHistory = versionHistory[0] || null;
+  const latest = latestHistory?.version || null;
+  const source = latestHistory?.source || null;
   const audit = source && latest ? findMatchingAuditRecord(source, latest, auditRecords) : null;
   const metadataPlugin = metadataPluginFor(plugin, metadata);
   const provenance = provenanceForPlugin(plugin, metadata);
@@ -253,7 +274,8 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = []) {
     plugin,
     latest,
     source,
-    sourceAmbiguous: sources.length > 1,
+    sourceAmbiguous: latestHistory?.sourceAmbiguous === true,
+    versionHistory,
     provenance,
     provenanceLabel: provenance
       ? provenance === "official"
@@ -628,6 +650,53 @@ function startStorefront() {
     return box;
   }
 
+  function versionHistoryTable(history) {
+    const section = createElement("section", "version-history");
+    const heading = document.createElement("h3");
+    heading.id = "version-history-heading";
+    heading.textContent = "Version history";
+    const table = createElement("table", "version-history-table");
+    table.setAttribute("aria-labelledby", heading.id);
+    table.append(createElement("caption", "visually-hidden", "Version history"));
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    ["Version", "Released", "Downloads", "Updates", "Source"].forEach((label) => {
+      const cell = createElement("th", "", label);
+      cell.scope = "col";
+      headRow.append(cell);
+    });
+    head.append(headRow);
+    const body = document.createElement("tbody");
+    for (const entry of history) {
+      const row = document.createElement("tr");
+      row.append(
+        createElement("td", "", entry.version.name || "Not recorded"),
+        createElement("td", "", entry.version.created || "Not recorded"),
+        createElement("td", "", String(entry.version.downloads)),
+        createElement("td", "", String(entry.version.updates)),
+      );
+      const sourceCell = document.createElement("td");
+      if (entry.source?.source_url) {
+        const source = createElement(
+          "a",
+          "version-source",
+          `View ${entry.version.name || "version"} source`,
+        );
+        source.href = entry.source.source_url;
+        source.target = "_blank";
+        source.rel = "noopener";
+        sourceCell.append(source);
+      } else {
+        sourceCell.textContent = entry.sourceFallback;
+      }
+      row.append(sourceCell);
+      body.append(row);
+    }
+    table.append(head, body);
+    section.append(heading, table);
+    return section;
+  }
+
   function openDetail(plugin, trigger) {
     state.detailPluginName = plugin.name;
     const detail = buildDetailViewModel(plugin, state.metadata, state.auditRecords);
@@ -650,6 +719,7 @@ function startStorefront() {
       detailBox("Audit outcome", detail.audit?.classification || "No matching audit record"),
     );
     elements.detailContent.append(grid);
+    elements.detailContent.append(versionHistoryTable(detail.versionHistory));
     if (detail.officialNote) elements.detailContent.append(createElement("p", "warning", detail.officialNote));
     if (detail.sourceAmbiguous) elements.detailContent.append(createElement("p", "warning", "Multiple source records match this artifact, so no source-specific audit result is shown."));
     const actions = createElement("div", "detail-actions");

@@ -11,6 +11,8 @@ const STATIC = join(ROOT, "static");
 const SCREENSHOT_DIR = "/tmp/decky-plugins-extended/storefront-redesign";
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
+const HASH_C = "c".repeat(64);
+const HASH_D = "d".repeat(64);
 
 const stableCatalog = [
   {
@@ -19,7 +21,22 @@ const stableCatalog = [
     author: "Decky Author",
     description: "Official store has 1.0.0; this store has 2.0.0. A library utility.",
     tags: ["library", "utility"],
-    versions: [{ name: "2.0.0", hash: HASH_A }],
+    versions: [
+      {
+        name: "2.0.0",
+        hash: HASH_A,
+        created: "2026-08-30T00:00:00Z",
+        downloads: 17,
+        updates: 4,
+      },
+      {
+        name: "1.0.0",
+        hash: HASH_D,
+        created: "2026-07-01T00:00:00Z",
+        downloads: 0,
+        updates: 0,
+      },
+    ],
     image_url: "/broken.png",
     visible: true,
     updated: "2026-08-30T00:00:00Z",
@@ -48,7 +65,7 @@ const testingCatalog = [
     author: "Preview Author",
     description: "A prerelease utility.",
     tags: ["utility"],
-    versions: [{ name: "3.0.0-beta.1", hash: "c".repeat(64) }],
+    versions: [{ name: "3.0.0-beta.1", hash: HASH_C }],
     visible: true,
     updated: "2026-08-31T00:00:00Z",
     downloads: 1,
@@ -278,6 +295,25 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
     "href",
     "https://github.com/owner/alpha",
   );
+  const versionHistory = page.getByRole("table", { name: "Version history" });
+  await expect(versionHistory).toBeVisible();
+  await expect(versionHistory.getByRole("columnheader")).toHaveText([
+    "Version",
+    "Released",
+    "Downloads",
+    "Updates",
+    "Source",
+  ]);
+  await expect(versionHistory.getByRole("row")).toHaveCount(3);
+  await expect(versionHistory.getByRole("cell", { name: "17", exact: true })).toBeVisible();
+  await expect(versionHistory.getByRole("cell", { name: "4", exact: true })).toBeVisible();
+  await expect(versionHistory.getByRole("cell", { name: "0", exact: true })).toHaveCount(2);
+  await expect(versionHistory.getByRole("link", { name: "View 2.0.0 source" })).toHaveAttribute(
+    "href",
+    "https://github.com/owner/alpha",
+  );
+  await expect(versionHistory.getByText("Official catalog", { exact: true })).toBeVisible();
+  await expect(versionHistory.getByRole("columnheader", { name: "Audit" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Open audit result" })).toHaveAttribute("href", "audit.html");
   await page.getByRole("button", { name: "Copy SHA-256" }).click();
   await expect(page.locator("#detail-copy-status")).toContainText("SHA-256 hash copied");
