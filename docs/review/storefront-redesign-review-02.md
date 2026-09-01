@@ -41,6 +41,16 @@ identity gaps not exercised by those fixtures.
    appropriate for search/version presentation. Add a fixture with
    case-distinct tags and prove only the exact metadata tag matches.
 
+3. **Add version history to the plugin detail dialog.**
+   Render every version from the selected catalog in a semantic table with
+   Version, Released, Downloads, Updates, and Source columns. Do not include an
+   Audit column. Preserve the existing per-version download and update counters
+   during browser normalization, and resolve Source from the existing exact
+   version metadata when available, with a clear official-catalog fallback.
+   Keep the table usable on narrow screens and add Node and Playwright
+   regressions for populated and zero-valued counters, source links, the
+   official fallback, and the absence of an Audit column.
+
 Re-run the Node and Playwright suites and the complete
 `scripts/orchestration/run-quality-gates` hook. Record the final actionlint,
 Ruff, Node, Playwright, and pytest tallies.
