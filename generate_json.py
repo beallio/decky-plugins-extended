@@ -24,6 +24,7 @@ from plugin_release_utils import (
     canonicalize_github_repository_url,
     get_zip_asset,
     is_release_eligible,
+    load_store_sources,
     load_store_versions,
     normalize_github_sha256_digest,
     normalize_version,
@@ -1055,6 +1056,7 @@ def main():
     # store's own artifact for each one, and the audit skips them for the same
     # reason, so both read this single committed file.
     store_versions = load_store_versions()
+    store_sources = load_store_sources()
 
     # The catalog gate honours security-policy.yml's current enforcement mode.
     # Under report-only a CURRENT BLOCK is reported and still ships; under the
@@ -1078,7 +1080,11 @@ def main():
     errors = []
     custom_plugin_names = set()
     current_identity_records = []
-    storefront_contributions = []
+    storefront_contributions = [
+        {"name": name, "source_url": source_url}
+        for name, source_urls in store_sources.items()
+        for source_url in source_urls
+    ]
     storefront_warnings = []
 
     for url in repo_urls:

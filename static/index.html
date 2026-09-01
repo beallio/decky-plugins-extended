@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="A browser catalog for Decky Extended Plugins.">
   <title>Decky Extended Plugins</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="storefront.css">
 </head>
 <body>
@@ -147,7 +148,10 @@
   <div class="modal-backdrop" id="detail-backdrop" hidden>
     <section class="modal" id="detail-dialog" role="dialog" aria-modal="true" aria-labelledby="detail-name" tabindex="-1">
       <header class="modal-head">
-        <h2 id="detail-name">Plugin details</h2>
+        <div class="modal-title">
+          <h2 id="detail-name">Plugin details</h2>
+          <p class="detail-meta" id="detail-meta"></p>
+        </div>
         <button class="close-button" type="button" data-close="detail" aria-label="Close plugin details">×</button>
       </header>
       <div class="modal-body" id="detail-content"></div>

@@ -34,6 +34,10 @@ DISCOVERED_PLUGIN_LIST_FILE = "store_plugins.txt"
 # catalog does not republish these and the audit does not re-scan them: the
 # official store ships its own artifact for each one.
 STORE_VERSIONS_FILE = "store_versions.json"
+# Official plugin names mapped to repository URLs from the plugin database's
+# submodules. This is broader than STORE_VERSIONS_FILE because source links do
+# not require a repository to contribute a newer release.
+STORE_SOURCES_FILE = "store_sources.json"
 
 # ---------------------------------------------------------------------------
 # Repository and artifact identity
@@ -454,6 +458,48 @@ def canonicalize_github_repository_url(url: str) -> str:
     return f"https://github.com/{owner}/{repo}"
 
 
+def canonicalize_repository_source_url(url: str) -> str:
+    """Return a safe HTTPS source-repository URL for storefront links."""
+    try:
+        return canonicalize_github_repository_url(url)
+    except ValueError:
+        pass
+
+    error = f"Invalid repository source URL: {url!r}"
+    if not isinstance(url, str) or not url or url != url.strip():
+        raise ValueError(error)
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except (TypeError, ValueError) as exc:
+        raise ValueError(error) from exc
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(error)
+    raw_path = parsed.path[:-1] if parsed.path.endswith("/") else parsed.path
+    if not raw_path.startswith("/") or _ENCODED_PATH_SEPARATOR.search(raw_path):
+        raise ValueError(error)
+    raw_parts = raw_path[1:].split("/")
+    if len(raw_parts) != 2 or not all(raw_parts):
+        raise ValueError(error)
+    parts = [unquote(part) for part in raw_parts]
+    if any(part in {".", ".."} or "/" in part or "\\" in part for part in parts):
+        raise ValueError(error)
+    owner, repo = parts
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    if not owner or not repo:
+        raise ValueError(error)
+    return f"https://{parsed.hostname.lower()}/{owner}/{repo}"
+
+
 def canonical_repository_key(url: str) -> str:
     """Return a canonical ``owner/repo`` key suitable for sorting and hashing."""
     return "/".join(parse_github_repository_url(url))
@@ -484,6 +530,31 @@ def load_store_versions(path: str = STORE_VERSIONS_FILE) -> dict[str, set[str]]:
             raise ValueError(f"{path}: versions for {url!r} must be a list")
         canonical = canonicalize_github_repository_url(url)
         resolved[canonical] = {name for name in names if isinstance(name, str) and name}
+    return resolved
+
+
+def load_store_sources(path: str = STORE_SOURCES_FILE) -> dict[str, list[str]]:
+    """Load verified official plugin repository URLs keyed by plugin name."""
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as handle:
+        raw = json.load(handle)
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path} must contain an object")
+    resolved: dict[str, list[str]] = {}
+    for name, urls in raw.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"{path}: plugin names must be non-empty strings")
+        if not isinstance(urls, list):
+            raise ValueError(f"{path}: sources for {name!r} must be a list")
+        resolved[name.strip()] = sorted(
+            {
+                canonicalize_repository_source_url(url)
+                for url in urls
+                if isinstance(url, str) and url
+            },
+            key=str.casefold,
+        )
     return resolved
 
 

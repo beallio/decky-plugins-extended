@@ -6,12 +6,11 @@ its source is the submodule map in `SteamDeckHomebrew/decky-plugin-database`:
 every plugin enters the official store as a submodule pointing at its own
 repository.
 
-This module resolves that map, keeps only the entries this catalog can actually
-build newer versions from, and renders `store_plugins.txt` as the generated
-companion to the hand-maintained `additional_plugins.txt`. Keeping the two lists
-separate is the point: `additional_plugins.txt` stays a curated set of plugins
-the official store does not carry, while every store-backed repository is
-re-derived rather than tracked by hand.
+This module resolves that map and records every verified official plugin source.
+It separately keeps only the entries this catalog can build newer versions from
+in `store_plugins.txt`. Keeping the two repository sets separate is the point:
+source links can cover the full official catalog without expanding the audit and
+release corpus.
 
 Regenerate with:
 
@@ -53,6 +52,11 @@ _SUBMODULE_URL = re.compile(r"^\s*url\s*=\s*(?P<url>\S+)\s*$", re.MULTILINE)
 _SSH_PREFIX = re.compile(r"^git@([^:/]+):")
 
 
+_SOURCE_NAME_OVERRIDES = {
+    "https://gitlab.com/finewolf-projects/decky-plugin-bluetooth-wake-control": "BT Wake Control",
+}
+
+
 @dataclass(frozen=True)
 class Submodule:
     """One `.gitmodules` entry: the declared name and its remote URL."""
@@ -67,6 +71,7 @@ class DiscoveryResult:
 
     included: list[str] = field(default_factory=list)
     versions: dict[str, list[str]] = field(default_factory=dict)
+    sources: dict[str, list[str]] = field(default_factory=dict)
     skipped: list[tuple[str, str]] = field(default_factory=list)
 
     def skip(self, subject: str, reason: str) -> None:
@@ -113,6 +118,36 @@ def canonical_github_url(url: str) -> Optional[str]:
         return plugin_release_utils.canonicalize_github_repository_url(candidate)
     except ValueError:
         return None
+
+
+def canonical_source_url(url: str) -> Optional[str]:
+    """Return a safe HTTPS source URL for any supported submodule remote."""
+    if not isinstance(url, str):
+        return None
+    candidate = _SSH_PREFIX.sub(r"https://\1/", url.strip()).rstrip("/")
+    if candidate.endswith(".git"):
+        candidate = candidate[: -len(".git")]
+    try:
+        return plugin_release_utils.canonicalize_repository_source_url(candidate)
+    except ValueError:
+        return None
+
+
+def match_store_plugin_names(
+    candidate: str, store_versions: dict[str, set[str]]
+) -> list[tuple[str, str]]:
+    """Resolve every official name with the same punctuation-normalized identity."""
+    key = candidate.casefold()
+    normalized = re.sub(r"[^a-z0-9]+", "", key)
+    matches = sorted(
+        store_key
+        for store_key in store_versions
+        if re.sub(r"[^a-z0-9]+", "", store_key) == normalized
+    )
+    return [
+        (store_key, candidate if store_key == key else store_key)
+        for store_key in matches
+    ]
 
 
 def has_contributable_release(
@@ -216,14 +251,31 @@ def discover_store_repositories(
 
     for submodule in parse_gitmodules(gitmodules_text):
         subject = submodule.name or submodule.url
+        source_url = canonical_source_url(submodule.url)
+        if source_url is None:
+            result.skip(subject, f"not a repository source: {submodule.url}")
+            continue
         url = canonical_github_url(submodule.url)
         if url is None:
-            result.skip(subject, f"not a GitHub repository: {submodule.url}")
+            candidate_name = _SOURCE_NAME_OVERRIDES.get(
+                source_url, submodule.name.rsplit("/", 1)[-1]
+            )
+            matched_names = match_store_plugin_names(candidate_name, store_versions)
+            if not matched_names:
+                result.skip(
+                    subject,
+                    f"source name {candidate_name!r} matches no store plugin",
+                )
+                continue
+            for _, display_name in matched_names:
+                sources = result.sources.setdefault(display_name, [])
+                if source_url not in sources:
+                    sources.append(source_url)
+            result.skip(source_url, "source recorded; not a GitHub audit repository")
             continue
         if url.lower() in tracked_urls:
             result.skip(url, "already in additional_plugins.txt")
             continue
-
         owner, repo = plugin_release_utils.parse_github_repository_url(url)
         metadata = repo_metadata(owner, repo)
         if not metadata:
@@ -248,20 +300,29 @@ def discover_store_repositories(
         if url.lower() in seen:
             result.skip(url, "duplicate submodule target")
             continue
-        if metadata.get("archived"):
-            result.skip(url, "repository is archived")
-            continue
 
         name = plugin_name(owner, repo, metadata.get("default_branch") or "main")
         if not name:
             result.skip(url, "no plugin.json name on the default branch")
             continue
-        if name.casefold() not in store_versions:
+        matched_names = match_store_plugin_names(name, store_versions)
+        if not matched_names:
             # The generator merges into an upstream entry by lowercased name, so
             # a mismatch would publish a second entry beside the store's own.
             result.skip(url, f"plugin.json name {name!r} matches no store plugin")
             continue
-        claimed = claimed_names.get(name.casefold())
+        for _, display_name in matched_names:
+            sources = result.sources.setdefault(display_name, [])
+            if url not in sources:
+                sources.append(url)
+        store_name = name.casefold()
+        if store_name not in store_versions:
+            result.skip(url, f"plugin.json name {name!r} matches no exact store plugin")
+            continue
+        if metadata.get("archived"):
+            result.skip(url, "repository is archived")
+            continue
+        claimed = claimed_names.get(store_name)
         if claimed:
             # Two submodules resolve to one plugin name, usually an original and
             # a maintainer fork. The catalog can only merge one source into that
@@ -269,7 +330,7 @@ def discover_store_repositories(
             # them overwrite each other's versions.
             result.skip(url, f"plugin name {name!r} already tracked via {claimed}")
             continue
-        deferred = store_versions[name.casefold()]
+        deferred = store_versions[store_name]
         repo_releases = releases(owner, repo)
         if not has_contributable_release(repo_releases, deferred):
             result.skip(
@@ -282,9 +343,15 @@ def discover_store_repositories(
         seen.add(url.lower())
         result.included.append(url)
         result.versions[url] = sorted(deferred)
-        claimed_names[name.casefold()] = url
+        claimed_names[store_name] = url
 
     result.included.sort(key=plugin_release_utils.canonical_repository_key)
+    result.sources = {
+        name: sorted(urls, key=str.casefold)
+        for name, urls in sorted(
+            result.sources.items(), key=lambda item: (item[0].casefold(), item[0])
+        )
+    }
     return result
 
 
@@ -324,6 +391,15 @@ def render_versions(versions: dict[str, list[str]]) -> str:
     return json.dumps(ordered, indent=2, sort_keys=False) + "\n"
 
 
+def render_sources(sources: dict[str, list[str]]) -> str:
+    """Render the official plugin source map with deterministic ordering."""
+    ordered = {
+        name: sorted(sources[name], key=str.casefold)
+        for name in sorted(sources, key=lambda value: (value.casefold(), value))
+    }
+    return json.dumps(ordered, indent=2, sort_keys=False) + "\n"
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -337,9 +413,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Where to write the per-repository store version map.",
     )
     parser.add_argument(
+        "--sources-output",
+        default=plugin_release_utils.STORE_SOURCES_FILE,
+        help="Where to write the official plugin source map.",
+    )
+    parser.add_argument(
         "--check",
         action="store_true",
-        help="Exit 1 when either generated file is out of date instead of writing.",
+        help="Exit 1 when any generated file is out of date instead of writing.",
     )
     args = parser.parse_args(argv)
 
@@ -358,12 +439,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     deferred = sum(len(names) for names in result.versions.values())
     print(
         f"\n{len(result.included)} repositories tracked, {len(result.skipped)} skipped; "
-        f"{deferred} store-published versions deferred to the official store."
+        f"{deferred} store-published versions deferred and "
+        f"{len(result.sources)} official source mappings recorded."
     )
 
     outputs = {
         args.output: render_list(result.included),
         args.versions_output: render_versions(result.versions),
+        args.sources_output: render_sources(result.sources),
     }
     if args.check:
         stale = []

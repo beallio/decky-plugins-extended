@@ -470,6 +470,7 @@ function startStorefront() {
     detailBackdrop: document.getElementById("detail-backdrop"),
     detailDialog: document.getElementById("detail-dialog"),
     detailName: document.getElementById("detail-name"),
+    detailMeta: document.getElementById("detail-meta"),
     detailContent: document.getElementById("detail-content"),
   };
   if (!elements.grid || !elements.search || !elements.sort || !elements.sortDirection) {
@@ -754,6 +755,7 @@ function startStorefront() {
     state.previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     backdrop.hidden = false;
+    dialog.scrollTop = 0;
     window.requestAnimationFrame(() => (focusable(dialog)[0] || dialog).focus());
   }
 
@@ -918,11 +920,12 @@ function startStorefront() {
     elements.detailName.textContent = plugin.name;
     elements.detailContent.replaceChildren();
 
-    const hero = createElement("div", "detail-hero");
     const meta = [`by ${plugin.author}`];
     if (detail.latest?.name) meta.push(`Latest v${detail.latest.name}`);
     if (plugin.updated) meta.push(`Updated ${plugin.updated.slice(0, 10)}`);
-    hero.append(createElement("p", "detail-meta", meta.join(" · ")));
+    elements.detailMeta.textContent = meta.join(" · ");
+
+    const hero = createElement("div", "detail-hero");
 
     const detailArt = createElement("div", "detail-art");
     if (plugin.imageUrl) {

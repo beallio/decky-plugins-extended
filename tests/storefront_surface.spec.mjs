@@ -267,6 +267,7 @@ test("actual static assets load over HTTP and publish every direct artifact", as
         "/index.html",
         "/storefront.css",
         "/storefront.js",
+        "/favicon.svg",
         "/plugins.json",
         "/testing_plugins.json",
         "/storefront.json",
@@ -279,7 +280,7 @@ test("actual static assets load over HTTP and publish every direct artifact", as
       }),
     ),
   );
-  assert.deepEqual(responses.map((entry) => entry.status), Array(7).fill(200));
+  assert.deepEqual(responses.map((entry) => entry.status), Array(8).fill(200));
 });
 
 test("large release warnings explain the skipped automated audit", async ({ page }) => {
@@ -333,6 +334,7 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
     document.execCommand = () => true;
   });
   await loadStorefront(page, "?query=Alpha&category=newer&sort=name");
+  await expect(page.locator('link[rel~="icon"]')).toHaveAttribute("href", "favicon.svg");
   await expect(page.locator("#search")).toHaveValue("Alpha");
   await expect(page.locator("#sort")).toHaveValue("name");
   await expect(page.getByText("Alpha Tool", { exact: true })).toBeVisible();
@@ -402,14 +404,10 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
     "Official store has 1.0.0; this store has 2.0.0.",
     { exact: true },
   );
-  await expect(officialNote).toBeVisible();
+  await expect(page.locator("#detail-dialog .modal-head .detail-meta")).toHaveCount(1);
   assert.equal(
     await detailMeta.evaluate((meta) =>
-      Boolean(
-        document
-          .querySelector("#detail-dialog .modal-head")
-          .compareDocumentPosition(meta) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ),
+      document.querySelector("#detail-dialog .modal-head").contains(meta),
     ),
     true,
   );
@@ -449,6 +447,12 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
   );
   const repositoryLink = page.getByRole("link", { name: "View repository" });
   await expect(repositoryLink).toHaveAttribute("href", "https://github.com/owner/alpha");
+  const repositoryGap = await repositoryLink.evaluate((link) => {
+    const actions = link.closest(".detail-primary-actions");
+    const grid = document.querySelector(".detail-grid");
+    return grid.getBoundingClientRect().top - actions.getBoundingClientRect().bottom;
+  });
+  assert.ok(repositoryGap >= 16);
   const versionHistory = page.getByRole("table", { name: "Version history" });
   assert.equal(
     await repositoryLink.evaluate(
@@ -495,8 +499,16 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
   await page
     .locator("#detail-dialog")
     .screenshot({ path: join(SCREENSHOT_DIR, "storefront-detail-modal.png") });
+  await page.locator("#detail-dialog").evaluate((dialog) => {
+    dialog.scrollTop = dialog.scrollHeight;
+  });
+  await expect.poll(() => page.locator("#detail-dialog").evaluate((dialog) => dialog.scrollTop)).toBeGreaterThan(0);
   await page.keyboard.press("Escape");
   await expect(page.locator("#detail-backdrop")).toBeHidden();
+  await expect(detailButton).toBeFocused();
+  await detailButton.click();
+  await expect.poll(() => page.locator("#detail-dialog").evaluate((dialog) => dialog.scrollTop)).toBe(0);
+  await page.keyboard.press("Escape");
   await expect(detailButton).toBeFocused();
 });
 

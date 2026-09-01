@@ -1,0 +1,327 @@
+{
+  "AlarMe": [
+    "https://github.com/lemossilva/alarme-decky-plugin"
+  ],
+  "Animation Changer": [
+    "https://github.com/thelogicmaster/sdh-animationchanger"
+  ],
+  "Audio Loader": [
+    "https://github.com/deckthemes/sdh-audioloader"
+  ],
+  "AutoFlatpaks": [
+    "https://github.com/jurassicplayer/decky-autoflatpaks"
+  ],
+  "AutoSuspend": [
+    "https://github.com/jurassicplayer/decky-autosuspend"
+  ],
+  "Battery Tracker": [
+    "https://github.com/safijari/steam-deck-battery-tracker"
+  ],
+  "Better Keyboard": [
+    "https://github.com/chenx-dust/betterkeyboard"
+  ],
+  "Bluetooth": [
+    "https://github.com/outpox/bluetooth"
+  ],
+  "Brightness Bar": [
+    "https://github.com/rasitayaz/decky-brightness-bar"
+  ],
+  "BT Wake Control": [
+    "https://gitlab.com/finewolf-projects/decky-plugin-bluetooth-wake-control"
+  ],
+  "Controller Tools": [
+    "https://github.com/jfernandez/controllertools"
+  ],
+  "Crosshair": [
+    "https://github.com/xxjsonderuloxx/crosshair-plugin"
+  ],
+  "CSS Loader": [
+    "https://github.com/deckthemes/sdh-cssloader"
+  ],
+  "Deck Progress Tracker": [
+    "https://github.com/maroun2/deck-progress-tracker"
+  ],
+  "Deck Settings": [
+    "https://github.com/decksettings/decky-game-settings"
+  ],
+  "deck settings": [
+    "https://github.com/davocarli/sharedeck-y"
+  ],
+  "DeckMTP": [
+    "https://github.com/dafta/deckmtp"
+  ],
+  "DeckPass": [
+    "https://github.com/teppichseite/deckpass"
+  ],
+  "DeckRoulette": [
+    "https://github.com/chrisae9/deck-roulette",
+    "https://github.com/davocarli/deck-roulette"
+  ],
+  "DeckSP": [
+    "https://github.com/jessebofill/decksp"
+  ],
+  "Decky Clash": [
+    "https://github.com/chenx-dust/deckyclash"
+  ],
+  "Decky Clipboard": [
+    "https://github.com/torther/deckyclipboard"
+  ],
+  "Decky Cloud Save": [
+    "https://github.com/gedasfx/decky-cloud-save"
+  ],
+  "Decky DoT DNS": [
+    "https://github.com/ohaiibuzzle/decky-dot-dns"
+  ],
+  "Decky Localsend": [
+    "https://github.com/moyoez/decky-localsend"
+  ],
+  "Decky Ludusavi": [
+    "https://github.com/gedasfx/decky-ludusavi"
+  ],
+  "Decky Notifications": [
+    "https://github.com/firemoon777/decky-notifications"
+  ],
+  "Decky Proton Launch": [
+    "https://github.com/moi952/decky-proton-launch"
+  ],
+  "Decky Sunshine": [
+    "https://github.com/s0t7x/decky-sunshine"
+  ],
+  "Decky Terminal": [
+    "https://github.com/alex4386/decky-terminal"
+  ],
+  "Decky Translator": [
+    "https://github.com/cat-in-a-box/decky-translator"
+  ],
+  "Decky Zerotier": [
+    "https://github.com/hyacz/decky-zerotier"
+  ],
+  "Decky-Clipper": [
+    "https://github.com/managor/decky-clipper"
+  ],
+  "Decky-Framegen": [
+    "https://github.com/xxjsonderuloxx/decky-framegen"
+  ],
+  "decky-localsend": [
+    "https://github.com/moyoez/decky-localsend"
+  ],
+  "Decky-Lookup": [
+    "https://github.com/xxjsonderuloxx/decky-lookup"
+  ],
+  "Decky-SpoofDPI": [
+    "https://github.com/ohaiibuzzle/decky-spoof-dpi"
+  ],
+  "Decky-Undervolt": [
+    "https://github.com/totallynotbakadestroyer/decky-undervolt"
+  ],
+  "DeckyFileServer": [
+    "https://github.com/grimkor/deckyfileserver"
+  ],
+  "DeckyParty File Manager": [
+    "https://github.com/39sdev/decky-cp"
+  ],
+  "DeckySpy": [
+    "https://github.com/seraphli/decky-spy"
+  ],
+  "Dimmer Deck": [
+    "https://github.com/chenx-dust/dimmerdeck"
+  ],
+  "Discord Status": [
+    "https://github.com/andrewburgess/steamdeck-discord-status"
+  ],
+  "Download All": [
+    "https://github.com/bentemple/decky-download-all"
+  ],
+  "Emuchievements": [
+    "https://github.com/emudeck/emuchievements"
+  ],
+  "EmuDecky": [
+    "https://github.com/emudeck/emudecky"
+  ],
+  "Example Plugin": [
+    "https://github.com/steamdeckhomebrew/decky-plugin-template"
+  ],
+  "Fantastic": [
+    "https://gitlab.com/NGnius/Fantastic"
+  ],
+  "Free Loader": [
+    "https://github.com/jwhitlow45/free-loader"
+  ],
+  "Game Sync": [
+    "https://github.com/akazarenn/sdh-gamesync"
+  ],
+  "Game Theme Music": [
+    "https://github.com/megalonvii/sdh-gamethememusic"
+  ],
+  "Games Prefix Manager": [
+    "https://github.com/saad-alareqi/gamesprefixmanager"
+  ],
+  "HLTB for Deck": [
+    "https://github.com/morwy/hltb-for-deck"
+  ],
+  "HueSync": [
+    "https://github.com/honjow/huesync"
+  ],
+  "IsThereAnyDeal for Deck": [
+    "https://github.com/jtdegraaf/isthereanydeal-deckyplugin"
+  ],
+  "Junk-Store": [
+    "https://github.com/ebenbruyns/junkstore"
+  ],
+  "KDE Connect": [
+    "https://github.com/safijari/decky-kde-connect"
+  ],
+  "Launch Options": [
+    "https://github.com/wurielle/decky-launch-options"
+  ],
+  "LetMeReShade": [
+    "https://github.com/itsowen/letmereshade"
+  ],
+  "MagicBlack": [
+    "https://github.com/steam3d/magicblackdecky"
+  ],
+  "MagicPods": [
+    "https://github.com/steam3d/magicpodsdecky"
+  ],
+  "MangoPeel": [
+    "https://github.com/gawah/mangopeel"
+  ],
+  "Memory Deck": [
+    "https://github.com/cameronredmore/memory-deck"
+  ],
+  "MicroSDeck": [
+    "https://github.com/cebbinghaus/microsdeck"
+  ],
+  "MoonDeck": [
+    "https://github.com/frogthefrog/moondeck"
+  ],
+  "Muon": [
+    "https://github.com/wtlnetwork/muon"
+  ],
+  "MuraDeck": [
+    "https://github.com/moonveil-kanata/muradeck"
+  ],
+  "Museck": [
+    "https://github.com/nezreka/museck"
+  ],
+  "Music Control": [
+    "https://github.com/martinpl/musiccontrol"
+  ],
+  "musiccontrol": [
+    "https://github.com/martinpl/musiccontrol"
+  ],
+  "Network Sentinel": [
+    "https://github.com/krishgaur1354/network-sentinel"
+  ],
+  "Non-Steam Badges": [
+    "https://github.com/sebet/decky-nonsteam-badges"
+  ],
+  "Notebook": [
+    "https://github.com/wynn1212/sdh-notebook"
+  ],
+  "Pause Games": [
+    "https://github.com/wynn1212/sdh-pausegames"
+  ],
+  "Picture in Picture": [
+    "https://github.com/rossimo/decky-pip"
+  ],
+  "PlayCount": [
+    "https://github.com/itsowen/playcount-decky"
+  ],
+  "PowerTools": [
+    "https://gitlab.com/NGnius/PowerTools"
+  ],
+  "Quick Launch": [
+    "https://github.com/fisch03/sdh-quicklaunch"
+  ],
+  "Quick User Switcher": [
+    "https://github.com/nikitaclicks/decky-multi-user"
+  ],
+  "RadiYo!": [
+    "https://github.com/isiah-lloyd/radiyo-steam-deck"
+  ],
+  "Reroll": [
+    "https://github.com/kayon/decky-reroll"
+  ],
+  "Reshadeck": [
+    "https://github.com/safijari/reshadeck"
+  ],
+  "ScreenSaver": [
+    "https://github.com/xfangfang/deckyinhibitscreensaver"
+  ],
+  "ScreenshotUploader": [
+    "https://github.com/codehz/deckscreenshotmanager"
+  ],
+  "ShadowDeck": [
+    "https://github.com/tikh-iv/shadowdeck"
+  ],
+  "Shotty": [
+    "https://github.com/safijari/shotty"
+  ],
+  "Simple Timer": [
+    "https://github.com/decktools-xyz/simple-timer"
+  ],
+  "Speed Test": [
+    "https://github.com/dukeman330/decky-speed-test"
+  ],
+  "Steam Status": [
+    "https://github.com/bschelst/steamstatus-decky"
+  ],
+  "Steamback": [
+    "https://github.com/geeksville/steamback"
+  ],
+  "steamdeck-input-disabler": [
+    "https://github.com/burritospray/steamdeck-input-disabler"
+  ],
+  "SteamGridDB": [
+    "https://github.com/steamgriddb/decky-steamgriddb"
+  ],
+  "Storage Cleaner": [
+    "https://github.com/mcarlucci/decky-storage-cleaner"
+  ],
+  "SuggestMe": [
+    "https://github.com/lemossilva/suggestme-decky-plugin"
+  ],
+  "Syncthing": [
+    "https://github.com/thecapypara/steamdeck-decky-syncthing"
+  ],
+  "TabMaster": [
+    "https://github.com/tormak9970/tabmaster"
+  ],
+  "Tailscale Control": [
+    "https://github.com/saumya-banthia/tailscale-control"
+  ],
+  "TS3 QuickAccess": [
+    "https://github.com/iladis/ts3-qs4sd"
+  ],
+  "TunnelDeck": [
+    "https://github.com/bkohler616/tunneldeck"
+  ],
+  "vibrantDeck": [
+    "https://github.com/libvibrant/vibrantdeck"
+  ],
+  "Virtual Surround Sound": [
+    "https://github.com/decksettings/decky-virtual-surround-sound"
+  ],
+  "Volume Boost": [
+    "https://github.com/saumya-banthia/volume-boost"
+  ],
+  "Volume Mixer": [
+    "https://github.com/isiah-lloyd/volumemixer-decky"
+  ],
+  "Web Browser": [
+    "https://github.com/jessebofill/deckwebbrowser"
+  ],
+  "WiFi Locker": [
+    "https://github.com/felipejfc/decky-wifi-locker"
+  ],
+  "Wine Cellar": [
+    "https://github.com/flashyreese/decky-wine-cellar"
+  ],
+  "XIVOmega": [
+    "https://github.com/shingonati0n/xivomega-decky"
+  ],
+  "XR Gaming": [
+    "https://github.com/wheaney/decky-xrgaming"
+  ]
+}

@@ -160,6 +160,7 @@ select.control { min-width: 176px; padding: 0 34px 0 12px; }
 .modal { width: min(100%, 720px); max-height: min(760px, calc(100vh - 40px)); overflow: auto; border: 1px solid var(--line); border-radius: 16px; background: var(--raised); box-shadow: var(--shadow); }
 .modal-head { position: sticky; z-index: 1; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 22px; border-bottom: 1px solid var(--line); background: var(--raised); }
 .modal-head h2 { margin: 0; font-size: 30px; line-height: 1.1; letter-spacing: -.025em; }
+.modal-title { display: grid; min-width: 0; gap: 5px; }
 .close-button { display: grid; width: 44px; height: 44px; place-items: center; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: var(--soft); cursor: pointer; font-size: 26px; }
 .modal-body { padding: 22px; }
 .steps { display: grid; gap: 12px; padding-left: 22px; }
@@ -184,7 +185,7 @@ select.control { min-width: 176px; padding: 0 34px 0 12px; }
 .detail-box-action:hover, .detail-box-action:focus-visible { border-color: var(--cyan); background: var(--surface-hover); }
 .detail-copy-status { min-height: 0; margin: 7px 0 0; text-align: left; }
 .detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-.detail-primary-actions { margin-top: 0; }
+.detail-primary-actions { margin-top: 0; margin-bottom: 18px; }
 .detail-totals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
 .detail-total { display: flex; align-items: center; gap: 11px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; color: var(--cyan); background: rgb(49 230 242 / 4%); }
 .detail-total-copy { display: grid; min-width: 0; }

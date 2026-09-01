@@ -927,6 +927,16 @@ class GenerateJsonTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+            (workdir / "store_sources.json").write_text(
+                json.dumps(
+                    {
+                        "Shared Plugin": [
+                            "https://github.com/owner/official",
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
             static = workdir / "static"
             static.mkdir()
             for name in ("index.html", "storefront.css", "storefront.js"):
@@ -976,7 +986,11 @@ class GenerateJsonTests(unittest.TestCase):
         )
         self.assertEqual(
             storefront["plugins"]["shared plugin"]["source_urls"],
-            ["https://github.com/owner/one", "https://github.com/owner/two"],
+            [
+                "https://github.com/owner/official",
+                "https://github.com/owner/one",
+                "https://github.com/owner/two",
+            ],
         )
         self.assertEqual(
             storefront["plugins"]["shared plugin"]["versions"],
