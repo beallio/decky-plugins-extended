@@ -68,6 +68,8 @@ export function normalizeCatalogEntry(entry) {
           hash: stringValue(version.hash).toLowerCase(),
           artifact: stringValue(version.artifact),
           created: stringValue(version.created),
+          downloads: numberValue(version.downloads),
+          updates: numberValue(version.updates),
         }))
         .filter((version) => version.name || version.hash)
     : [];
@@ -213,17 +215,20 @@ function repositorySlug(value) {
   return source.toLowerCase();
 }
 
-export function findSourceVersions(plugin, metadata) {
-  const latest = plugin?.versions?.[0] || {};
+function findSourceVersionsForVersion(plugin, version, metadata) {
   const records = metadataPluginFor(plugin, metadata)?.versions;
-  if (!Array.isArray(records) || !latest.name || !latest.hash) {
+  if (!Array.isArray(records) || !version?.name || !version?.hash) {
     return [];
   }
   return records.filter(
     (record) =>
-      normalizeVersionName(record?.name) === normalizeVersionName(latest.name) &&
-      stringValue(record?.hash).toLowerCase() === latest.hash.toLowerCase(),
+      normalizeVersionName(record?.name) === normalizeVersionName(version.name) &&
+      stringValue(record?.hash).toLowerCase() === stringValue(version.hash).toLowerCase(),
   );
+}
+
+export function findSourceVersions(plugin, metadata) {
+  return findSourceVersionsForVersion(plugin, plugin?.versions?.[0], metadata);
 }
 
 export function largePluginWarningsFor(plugin, metadata, channel = "stable") {
@@ -277,9 +282,25 @@ export function findMatchingAuditRecord(source, version, auditRecords) {
 }
 
 export function buildDetailViewModel(plugin, metadata, auditRecords = [], channel = "stable") {
-  const latest = plugin?.versions?.[0] || null;
-  const sources = findSourceVersions(plugin, metadata);
-  const source = sources.length === 1 ? sources[0] : null;
+  const versionHistory = (Array.isArray(plugin?.versions) ? plugin.versions : []).map(
+    (version) => {
+      const sources = findSourceVersionsForVersion(plugin, version, metadata);
+      const source = sources.length === 1 ? sources[0] : null;
+      return {
+        version,
+        source,
+        sourceAmbiguous: sources.length > 1,
+        sourceFallback: source?.source_url
+          ? ""
+          : sources.length || stringValue(version?.artifact)
+            ? "Source unavailable"
+            : "Official catalog",
+      };
+    },
+  );
+  const latestHistory = versionHistory[0] || null;
+  const latest = latestHistory?.version || null;
+  const source = latestHistory?.source || null;
   const audit = source && latest ? findMatchingAuditRecord(source, latest, auditRecords) : null;
   const metadataPlugin = metadataPluginFor(plugin, metadata);
   const largePluginWarnings = largePluginWarningsFor(plugin, metadata, channel);
@@ -288,7 +309,8 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = [], channe
     plugin,
     latest,
     source,
-    sourceAmbiguous: sources.length > 1,
+    sourceAmbiguous: latestHistory?.sourceAmbiguous === true,
+    versionHistory,
     provenance,
     provenanceLabel: provenance
       ? provenance === "official"
@@ -609,7 +631,10 @@ function startStorefront() {
     if (auditResult.status === "fulfilled") {
       state.auditRecords = auditRecordsFrom(auditResult.value);
     }
-    if (state.catalogByChannel.has(state.channel)) render();
+    if (state.catalogByChannel.has(state.channel)) {
+      render();
+      refreshOpenDetail();
+    }
   }
 
   async function copyText(value, feedback = elements.copyStatus, messages = {}) {
@@ -672,14 +697,56 @@ function startStorefront() {
     return box;
   }
 
-  function openDetail(plugin, trigger) {
-    state.detailPluginName = plugin.name;
-    const detail = buildDetailViewModel(
-      plugin,
-      state.metadata,
-      state.auditRecords,
-      state.channel,
-    );
+  function versionHistoryTable(history) {
+    const section = createElement("section", "version-history");
+    const heading = document.createElement("h3");
+    heading.id = "version-history-heading";
+    heading.textContent = "Version history";
+    const table = createElement("table", "version-history-table");
+    table.setAttribute("aria-labelledby", heading.id);
+    table.append(createElement("caption", "visually-hidden", "Version history"));
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    ["Version", "Released", "Downloads", "Updates", "Source"].forEach((label) => {
+      const cell = createElement("th", "", label);
+      cell.scope = "col";
+      headRow.append(cell);
+    });
+    head.append(headRow);
+    const body = document.createElement("tbody");
+    for (const entry of history) {
+      const row = document.createElement("tr");
+      row.append(
+        createElement("td", "", entry.version.name || "Not recorded"),
+        createElement("td", "", entry.version.created || "Not recorded"),
+        createElement("td", "", String(entry.version.downloads)),
+        createElement("td", "", String(entry.version.updates)),
+      );
+      const sourceCell = document.createElement("td");
+      if (entry.source?.source_url) {
+        const source = createElement(
+          "a",
+          "version-source",
+          `View ${entry.version.name || "version"} source`,
+        );
+        source.dataset.detailFocus = `version-source-${entry.version.hash}`;
+        source.href = entry.source.source_url;
+        source.target = "_blank";
+        source.rel = "noopener";
+        sourceCell.append(source);
+      } else {
+        sourceCell.textContent = entry.sourceFallback;
+      }
+      row.append(sourceCell);
+      body.append(row);
+    }
+    table.append(head, body);
+    section.append(heading, table);
+    return section;
+  }
+
+  function renderDetail(plugin) {
+    const detail = buildDetailViewModel(plugin, state.metadata, state.auditRecords, state.channel);
     const badge = classifyPrimaryBadge(plugin, detail, state.channel);
     elements.detailContent.replaceChildren();
     const hero = createElement("div", "detail-hero");
@@ -699,6 +766,7 @@ function startStorefront() {
       detailBox("Audit outcome", detail.audit?.classification || "No matching audit record"),
     );
     elements.detailContent.append(grid);
+    elements.detailContent.append(versionHistoryTable(detail.versionHistory));
     if (detail.officialNote) elements.detailContent.append(createElement("p", "warning", detail.officialNote));
     if (detail.sourceAmbiguous) elements.detailContent.append(createElement("p", "warning", "Multiple source records match this artifact, so no source-specific audit result is shown."));
     detail.largePluginWarnings.forEach((warning) => {
@@ -722,6 +790,7 @@ function startStorefront() {
     detailCopyStatus.setAttribute("aria-live", "polite");
     if (detail.source?.source_url) {
       const source = createElement("a", "btn btn-secondary", "View source");
+      source.dataset.detailFocus = "view-source";
       source.href = detail.source.source_url;
       source.target = "_blank";
       source.rel = "noopener";
@@ -730,6 +799,7 @@ function startStorefront() {
     if (detail.latest?.hash) {
       const copyHash = createElement("button", "btn btn-secondary", "Copy SHA-256");
       copyHash.type = "button";
+      copyHash.dataset.detailFocus = "copy-hash";
       copyHash.addEventListener("click", () =>
         copyText(detail.latest.hash, detailCopyStatus, {
           success: "SHA-256 hash copied to the clipboard.",
@@ -740,12 +810,34 @@ function startStorefront() {
     }
     if (detail.audit) {
       const audit = createElement("a", "btn btn-secondary", "Open audit result");
+      audit.dataset.detailFocus = "open-audit";
       audit.href = "audit.html";
       actions.append(audit);
     }
     if (actions.childElementCount) elements.detailContent.append(actions);
     elements.detailContent.append(detailCopyStatus);
+  }
+
+  function openDetail(plugin, trigger) {
+    state.detailPluginName = plugin.name;
+    renderDetail(plugin);
     openDialog("detail", trigger);
+  }
+
+  function refreshOpenDetail() {
+    if (elements.detailBackdrop.hidden || !state.detailPluginName) return;
+    const plugin = (state.catalogByChannel.get(state.channel) || []).find(
+      (entry) => entry.name === state.detailPluginName,
+    );
+    if (!plugin) return;
+    const active = document.activeElement;
+    const focusKey = elements.detailContent.contains(active) ? active.dataset.detailFocus : "";
+    renderDetail(plugin);
+    if (!focusKey) return;
+    const replacement = [...elements.detailContent.querySelectorAll("[data-detail-focus]")].find(
+      (element) => element.dataset.detailFocus === focusKey,
+    );
+    if (replacement) replacement.focus();
   }
 
   elements.channelButtons.forEach((button) => {

@@ -297,6 +297,72 @@ test("detail models keep exact source provenance and reject same-version collisi
   assert.equal(detail.sourceAmbiguous, true);
 });
 
+test("detail models retain every catalog version with counters and truthful source fallbacks", () => {
+  const entry = plugin({
+    versions: [
+      {
+        name: "2.0.0",
+        hash: "a".repeat(64),
+        created: "2026-08-30T00:00:00Z",
+        downloads: 17,
+        updates: 4,
+      },
+      {
+        name: "1.0.0",
+        hash: "b".repeat(64),
+        created: "2026-07-30T00:00:00Z",
+        downloads: 0,
+        updates: 0,
+      },
+    ],
+  });
+  const source = {
+    name: "2.0.0",
+    hash: "a".repeat(64),
+    tag: "v2.0.0",
+    repository: "owner/example",
+    source_url: "https://github.com/owner/example",
+  };
+  const detail = buildDetailViewModel(entry, {
+    plugins: {
+      "example plugin": {
+        name: "Example Plugin",
+        provenance: "official",
+        versions: [source],
+      },
+    },
+  });
+
+  assert.equal(detail.versionHistory.length, 2);
+  assert.equal(detail.versionHistory[0].version.downloads, 17);
+  assert.equal(detail.versionHistory[0].version.updates, 4);
+  assert.equal(detail.versionHistory[0].source, source);
+  assert.equal(detail.versionHistory[0].sourceFallback, "");
+  assert.equal(detail.versionHistory[1].version.downloads, 0);
+  assert.equal(detail.versionHistory[1].version.updates, 0);
+  assert.equal(detail.versionHistory[1].source, null);
+  assert.equal(detail.versionHistory[1].sourceFallback, "Official catalog");
+
+  const extendedArtifact = plugin({
+    versions: [
+      {
+        name: "3.0.0",
+        hash: "c".repeat(64),
+        artifact: "https://github.com/owner/example/releases/download/v3.0.0/example.zip",
+      },
+    ],
+  });
+  assert.equal(
+    buildDetailViewModel(extendedArtifact, null).versionHistory[0].sourceFallback,
+    "Source unavailable",
+  );
+  assert.equal(
+    buildDetailViewModel(extendedArtifact, { schema_version: 1, plugins: {} }).versionHistory[0]
+      .sourceFallback,
+    "Source unavailable",
+  );
+});
+
 test("catalog lookup names preserve Unicode provenance without lower-case guessing", () => {
   const entry = plugin({
     name: "Straße",

@@ -11,6 +11,8 @@ const STATIC = join(ROOT, "static");
 const SCREENSHOT_DIR = "/tmp/decky-plugins-extended/storefront-redesign";
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
+const HASH_C = "c".repeat(64);
+const HASH_D = "d".repeat(64);
 
 const stableCatalog = [
   {
@@ -19,7 +21,22 @@ const stableCatalog = [
     author: "Decky Author",
     description: "Official store has 1.0.0; this store has 2.0.0. A library utility.",
     tags: ["library", "utility"],
-    versions: [{ name: "2.0.0", hash: HASH_A }],
+    versions: [
+      {
+        name: "2.0.0",
+        hash: HASH_A,
+        created: "2026-08-30T00:00:00Z",
+        downloads: 17,
+        updates: 4,
+      },
+      {
+        name: "1.0.0",
+        hash: HASH_D,
+        created: "2026-07-01T00:00:00Z",
+        downloads: 0,
+        updates: 0,
+      },
+    ],
     image_url: "/broken.png",
     visible: true,
     updated: "2026-08-30T00:00:00Z",
@@ -32,7 +49,13 @@ const stableCatalog = [
     author: "Sound Maker",
     description: "Listen to game music.",
     tags: ["audio", "media"],
-    versions: [{ name: "1.0.0", hash: HASH_B }],
+    versions: [
+      {
+        name: "1.0.0",
+        hash: HASH_B,
+        artifact: "https://github.com/owner/radio/releases/download/v1.0.0/radio.zip",
+      },
+    ],
     visible: true,
     updated: "2026-07-30T00:00:00Z",
     downloads: 40,
@@ -48,7 +71,7 @@ const testingCatalog = [
     author: "Preview Author",
     description: "A prerelease utility.",
     tags: ["utility"],
-    versions: [{ name: "3.0.0-beta.1", hash: "c".repeat(64) }],
+    versions: [{ name: "3.0.0-beta.1", hash: HASH_C }],
     visible: true,
     updated: "2026-08-31T00:00:00Z",
     downloads: 1,
@@ -122,6 +145,7 @@ let baseUrl;
 let stableFailures = 0;
 let stableDelay = 0;
 let optionalDelay = 0;
+let storefrontFailures = 0;
 
 function json(response, value, status = 200) {
   response.writeHead(status, { "content-type": "application/json" });
@@ -162,6 +186,10 @@ test.beforeAll(async () => {
     }
     if (path === "/testing_plugins.json") return json(response, testingCatalog);
     if (path === "/storefront.json") {
+      if (storefrontFailures > 0) {
+        storefrontFailures -= 1;
+        return json(response, { error: "temporary" }, 503);
+      }
       if (optionalDelay) await new Promise((resolveDelay) => setTimeout(resolveDelay, optionalDelay));
       return json(response, storefrontMetadata);
     }
@@ -242,6 +270,19 @@ test("a catalog failure is visible and the retry control recovers", async ({ pag
   await expect(page.locator("#catalog-error")).toBeHidden();
 });
 
+test("extended artifacts never appear official when provenance metadata rejects", async ({ page }) => {
+  storefrontFailures = 1;
+  try {
+    await loadStorefront(page);
+    await page.getByRole("button", { name: "View Radio Deck details" }).click();
+    const versionHistory = page.getByRole("table", { name: "Version history" });
+    await expect(versionHistory.getByText("Source unavailable", { exact: true })).toBeVisible();
+    await expect(versionHistory.getByText("Official catalog", { exact: true })).toHaveCount(0);
+  } finally {
+    storefrontFailures = 0;
+  }
+});
+
 test("a fast channel switch ignores a stale stable response", async ({ page }) => {
   stableDelay = 220;
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
@@ -305,6 +346,25 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
     "href",
     "https://github.com/owner/alpha",
   );
+  const versionHistory = page.getByRole("table", { name: "Version history" });
+  await expect(versionHistory).toBeVisible();
+  await expect(versionHistory.getByRole("columnheader")).toHaveText([
+    "Version",
+    "Released",
+    "Downloads",
+    "Updates",
+    "Source",
+  ]);
+  await expect(versionHistory.getByRole("row")).toHaveCount(3);
+  await expect(versionHistory.getByRole("cell", { name: "17", exact: true })).toBeVisible();
+  await expect(versionHistory.getByRole("cell", { name: "4", exact: true })).toBeVisible();
+  await expect(versionHistory.getByRole("cell", { name: "0", exact: true })).toHaveCount(2);
+  await expect(versionHistory.getByRole("link", { name: "View 2.0.0 source" })).toHaveAttribute(
+    "href",
+    "https://github.com/owner/alpha",
+  );
+  await expect(versionHistory.getByText("Official catalog", { exact: true })).toBeVisible();
+  await expect(versionHistory.getByRole("columnheader", { name: "Audit" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Open audit result" })).toHaveAttribute("href", "audit.html");
   await page.getByRole("button", { name: "Copy SHA-256" }).click();
   await expect(page.locator("#detail-copy-status")).toContainText("SHA-256 hash copied");
@@ -332,20 +392,32 @@ test("dialog copy failures are announced inside the active dialog", async ({ pag
   );
 });
 
-test("detail focus returns to a replacement card after optional data rerenders", async ({ page }) => {
-  optionalDelay = 130;
+test("open detail refreshes source links after delayed metadata without resetting focus", async ({ page }) => {
+  optionalDelay = 800;
   try {
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-    const detailButton = page.getByRole("button", { name: "View Alpha Tool details" });
+    const detailButton = page.getByRole("button", { name: "View Radio Deck details" });
     await expect(detailButton).toBeVisible();
     const originalButton = await detailButton.elementHandle();
     await detailButton.click();
     await expect(page.locator("#detail-backdrop")).toBeVisible();
-    await page.waitForTimeout(180);
+    const versionHistory = page.getByRole("table", { name: "Version history" });
+    await expect(versionHistory.getByText("Source unavailable", { exact: true })).toBeVisible();
+    const copyHash = page.getByRole("button", { name: "Copy SHA-256" });
+    await copyHash.focus();
+    await expect(copyHash).toBeFocused();
+    await page.waitForTimeout(900);
     assert.equal(await originalButton.evaluate((button) => button.isConnected), false);
+    await expect(versionHistory.getByRole("link", { name: "View 1.0.0 source" })).toHaveAttribute(
+      "href",
+      "https://github.com/owner/radio",
+    );
+    await expect(copyHash).toBeFocused();
+    await expect(page.locator("#detail-backdrop")).toBeVisible();
+    await expect(page.locator("body")).toHaveCSS("overflow", "hidden");
     await page.keyboard.press("Escape");
     await expect(page.locator("#detail-backdrop")).toBeHidden();
-    await expect(page.locator("[data-plugin-name='Alpha Tool']")).toBeFocused();
+    await expect(page.locator("[data-plugin-name='Radio Deck']")).toBeFocused();
   } finally {
     optionalDelay = 0;
   }
