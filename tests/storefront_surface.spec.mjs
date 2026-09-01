@@ -56,6 +56,7 @@ const stableCatalog = [
         artifact: "https://github.com/owner/radio/releases/download/v1.0.0/radio.zip",
       },
     ],
+    image_url: "/radio.svg",
     visible: true,
     updated: "2026-07-30T00:00:00Z",
     downloads: 40,
@@ -97,6 +98,7 @@ const storefrontMetadata = {
           tag: "2.0.0",
           repository: "owner/alpha",
           source_url: "https://github.com/owner/alpha",
+          release_url: "https://github.com/owner/alpha/releases/tag/v2.0.0",
         },
       ],
     },
@@ -110,6 +112,7 @@ const storefrontMetadata = {
           tag: "1.0.0",
           repository: "owner/radio",
           source_url: "https://github.com/owner/radio",
+          release_url: "https://github.com/owner/radio/releases/tag/v1.0.0",
         },
       ],
       warnings: [
@@ -200,6 +203,13 @@ test.beforeAll(async () => {
     if (path === "/broken.png") {
       response.writeHead(404);
       response.end("Missing image");
+      return;
+    }
+    if (path === "/radio.svg") {
+      response.writeHead(200, { "content-type": "image/svg+xml" });
+      response.end(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="80"><rect width="128" height="80" fill="#31e6f2"/></svg>',
+      );
       return;
     }
     await serveStatic(response, path === "/" ? "index.html" : path.slice(1));
@@ -361,7 +371,7 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
   await expect(versionHistory.getByRole("cell", { name: "0", exact: true })).toHaveCount(2);
   await expect(versionHistory.getByRole("link", { name: "View 2.0.0 source" })).toHaveAttribute(
     "href",
-    "https://github.com/owner/alpha",
+    "https://github.com/owner/alpha/releases/tag/v2.0.0",
   );
   await expect(versionHistory.getByText("Official catalog", { exact: true })).toBeVisible();
   await expect(versionHistory.getByRole("columnheader", { name: "Audit" })).toHaveCount(0);
@@ -402,6 +412,11 @@ test("open detail refreshes source links after delayed metadata without resettin
     await detailButton.click();
     await expect(page.locator("#detail-backdrop")).toBeVisible();
     const versionHistory = page.getByRole("table", { name: "Version history" });
+    const detailImage = page.locator(".detail-art img");
+    await expect(detailImage).toHaveAttribute("src", "/radio.svg");
+    await expect
+      .poll(() => detailImage.evaluate((image) => image.complete && image.naturalWidth))
+      .toBeGreaterThan(0);
     await expect(versionHistory.getByText("Source unavailable", { exact: true })).toBeVisible();
     const copyHash = page.getByRole("button", { name: "Copy SHA-256" });
     await copyHash.focus();
@@ -410,7 +425,7 @@ test("open detail refreshes source links after delayed metadata without resettin
     assert.equal(await originalButton.evaluate((button) => button.isConnected), false);
     await expect(versionHistory.getByRole("link", { name: "View 1.0.0 source" })).toHaveAttribute(
       "href",
-      "https://github.com/owner/radio",
+      "https://github.com/owner/radio/releases/tag/v1.0.0",
     );
     await expect(copyHash).toBeFocused();
     await expect(page.locator("#detail-backdrop")).toBeVisible();

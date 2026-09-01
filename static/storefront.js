@@ -724,13 +724,15 @@ function startStorefront() {
       );
       const sourceCell = document.createElement("td");
       if (entry.source?.source_url) {
+        const sourceUrl =
+          stringValue(entry.source.release_url) || entry.source.source_url;
         const source = createElement(
           "a",
           "version-source",
           `View ${entry.version.name || "version"} source`,
         );
         source.dataset.detailFocus = `version-source-${entry.version.hash}`;
-        source.href = entry.source.source_url;
+        source.href = sourceUrl;
         source.target = "_blank";
         source.rel = "noopener";
         sourceCell.append(source);
@@ -750,7 +752,21 @@ function startStorefront() {
     const badge = classifyPrimaryBadge(plugin, detail, state.channel);
     elements.detailContent.replaceChildren();
     const hero = createElement("div", "detail-hero");
-    hero.append(createElement("div", "detail-art", monogram(plugin.name)));
+    const detailArt = createElement("div", "detail-art");
+    if (plugin.imageUrl) {
+      const image = document.createElement("img");
+      image.loading = "lazy";
+      image.alt = "";
+      image.src = plugin.imageUrl;
+      image.addEventListener("error", () => {
+        image.remove();
+        if (!detailArt.querySelector(".monogram")) addMonogram(detailArt, plugin.name);
+      });
+      detailArt.append(image);
+    } else {
+      addMonogram(detailArt, plugin.name);
+    }
+    hero.append(detailArt);
     const title = document.createElement("h2");
     title.id = "detail-name";
     title.textContent = plugin.name;

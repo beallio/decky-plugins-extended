@@ -589,6 +589,9 @@ def build_storefront_metadata(
             "repository": str(version.get("repository", "")).strip(),
             "source_url": str(version.get("source_url", "")).strip(),
         }
+        release_url = str(version.get("release_url", "")).strip()
+        if release_url:
+            record["release_url"] = release_url
         if not all(record.values()):
             continue
         details = by_plugin.setdefault(
@@ -1218,6 +1221,7 @@ def main():
                                 "tag": normalize_version(rel.get("tag_name", "")),
                                 "repository": repository_slug,
                                 "source_url": f"https://github.com/{repository_slug}",
+                                "release_url": str(rel.get("html_url", "")).strip(),
                             },
                         }
                     )

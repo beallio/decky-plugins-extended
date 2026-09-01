@@ -497,6 +497,7 @@ class GenerateJsonTests(unittest.TestCase):
                     "tag": "2.0.0",
                     "repository": "owner/two",
                     "source_url": "https://github.com/owner/two",
+                    "release_url": "https://github.com/owner/two/releases/tag/v2.0.0",
                 },
             },
             {
@@ -538,6 +539,19 @@ class GenerateJsonTests(unittest.TestCase):
             metadata["plugins"]["official plugin"]["provenance"], "official"
         )
         self.assertEqual(metadata["plugins"]["extended one"]["provenance"], "extended")
+        official_versions = metadata["plugins"]["official plugin"]["versions"]
+        self.assertEqual(
+            next(
+                version for version in official_versions if version["hash"] == "b" * 64
+            )["release_url"],
+            "https://github.com/owner/two/releases/tag/v2.0.0",
+        )
+        self.assertNotIn(
+            "release_url",
+            next(
+                version for version in official_versions if version["hash"] == "a" * 64
+            ),
+        )
         self.assertEqual(
             [
                 version["hash"]
@@ -850,6 +864,7 @@ class GenerateJsonTests(unittest.TestCase):
             ("owner", "one"): [
                 {
                     "tag_name": "v2.0.0",
+                    "html_url": "https://github.com/owner/one/releases/tag/v2.0.0",
                     "prerelease": False,
                     "metadata_hash": "b" * 64,
                 }
@@ -857,6 +872,7 @@ class GenerateJsonTests(unittest.TestCase):
             ("owner", "two"): [
                 {
                     "tag_name": "v1.0.0",
+                    "html_url": "https://github.com/owner/two/releases/tag/v1.0.0",
                     "prerelease": False,
                     "metadata_hash": "a" * 64,
                 }
@@ -956,6 +972,7 @@ class GenerateJsonTests(unittest.TestCase):
                     "tag": "1.0.0",
                     "repository": "owner/two",
                     "source_url": "https://github.com/owner/two",
+                    "release_url": "https://github.com/owner/two/releases/tag/v1.0.0",
                 },
                 {
                     "name": "2.0.0",
@@ -963,6 +980,7 @@ class GenerateJsonTests(unittest.TestCase):
                     "tag": "2.0.0",
                     "repository": "owner/one",
                     "source_url": "https://github.com/owner/one",
+                    "release_url": "https://github.com/owner/one/releases/tag/v2.0.0",
                 },
             ],
         )
