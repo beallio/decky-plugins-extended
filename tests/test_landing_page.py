@@ -69,6 +69,7 @@ def test_storefront_semantics_controls_and_accessible_dialogs():
     assert _has_element(parser, "select", id="sort")
     assert _has_element(parser, "div", id="plugin-grid")
     assert _has_element(parser, "p", id="copy-status", role="status")
+    assert _has_element(parser, "p", id="setup-copy-status", role="status")
     assert _has_element(parser, "div", id="catalog-error", role="alert")
     assert _has_element(parser, "section", id="setup-dialog", role="dialog")
     assert _has_element(parser, "section", id="detail-dialog", role="dialog")
@@ -103,6 +104,8 @@ def test_storefront_styles_cover_responsive_focus_and_reduced_motion_states():
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in css
     assert "grid-template-columns: 1fr" in css
     assert ".status-value" in css
+    assert ".status-content" in css
+    assert ".plugin-card:focus-within" in css
     assert "justify-content: center" in css
     assert "text-align: center" in css
     assert "@media (max-width: 920px)" in css

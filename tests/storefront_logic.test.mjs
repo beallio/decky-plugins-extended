@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  auditRecordsFrom,
   buildDetailViewModel,
   CATALOG_ENDPOINTS,
   catalogForChannel,
@@ -9,6 +10,7 @@ import {
   classifyPrimaryBadge,
   filterCatalog,
   normalizeCatalogEntry,
+  normalizeVersionName,
   parseOfficialVersionNote,
   shouldAcceptChannelResponse,
   sortCatalog,
@@ -55,6 +57,7 @@ test("audit badge precedence requires an exact current artifact identity", () =>
   const metadata = {
     plugins: {
       "example plugin": {
+        name: "Example Plugin",
         provenance: "extended",
         versions: [
           {
@@ -89,6 +92,43 @@ test("audit badge precedence requires an exact current artifact identity", () =>
     kind: "warning",
     label: "Audit block",
   });
+});
+
+test("audit envelopes and producer-normalized tags retain exact current identities", () => {
+  const entry = plugin({
+    name: "Release Notes",
+    versions: [{ name: "1.2.3", hash: "d".repeat(64) }],
+  });
+  const source = {
+    name: "1.2.3",
+    hash: "d".repeat(64),
+    tag: "v1.2.3.4",
+    repository: "owner/release-notes",
+    source_url: "https://github.com/owner/release-notes",
+  };
+  const audit = {
+    repository: "owner/release-notes",
+    tag: "v1.2.3.4",
+    identity_status: "CURRENT",
+    outcome: "APPLIED",
+    current_artifact_sha256: "d".repeat(64),
+    classification: "MANUAL_REVIEW",
+  };
+  const detail = buildDetailViewModel(
+    entry,
+    { schema_version: 1, plugins: { "release notes": { name: "Release Notes", provenance: "official", versions: [source] } } },
+    auditRecordsFrom({ enforcement_mode: "enforce", releases: [audit] }),
+  );
+  assert.equal(normalizeVersionName("v1.2.3.4"), "1.2.3");
+  assert.equal(detail.source, source);
+  assert.equal(detail.audit, audit);
+  assert.deepEqual(classifyPrimaryBadge(entry, detail, "stable"), {
+    kind: "warning",
+    label: "Manual review",
+  });
+  assert.deepEqual(auditRecordsFrom({ records: [audit] }), [audit]);
+  assert.deepEqual(auditRecordsFrom({ releases: [audit] }), [audit]);
+  assert.deepEqual(auditRecordsFrom({ payload: { releases: [audit] } }), [audit]);
 });
 
 test("stable and testing endpoint selection and metadata counts are channel-specific", () => {
@@ -152,7 +192,7 @@ test("detail models keep exact source provenance and reject same-version collisi
     source_url: "https://github.com/owner/one",
   };
   const metadata = {
-    plugins: { "example plugin": { provenance: "extended", versions: [matching] } },
+    plugins: { "example plugin": { name: "Example Plugin", provenance: "extended", versions: [matching] } },
   };
   assert.equal(buildDetailViewModel(entry, metadata).source.source_url, matching.source_url);
 
@@ -161,6 +201,47 @@ test("detail models keep exact source provenance and reject same-version collisi
   const detail = buildDetailViewModel(entry, collision);
   assert.equal(detail.source, null);
   assert.equal(detail.sourceAmbiguous, true);
+});
+
+test("serialized display names preserve Unicode provenance without lower-case guessing", () => {
+  const entry = plugin({
+    name: "Straße",
+    versions: [{ name: "1.0.0", hash: "e".repeat(64) }],
+  });
+  const source = {
+    name: "1.0.0",
+    hash: "e".repeat(64),
+    tag: "v1.0.0",
+    repository: "owner/strasse",
+    source_url: "https://github.com/owner/strasse",
+  };
+  const audit = {
+    repository: "owner/strasse",
+    tag: "1.0.0",
+    identity_status: "CURRENT",
+    outcome: "APPLIED",
+    current_artifact_sha256: "e".repeat(64),
+    classification: "PASS",
+  };
+  const metadata = {
+    schema_version: 1,
+    plugins: { strasse: { name: "Straße", provenance: "extended", versions: [source] } },
+  };
+  const detail = buildDetailViewModel(entry, metadata, [audit]);
+  assert.equal(detail.source, source);
+  assert.equal(detail.audit, audit);
+  assert.equal(detail.provenance, "extended");
+  assert.deepEqual(classifyPrimaryBadge(entry, detail, "stable"), {
+    kind: "extended",
+    label: "Extended only",
+  });
+  assert.deepEqual(filterCatalog([entry], "", "extended", metadata.plugins), [entry]);
+});
+
+test("missing provenance metadata is unavailable or unknown, never official", () => {
+  const entry = plugin();
+  assert.equal(buildDetailViewModel(entry, null).provenanceLabel, "Unavailable");
+  assert.equal(buildDetailViewModel(entry, { schema_version: 1, plugins: {} }).provenanceLabel, "Unknown");
 });
 
 test("malformed catalog data is normalized defensively", () => {

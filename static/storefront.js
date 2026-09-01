@@ -25,8 +25,12 @@ function numberValue(value) {
 
 export function normalizeVersionName(value) {
   const text = stringValue(value);
-  const match = text.match(/(?:^|[^0-9])v?(\d+(?:\.\d+)*(?:-[0-9a-z.-]+)?)/i);
-  return (match?.[1] || text).toLowerCase();
+  // Keep this aligned with plugin_release_utils.normalize_version(). Decky's
+  // producer extracts a two- or three-component version from a tag, including
+  // a prerelease or build suffix. It deliberately does not consume a fourth
+  // numeric component such as the trailing .4 in v1.2.3.4.
+  const match = text.match(/\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/);
+  return (match?.[0] || text.replace(/^v+/, "")).toLowerCase();
 }
 
 export function parseOfficialVersionNote(description) {
@@ -105,6 +109,25 @@ export function primaryCategoryForTags(tags) {
   return "";
 }
 
+function metadataPluginFor(plugin, metadata) {
+  const plugins = metadata?.plugins && typeof metadata.plugins === "object"
+    ? metadata.plugins
+    : metadata;
+  const displayName = stringValue(plugin?.name ?? plugin);
+  if (!plugins || typeof plugins !== "object" || !displayName) {
+    return null;
+  }
+  const matches = Object.values(plugins).filter(
+    (record) => record && typeof record === "object" && stringValue(record.name) === displayName,
+  );
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function provenanceForPlugin(plugin, metadata) {
+  const provenance = stringValue(metadataPluginFor(plugin, metadata)?.provenance);
+  return provenance === "official" || provenance === "extended" ? provenance : "";
+}
+
 export function matchesCategory(plugin, category, provenance = "") {
   if (!category || category === "all") {
     return true;
@@ -131,7 +154,7 @@ export function filterCatalog(catalog, query = "", category = "all", provenanceB
     if (!plugin.visible) {
       return false;
     }
-    const provenance = provenanceByName[plugin.name.toLowerCase()]?.provenance || "";
+    const provenance = provenanceForPlugin(plugin, provenanceByName);
     if (!matchesCategory(plugin, category, provenance)) {
       return false;
     }
@@ -176,7 +199,7 @@ function repositorySlug(value) {
 
 export function findSourceVersions(plugin, metadata) {
   const latest = plugin?.versions?.[0] || {};
-  const records = metadata?.plugins?.[stringValue(plugin?.name).toLowerCase()]?.versions;
+  const records = metadataPluginFor(plugin, metadata)?.versions;
   if (!Array.isArray(records) || !latest.name || !latest.hash) {
     return [];
   }
@@ -208,13 +231,21 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = []) {
   const sources = findSourceVersions(plugin, metadata);
   const source = sources.length === 1 ? sources[0] : null;
   const audit = source && latest ? findMatchingAuditRecord(source, latest, auditRecords) : null;
-  const provenance = metadata?.plugins?.[stringValue(plugin?.name).toLowerCase()]?.provenance || "";
+  const metadataPlugin = metadataPluginFor(plugin, metadata);
+  const provenance = provenanceForPlugin(plugin, metadata);
   return {
     plugin,
     latest,
     source,
     sourceAmbiguous: sources.length > 1,
     provenance,
+    provenanceLabel: provenance
+      ? provenance === "official"
+        ? "Official catalog"
+        : "Extended catalog"
+      : metadata?.schema_version === 1 && !metadataPlugin
+        ? "Unknown"
+        : "Unavailable",
     audit,
     officialNote:
       plugin?.officialVersion && plugin?.storeVersion
@@ -265,8 +296,11 @@ function monogram(name) {
     .toUpperCase() || "?";
 }
 
-function auditRecordsFrom(data) {
-  return Array.isArray(data) ? data : Array.isArray(data?.records) ? data.records : [];
+export function auditRecordsFrom(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.payload?.releases)) return data.payload.releases;
+  if (Array.isArray(data?.releases)) return data.releases;
+  return Array.isArray(data?.records) ? data.records : [];
 }
 
 async function requestJson(url) {
@@ -292,6 +326,7 @@ function startStorefront() {
     copyStore: document.getElementById("copy-store"),
     copySetup: document.getElementById("copy-setup"),
     copyStatus: document.getElementById("copy-status"),
+    setupCopyStatus: document.getElementById("setup-copy-status"),
     setupButton: document.getElementById("open-setup"),
     channelDescription: document.getElementById("channel-description"),
     setupUrl: document.getElementById("setup-url"),
@@ -326,6 +361,7 @@ function startStorefront() {
     auditRecords: [],
     requestGeneration: 0,
     lastFocused: new Map(),
+    detailPluginName: "",
     previousOverflow: "",
   };
   elements.search.value = state.query;
@@ -362,11 +398,17 @@ function startStorefront() {
 
   function setCatalogStatus(text, stateName = "loading") {
     elements.catalogStatus.replaceChildren();
+    const content = createElement("span", "status-content");
     const dot = createElement("span", "status-dot");
     dot.setAttribute("aria-hidden", "true");
     if (stateName === "error") dot.style.background = "var(--red)";
     if (stateName === "ready") dot.style.background = "var(--green)";
-    elements.catalogStatus.append(dot, createElement("span", "", text));
+    content.append(dot, createElement("span", "", text));
+    elements.catalogStatus.append(content);
+  }
+
+  function setStatusText(element, text) {
+    element.replaceChildren(createElement("span", "status-content", text));
   }
 
   function visibleCatalog() {
@@ -378,11 +420,17 @@ function startStorefront() {
   function updateStatusCounts(catalog) {
     const metadata = state.metadata;
     const counts = channelCounts(metadata, state.channel, catalog);
-    elements.availableCount.textContent = `${counts.available} plugins`;
-    elements.extendedCount.textContent = counts.extended === null ? "Not available" : `${counts.extended} extended`;
-    elements.securityPolicy.textContent = metadata?.enforcement_mode
+    setStatusText(elements.availableCount, `${counts.available} plugins`);
+    setStatusText(
+      elements.extendedCount,
+      counts.extended === null ? "Not available" : `${counts.extended} extended`,
+    );
+    setStatusText(
+      elements.securityPolicy,
+      metadata?.enforcement_mode
       ? String(metadata.enforcement_mode).replace(/^./, (letter) => letter.toUpperCase())
-      : "Available";
+      : "Available",
+    );
   }
 
   function addMonogram(art, name) {
@@ -396,6 +444,7 @@ function startStorefront() {
     const button = createElement("button", "card-button");
     button.type = "button";
     button.dataset.pluginKey = plugin.name.toLowerCase();
+    button.dataset.pluginName = plugin.name;
     button.setAttribute("aria-label", `View ${plugin.name} details`);
     const art = createElement("div", "card-art");
     if (plugin.imageUrl) {
@@ -503,11 +552,12 @@ function startStorefront() {
     if (state.catalogByChannel.has(state.channel)) render();
   }
 
-  async function copyText(value) {
+  async function copyText(value, feedback = elements.copyStatus, messages = {}) {
     try {
       if (navigator.clipboard?.writeText && window.isSecureContext) {
         await navigator.clipboard.writeText(value);
       } else {
+        const previousFocus = document.activeElement;
         const textarea = document.createElement("textarea");
         textarea.value = value;
         textarea.setAttribute("readonly", "");
@@ -517,12 +567,13 @@ function startStorefront() {
         textarea.select();
         const copied = document.execCommand("copy");
         textarea.remove();
+        if (previousFocus?.isConnected) previousFocus.focus();
         if (!copied) throw new Error("Browser copy command failed");
       }
-      elements.copyStatus.textContent = "URL copied to the clipboard.";
+      if (feedback) feedback.textContent = messages.success || "Value copied to the clipboard.";
       return true;
     } catch (error) {
-      elements.copyStatus.textContent = "Copy failed. Use the visible URL instead.";
+      if (feedback) feedback.textContent = messages.failure || "Copy failed. Use the visible value instead.";
       return false;
     }
   }
@@ -545,8 +596,14 @@ function startStorefront() {
     const backdrop = name === "setup" ? elements.setupBackdrop : elements.detailBackdrop;
     backdrop.hidden = true;
     document.body.style.overflow = state.previousOverflow;
-    const trigger = state.lastFocused.get(name);
+    const replacement = name === "detail" && state.detailPluginName
+      ? [...elements.grid.querySelectorAll("[data-plugin-name]")].find(
+          (button) => button.dataset.pluginName === state.detailPluginName,
+        )
+      : null;
+    const trigger = replacement || state.lastFocused.get(name);
     if (trigger?.isConnected) trigger.focus();
+    if (name === "detail") state.detailPluginName = "";
   }
 
   function detailBox(label, value) {
@@ -556,6 +613,7 @@ function startStorefront() {
   }
 
   function openDetail(plugin, trigger) {
+    state.detailPluginName = plugin.name;
     const detail = buildDetailViewModel(plugin, state.metadata, state.auditRecords);
     const badge = classifyPrimaryBadge(plugin, detail, state.channel);
     elements.detailContent.replaceChildren();
@@ -571,7 +629,7 @@ function startStorefront() {
     const grid = createElement("div", "detail-grid");
     grid.append(
       detailBox("Catalog status", badge?.label || "Catalog entry"),
-      detailBox("Provenance", detail.provenance || "Official catalog"),
+      detailBox("Provenance", detail.provenanceLabel),
       detailBox("Latest hash", detail.latest?.hash || ""),
       detailBox("Audit outcome", detail.audit?.classification || "No matching audit record"),
     );
@@ -579,6 +637,10 @@ function startStorefront() {
     if (detail.officialNote) elements.detailContent.append(createElement("p", "warning", detail.officialNote));
     if (detail.sourceAmbiguous) elements.detailContent.append(createElement("p", "warning", "Multiple source records match this artifact, so no source-specific audit result is shown."));
     const actions = createElement("div", "detail-actions");
+    const detailCopyStatus = createElement("p", "copy-status dialog-copy-status");
+    detailCopyStatus.id = "detail-copy-status";
+    detailCopyStatus.setAttribute("role", "status");
+    detailCopyStatus.setAttribute("aria-live", "polite");
     if (detail.source?.source_url) {
       const source = createElement("a", "btn btn-secondary", "View source");
       source.href = detail.source.source_url;
@@ -589,7 +651,12 @@ function startStorefront() {
     if (detail.latest?.hash) {
       const copyHash = createElement("button", "btn btn-secondary", "Copy SHA-256");
       copyHash.type = "button";
-      copyHash.addEventListener("click", () => copyText(detail.latest.hash));
+      copyHash.addEventListener("click", () =>
+        copyText(detail.latest.hash, detailCopyStatus, {
+          success: "SHA-256 hash copied to the clipboard.",
+          failure: "Could not copy the SHA-256 hash. Use the visible hash instead.",
+        }),
+      );
       actions.append(copyHash);
     }
     if (detail.audit) {
@@ -598,6 +665,7 @@ function startStorefront() {
       actions.append(audit);
     }
     if (actions.childElementCount) elements.detailContent.append(actions);
+    elements.detailContent.append(detailCopyStatus);
     openDialog("detail", trigger);
   }
 
@@ -623,8 +691,18 @@ function startStorefront() {
     render();
   });
   elements.retry.addEventListener("click", () => loadChannel(state.channel, true));
-  elements.copyStore.addEventListener("click", () => copyText(STORE_URLS[state.channel]));
-  elements.copySetup.addEventListener("click", () => copyText(STORE_URLS[state.channel]));
+  elements.copyStore.addEventListener("click", () =>
+    copyText(STORE_URLS[state.channel], elements.copyStatus, {
+      success: `${state.channel === "testing" ? "Testing" : "Stable"} catalog URL copied to the clipboard.`,
+      failure: "Could not copy the catalog URL. Use the visible URL instead.",
+    }),
+  );
+  elements.copySetup.addEventListener("click", () =>
+    copyText(STORE_URLS[state.channel], elements.setupCopyStatus, {
+      success: `${state.channel === "testing" ? "Testing" : "Stable"} catalog URL copied to the clipboard.`,
+      failure: "Could not copy the catalog URL. Use the visible URL instead.",
+    }),
+  );
   elements.setupButton.addEventListener("click", () => openDialog("setup", elements.setupButton));
   document.querySelectorAll("[data-close]").forEach((button) => {
     button.addEventListener("click", () => closeDialog(button.dataset.close));

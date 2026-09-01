@@ -12,7 +12,8 @@
     <div class="shell header-inner">
       <a class="brand" href="#top" aria-label="Decky Extended Plugins home">
         <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4zM8 10h8M8 14h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>
-        <span>Decky <span class="brand-accent">Extended</span> Plugins</span>
+        <span class="brand-full">Decky <span class="brand-accent">Extended</span> Plugins</span>
+        <span class="brand-short">Decky Plugins</span>
       </a>
       <nav class="nav" aria-label="Primary navigation">
         <a href="#catalog">Plugins</a>
@@ -53,20 +54,20 @@
 
     <section class="shell status-strip" aria-label="Store status">
       <div class="status-item">
-        <div class="status-value" id="catalog-status-value"><span class="status-dot" aria-hidden="true"></span><span>Loading</span></div>
-        <div class="status-label">Catalog status</div>
+        <div class="status-value" id="catalog-status-value"><span class="status-content"><span class="status-dot" aria-hidden="true"></span><span>Loading</span></span></div>
+        <div class="status-label"><span class="status-label-content">Catalog status</span></div>
       </div>
       <div class="status-item">
-        <div class="status-value" id="available-count">—</div>
-        <div class="status-label">Available now</div>
+        <div class="status-value" id="available-count"><span class="status-content">—</span></div>
+        <div class="status-label"><span class="status-label-content">Available now</span></div>
       </div>
       <div class="status-item">
-        <div class="status-value" id="extended-count">—</div>
-        <div class="status-label">Community sources</div>
+        <div class="status-value" id="extended-count"><span class="status-content">—</span></div>
+        <div class="status-label"><span class="status-label-content">Community sources</span></div>
       </div>
       <div class="status-item" id="audit-status">
-        <div class="status-value" id="security-policy">Checking</div>
-        <div class="status-label">Security policy</div>
+        <div class="status-value" id="security-policy"><span class="status-content">Checking</span></div>
+        <div class="status-label"><span class="status-label-content">Security policy</span></div>
       </div>
     </section>
 
@@ -133,6 +134,7 @@
           <li>Paste the selected URL and return to the store.</li>
         </ol>
         <div class="code-box"><code id="setup-url">https://decky-extended-plugins.beallio.com/plugins.json</code><button class="btn btn-quiet" id="copy-setup" type="button">Copy</button></div>
+        <p class="copy-status dialog-copy-status" id="setup-copy-status" role="status" aria-live="polite"></p>
         <p class="warning" id="setup-warning">Stable contains normal releases. Testing can include prereleases.</p>
       </div>
     </section>
