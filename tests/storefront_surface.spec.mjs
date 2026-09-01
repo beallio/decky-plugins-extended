@@ -91,6 +91,7 @@ const storefrontMetadata = {
     "alpha tool": {
       name: "Alpha Tool",
       provenance: "official",
+      source_urls: ["https://github.com/owner/alpha"],
       versions: [
         {
           name: "2.0.0",
@@ -104,6 +105,7 @@ const storefrontMetadata = {
     },
     "radio deck": {
       name: "Radio Deck",
+      source_urls: ["https://github.com/owner/radio"],
       provenance: "extended",
       versions: [
         {
@@ -125,6 +127,22 @@ const storefrontMetadata = {
           limit_bytes: 67_108_864,
           included: true,
           prerelease: false,
+        },
+      ],
+    },
+    "testing preview": {
+      name: "Testing Preview",
+      provenance: "official",
+      source_urls: ["https://github.com/owner/testing-preview"],
+      versions: [
+        {
+          name: "3.0.0-beta.1",
+          hash: HASH_C,
+          tag: "3.0.0-beta.1",
+          repository: "owner/testing-preview",
+          source_url: "https://github.com/owner/testing-preview",
+          release_url:
+            "https://github.com/owner/testing-preview/releases/tag/v3.0.0-beta.1",
         },
       ],
     },
@@ -238,6 +256,11 @@ test("actual static assets load over HTTP and publish every direct artifact", as
   await expect(page.locator("[data-plugin-key='radio deck'] .badge")).toHaveText(
     "Large release",
   );
+  const alphaCard = page.locator("[data-plugin-key='alpha tool']");
+  await expect(alphaCard.locator(".card-downloads")).toHaveText("10 downloads");
+  await expect(alphaCard.locator(".card-downloads [data-icon='download']")).toHaveCount(1);
+  await expect(page.locator(".install-panel a[href$='.json']")).toHaveCount(0);
+  await expect(page.locator(".install-panel")).not.toContainText(".json");
   const responses = await page.evaluate(async () =>
     Promise.all(
       [
@@ -314,14 +337,31 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
   await expect(page.locator("#sort")).toHaveValue("name");
   await expect(page.getByText("Alpha Tool", { exact: true })).toBeVisible();
   await expect(page.locator("[data-plugin-key='alpha tool'] .monogram")).toBeVisible();
+  await expect(page.locator("#sort-direction")).toHaveValue("asc");
+  await page.locator("#search").fill("");
+  await page.getByRole("button", { name: "All" }).click();
+  await page.locator("#sort-direction").selectOption("desc");
+  await expect(page.locator(".plugin-card .card-title")).toHaveText([
+    "Radio Deck",
+    "Alpha Tool",
+  ]);
+  await expect(page).toHaveURL(/direction=desc/);
+  await page.locator("#sort-direction").selectOption("asc");
+  await expect(page.locator(".plugin-card .card-title")).toHaveText([
+    "Alpha Tool",
+    "Radio Deck",
+  ]);
 
   await page.locator("#search").fill("Radio");
   await page.getByRole("button", { name: "Media" }).click();
   await page.locator("#sort").selectOption("installs");
+  await expect(page.locator("#sort-direction")).toHaveValue("desc");
+  await page.locator("#sort-direction").selectOption("asc");
   await expect(page.getByText("Radio Deck", { exact: true })).toBeVisible();
   await expect(page).toHaveURL(/query=Radio/);
   await expect(page).toHaveURL(/category=media/);
   await expect(page).toHaveURL(/sort=installs/);
+  await expect(page).toHaveURL(/direction=asc/);
 
   await page.getByRole("button", { name: /Copy Stable URL/ }).click();
   await expect(page.locator("#copy-status")).toContainText("Stable catalog URL copied");
@@ -355,6 +395,57 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
   await expect(page.locator("#detail-name")).toHaveText("Alpha Tool");
   await expect(page.locator(".detail-meta")).toHaveText(
     "by Decky Author · Latest v2.0.0 · Updated 2026-08-30",
+  );
+  const detailMeta = page.locator(".detail-meta");
+  const description = page.locator(".detail-description");
+  const officialNote = page.getByText(
+    "Official store has 1.0.0; this store has 2.0.0.",
+    { exact: true },
+  );
+  await expect(officialNote).toBeVisible();
+  assert.equal(
+    await detailMeta.evaluate((meta) =>
+      Boolean(
+        document
+          .querySelector("#detail-dialog .modal-head")
+          .compareDocumentPosition(meta) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    await detailMeta.evaluate(
+      (meta) =>
+        Boolean(
+          meta.compareDocumentPosition(document.querySelector(".detail-art")) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+    ),
+    true,
+  );
+  assert.equal(
+    await description.evaluate(
+      (element) =>
+        Boolean(
+          element.compareDocumentPosition(
+            [...document.querySelectorAll(".warning")].find((warning) =>
+              warning.textContent.startsWith("Official store has"),
+            ),
+          ) & Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+    ),
+    true,
+  );
+  assert.equal(
+    await officialNote.evaluate(
+      (note) =>
+        Boolean(
+          note.compareDocumentPosition(
+            document.querySelector(".detail-primary-actions a"),
+          ) & Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+    ),
+    true,
   );
   const repositoryLink = page.getByRole("link", { name: "View repository" });
   await expect(repositoryLink).toHaveAttribute("href", "https://github.com/owner/alpha");
@@ -467,6 +558,11 @@ test("open detail refreshes source links after delayed metadata without resettin
       "https://github.com/owner/radio/releases/tag/v1.0.0",
     );
     await expect(copyHash).toBeFocused();
+    await expect(page.getByRole("link", { name: "Open audit log" })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "View repository" })).toHaveAttribute(
+      "href",
+      "https://github.com/owner/radio",
+    );
     await expect(page.locator("#detail-backdrop")).toBeVisible();
     await expect(page.locator("body")).toHaveCSS("overflow", "hidden");
     await page.keyboard.press("Escape");
@@ -475,6 +571,32 @@ test("open detail refreshes source links after delayed metadata without resettin
   } finally {
     optionalDelay = 0;
   }
+});
+
+test("detail view ranks related plugins by shared tags and downloads", async ({ page }) => {
+  await loadStorefront(page, "?channel=testing&query=Alpha");
+  await page.getByRole("button", { name: "View Alpha Tool details" }).click();
+  const related = page.locator(".related-plugins");
+  await expect(related.getByRole("heading", { name: "Related plugins" })).toBeVisible();
+  await expect(
+    related.getByRole("button", { name: "View Testing Preview details" }),
+  ).toBeVisible();
+  assert.equal(
+    await related.evaluate(
+      (section) =>
+        Boolean(
+          section.compareDocumentPosition(document.querySelector(".version-history")) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+    ),
+    true,
+  );
+  await related.screenshot({ path: join(SCREENSHOT_DIR, "storefront-related-plugins.png") });
+  await related.getByRole("button", { name: "View Testing Preview details" }).click();
+  await expect(page.locator("#detail-name")).toHaveText("Testing Preview");
+  const provenance = page.locator(".detail-box").filter({ hasText: "Provenance" });
+  await expect(provenance).toContainText("Official catalog");
+  await expect(provenance).not.toContainText("Unknown");
 });
 
 test("status cells stay centered and the mobile and desktop surfaces do not overflow", async ({ page }) => {

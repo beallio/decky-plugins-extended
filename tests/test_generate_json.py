@@ -520,6 +520,11 @@ class GenerateJsonTests(unittest.TestCase):
                     "source_url": "https://github.com/owner/extended",
                 },
             },
+            {
+                "name": "Extended Two",
+                "repository": "owner/extended-two",
+                "source_url": "https://github.com/owner/extended-two",
+            },
         ]
 
         metadata = generate_json.build_storefront_metadata(
@@ -539,6 +544,12 @@ class GenerateJsonTests(unittest.TestCase):
             metadata["plugins"]["official plugin"]["provenance"], "official"
         )
         self.assertEqual(metadata["plugins"]["extended one"]["provenance"], "extended")
+        self.assertEqual(
+            metadata["plugins"]["extended two"]["source_urls"],
+            ["https://github.com/owner/extended-two"],
+        )
+        self.assertEqual(metadata["plugins"]["extended two"]["versions"], [])
+        self.assertEqual(metadata["plugins"]["hidden stable"]["provenance"], "extended")
         official_versions = metadata["plugins"]["official plugin"]["versions"]
         self.assertEqual(
             next(
@@ -962,6 +973,10 @@ class GenerateJsonTests(unittest.TestCase):
         self.assertEqual(storefront["schema_version"], 1)
         self.assertEqual(
             storefront["plugins"]["shared plugin"]["provenance"], "official"
+        )
+        self.assertEqual(
+            storefront["plugins"]["shared plugin"]["source_urls"],
+            ["https://github.com/owner/one", "https://github.com/owner/two"],
         )
         self.assertEqual(
             storefront["plugins"]["shared plugin"]["versions"],

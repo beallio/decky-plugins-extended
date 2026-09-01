@@ -13,6 +13,7 @@ import {
   normalizeCatalogEntry,
   normalizeVersionName,
   parseOfficialVersionNote,
+  relatedPluginsFor,
   shouldAcceptChannelResponse,
   sortCatalog,
 } from "../static/storefront.js";
@@ -264,16 +265,54 @@ test("text and category filters are case-insensitive and direct tags still match
   );
 });
 
-test("catalog sorting does not mutate source entries", () => {
+test("catalog sorting supports both directions without mutating source entries", () => {
   const entries = [
     plugin({ name: "Zulu", updated: "2026-01-01T00:00:00Z", downloads: 1 }),
     plugin({ name: "Alpha", updated: "2026-08-01T00:00:00Z", downloads: 40 }),
   ];
   const original = entries.map((entry) => entry.name);
-  assert.deepEqual(sortCatalog(entries, "name").map((entry) => entry.name), ["Alpha", "Zulu"]);
-  assert.deepEqual(sortCatalog(entries, "updated").map((entry) => entry.name), ["Alpha", "Zulu"]);
-  assert.deepEqual(sortCatalog(entries, "installs").map((entry) => entry.name), ["Alpha", "Zulu"]);
+  assert.deepEqual(sortCatalog(entries, "name", "asc").map((entry) => entry.name), [
+    "Alpha",
+    "Zulu",
+  ]);
+  assert.deepEqual(sortCatalog(entries, "name", "desc").map((entry) => entry.name), [
+    "Zulu",
+    "Alpha",
+  ]);
+  assert.deepEqual(sortCatalog(entries, "updated", "asc").map((entry) => entry.name), [
+    "Zulu",
+    "Alpha",
+  ]);
+  assert.deepEqual(sortCatalog(entries, "updated", "desc").map((entry) => entry.name), [
+    "Alpha",
+    "Zulu",
+  ]);
+  assert.deepEqual(sortCatalog(entries, "installs", "asc").map((entry) => entry.name), [
+    "Zulu",
+    "Alpha",
+  ]);
+  assert.deepEqual(sortCatalog(entries, "installs", "desc").map((entry) => entry.name), [
+    "Alpha",
+    "Zulu",
+  ]);
   assert.deepEqual(entries.map((entry) => entry.name), original);
+});
+
+test("related plugins share tags and select the four most downloaded", () => {
+  const subject = plugin({ name: "Subject", tags: ["utility", "media"] });
+  const candidates = [
+    plugin({ name: "One", tags: ["utility"], downloads: 10 }),
+    plugin({ name: "Two", tags: ["media"], downloads: 50 }),
+    plugin({ name: "Three", tags: ["utility", "media"], downloads: 30 }),
+    plugin({ name: "Four", tags: ["utility"], downloads: 40 }),
+    plugin({ name: "Five", tags: ["media"], downloads: 20 }),
+    plugin({ name: "Unrelated", tags: ["library"], downloads: 100 }),
+    plugin({ name: "Hidden", tags: ["utility"], downloads: 200, visible: false }),
+  ];
+  assert.deepEqual(
+    relatedPluginsFor(subject, [subject, ...candidates], 10).map((entry) => entry.name),
+    ["Two", "Four", "Three", "Five"],
+  );
 });
 
 test("detail models keep exact source provenance and reject same-version collisions", () => {
@@ -290,6 +329,24 @@ test("detail models keep exact source provenance and reject same-version collisi
   };
   assert.equal(buildDetailViewModel(entry, metadata).source.source_url, matching.source_url);
   assert.equal(buildDetailViewModel(entry, metadata).repositorySourceUrl, matching.source_url);
+  const repositoryOnly = {
+    schema_version: 1,
+    plugins: {
+      "example plugin": {
+        name: "Example Plugin",
+        catalog_names: ["Example Plugin"],
+        provenance: "official",
+        source_urls: ["https://github.com/owner/official"],
+        versions: [],
+      },
+    },
+  };
+  const repositoryOnlyDetail = buildDetailViewModel(entry, repositoryOnly);
+  assert.equal(
+    repositoryOnlyDetail.repositorySourceUrl,
+    "https://github.com/owner/official",
+  );
+  assert.equal(repositoryOnlyDetail.provenanceLabel, "Official catalog");
 
   const collision = structuredClone(metadata);
   collision.plugins["example plugin"].versions.push({
@@ -301,6 +358,10 @@ test("detail models keep exact source provenance and reject same-version collisi
   assert.equal(detail.source, null);
   assert.equal(detail.sourceAmbiguous, true);
   assert.equal(detail.repositorySourceUrl, "");
+  assert.deepEqual(detail.repositorySourceUrls, [
+    "https://github.com/owner/one",
+    "https://github.com/owner/two",
+  ]);
 });
 
 test("detail models retain every catalog version with counters and truthful source fallbacks", () => {
