@@ -33,6 +33,15 @@ export function normalizeVersionName(value) {
   return (match?.[0] || text.replace(/^v+/, "")).toLowerCase();
 }
 
+export function normalizeAuditTag(value) {
+  const text = stringValue(value);
+  // Keep this aligned with the producer's normalize_version(). Audit records
+  // identify a Git tag, so its case is part of the identity even when version
+  // display and search may be case-insensitive.
+  const match = text.match(/\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/);
+  return match?.[0] || text.replace(/^v+/, "");
+}
+
 export function parseOfficialVersionNote(description) {
   const original = stringValue(description);
   const match = original.match(
@@ -117,9 +126,16 @@ function metadataPluginFor(plugin, metadata) {
   if (!plugins || typeof plugins !== "object" || !displayName) {
     return null;
   }
-  const matches = Object.values(plugins).filter(
-    (record) => record && typeof record === "object" && stringValue(record.name) === displayName,
-  );
+  const matches = Object.values(plugins).filter((record) => {
+    if (!record || typeof record !== "object") return false;
+    // catalog_names are the exact spellings emitted after Python's casefolded
+    // catalog merge. Do not use JavaScript lowercasing to reproduce that
+    // Unicode identity: it differs for values such as Straße/STRASSE.
+    const catalogNames = Array.isArray(record.catalog_names)
+      ? record.catalog_names
+      : [record.name];
+    return catalogNames.some((name) => stringValue(name) === displayName);
+  });
   return matches.length === 1 ? matches[0] : null;
 }
 
@@ -217,7 +233,7 @@ export function findMatchingAuditRecord(source, version, auditRecords) {
   const matches = auditRecords.filter(
     (record) =>
       repositorySlug(record?.repository) === repositorySlug(source.repository) &&
-      normalizeVersionName(record?.tag) === normalizeVersionName(source.tag) &&
+      normalizeAuditTag(record?.tag) === normalizeAuditTag(source.tag) &&
       stringValue(record?.identity_status) === "CURRENT" &&
       stringValue(record?.outcome) === "APPLIED" &&
       stringValue(record?.current_artifact_sha256).toLowerCase() ===

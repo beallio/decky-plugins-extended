@@ -9,6 +9,7 @@ import {
   channelCounts,
   classifyPrimaryBadge,
   filterCatalog,
+  normalizeAuditTag,
   normalizeCatalogEntry,
   normalizeVersionName,
   parseOfficialVersionNote,
@@ -131,6 +132,46 @@ test("audit envelopes and producer-normalized tags retain exact current identiti
   assert.deepEqual(auditRecordsFrom({ payload: { releases: [audit] } }), [audit]);
 });
 
+test("audit tags retain producer case and reject case-distinct aliases", () => {
+  const entry = plugin({
+    name: "Case Tags",
+    versions: [{ name: "1.2.3-BETA", hash: "c".repeat(64) }],
+  });
+  const source = {
+    name: "1.2.3-BETA",
+    hash: "c".repeat(64),
+    tag: "1.2.3-BETA",
+    repository: "owner/case-tags",
+    source_url: "https://github.com/owner/case-tags",
+  };
+  const metadata = {
+    plugins: {
+      "case tags": {
+        name: "Case Tags",
+        provenance: "official",
+        versions: [source],
+      },
+    },
+  };
+  const wrongCase = {
+    repository: "owner/case-tags",
+    tag: "v1.2.3-beta",
+    identity_status: "CURRENT",
+    outcome: "APPLIED",
+    current_artifact_sha256: "c".repeat(64),
+    classification: "BLOCK",
+  };
+  const exactCase = { ...wrongCase, tag: "v1.2.3-BETA" };
+
+  assert.equal(normalizeAuditTag("release-v1.2.3-BETA"), "1.2.3-BETA");
+  assert.equal(buildDetailViewModel(entry, metadata, [wrongCase]).audit, null);
+  assert.equal(buildDetailViewModel(entry, metadata, [exactCase]).audit, exactCase);
+  assert.equal(
+    buildDetailViewModel(entry, metadata, [wrongCase, exactCase]).audit,
+    exactCase,
+  );
+});
+
 test("stable and testing endpoint selection and metadata counts are channel-specific", () => {
   assert.equal(catalogForChannel("stable"), "/plugins.json");
   assert.equal(catalogForChannel("testing"), "/testing_plugins.json");
@@ -203,7 +244,7 @@ test("detail models keep exact source provenance and reject same-version collisi
   assert.equal(detail.sourceAmbiguous, true);
 });
 
-test("serialized display names preserve Unicode provenance without lower-case guessing", () => {
+test("catalog lookup names preserve Unicode provenance without lower-case guessing", () => {
   const entry = plugin({
     name: "Straße",
     versions: [{ name: "1.0.0", hash: "e".repeat(64) }],
@@ -225,7 +266,14 @@ test("serialized display names preserve Unicode provenance without lower-case gu
   };
   const metadata = {
     schema_version: 1,
-    plugins: { strasse: { name: "Straße", provenance: "extended", versions: [source] } },
+    plugins: {
+      strasse: {
+        name: "STRASSE",
+        catalog_names: ["Straße"],
+        provenance: "extended",
+        versions: [source],
+      },
+    },
   };
   const detail = buildDetailViewModel(entry, metadata, [audit]);
   assert.equal(detail.source, source);
@@ -235,6 +283,36 @@ test("serialized display names preserve Unicode provenance without lower-case gu
     kind: "extended",
     label: "Extended only",
   });
+  assert.deepEqual(filterCatalog([entry], "", "extended", metadata.plugins), [entry]);
+});
+
+test("catalog lookup names preserve ordinary case-only producer merges", () => {
+  const entry = plugin({
+    name: "Shared Plugin",
+    versions: [{ name: "1.0.0", hash: "f".repeat(64) }],
+  });
+  const source = {
+    name: "1.0.0",
+    hash: "f".repeat(64),
+    tag: "1.0.0",
+    repository: "owner/shared-plugin",
+    source_url: "https://github.com/owner/shared-plugin",
+  };
+  const metadata = {
+    schema_version: 1,
+    plugins: {
+      "shared plugin": {
+        name: "shared plugin",
+        catalog_names: ["Shared Plugin"],
+        provenance: "extended",
+        versions: [source],
+      },
+    },
+  };
+
+  const detail = buildDetailViewModel(entry, metadata);
+  assert.equal(detail.source, source);
+  assert.equal(detail.provenance, "extended");
   assert.deepEqual(filterCatalog([entry], "", "extended", metadata.plugins), [entry]);
 });
 

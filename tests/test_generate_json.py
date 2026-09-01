@@ -568,6 +568,48 @@ class GenerateJsonTests(unittest.TestCase):
             generate_json.write_storefront_metadata(second, empty)
             self.assertEqual(first.read_bytes(), second.read_bytes())
 
+    def test_storefront_metadata_publishes_exact_catalog_lookup_names(self):
+        metadata = generate_json.build_storefront_metadata(
+            [
+                {"name": "Shared Plugin", "visible": True},
+                {"name": "Straße", "visible": True},
+            ],
+            [{"name": "SHARED plugin", "visible": True}],
+            {"shared plugin", "strasse"},
+            [
+                {
+                    "name": "shared plugin",
+                    "version": {
+                        "name": "1.0.0",
+                        "hash": "a" * 64,
+                        "tag": "v1.0.0",
+                        "repository": "owner/shared",
+                        "source_url": "https://github.com/owner/shared",
+                    },
+                },
+                {
+                    "name": "STRASSE",
+                    "version": {
+                        "name": "1.2.3-BETA",
+                        "hash": "b" * 64,
+                        "tag": "v1.2.3-BETA",
+                        "repository": "owner/strasse",
+                        "source_url": "https://github.com/owner/strasse",
+                    },
+                },
+            ],
+            "enforce",
+        )
+
+        self.assertEqual(
+            metadata["plugins"]["shared plugin"]["catalog_names"],
+            ["SHARED plugin", "Shared Plugin"],
+        )
+        self.assertEqual(metadata["plugins"]["strasse"]["catalog_names"], ["Straße"])
+        self.assertEqual(
+            metadata["plugins"]["strasse"]["versions"][0]["tag"], "1.2.3-BETA"
+        )
+
     def test_copy_static_files_without_a_static_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             self.assertEqual(

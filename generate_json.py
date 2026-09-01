@@ -546,6 +546,16 @@ def build_storefront_metadata(
     }
     stable_visible = _visible_catalog_entries(stable_plugins)
     testing_visible = _visible_catalog_entries(testing_plugins)
+    catalog_names_by_key = {}
+    for catalog in (stable_plugins, testing_plugins):
+        for entry in catalog or []:
+            if not isinstance(entry, dict):
+                continue
+            catalog_name = str(entry.get("name", "")).strip()
+            if catalog_name:
+                catalog_names_by_key.setdefault(catalog_name.casefold(), set()).add(
+                    catalog_name
+                )
 
     def extended_count(entries):
         return len(
@@ -607,6 +617,14 @@ def build_storefront_metadata(
         )
         plugins[key] = {
             "name": min(details["names"], key=lambda name: (name.casefold(), name)),
+            # Python casefold can merge names (for example, Straße and STRASSE)
+            # that JavaScript lowercasing cannot. Publish the final catalog
+            # spellings as exact lookup identities for the browser instead of
+            # asking it to recreate Python's Unicode casefold behavior.
+            "catalog_names": sorted(
+                catalog_names_by_key.get(key, set()),
+                key=lambda name: (name.casefold(), name),
+            ),
             "provenance": "official" if key in official_catalog_names else "extended",
             "versions": versions,
         }
