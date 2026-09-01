@@ -14,6 +14,12 @@ on:
     # for, so this is heavier than the check that gates it.
     - cron: '0 */6 * * *'
   workflow_dispatch:
+    inputs:
+      force_deploy:
+        description: "Deploy the current main branch even when catalog data is unchanged"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -82,7 +88,7 @@ jobs:
         run: uv run check_for_updates.py
 
       - name: Trigger a Cloudflare rebuild
-        if: steps.check.outputs.changed == 'true'
+        if: inputs.force_deploy == true || steps.check.outputs.changed == 'true'
         env:
           HOOK: ${{ secrets.CLOUDFLARE_DEPLOY_HOOK }}
         run: |

@@ -338,6 +338,18 @@ class WorkflowSecurityTests(unittest.TestCase):
             self.assertIn("Require prepared worklist success", aggregate)
             self.assertIn("not successful; refusing aggregation", aggregate)
 
+    def test_generate_workflow_can_force_a_manual_cloudflare_deploy(self):
+        workflow = (WORKFLOWS / "generate.yml").read_text()
+        refresh = self._job_body(workflow, "refresh")
+
+        self.assertIn("force_deploy:", workflow)
+        self.assertIn("type: boolean", workflow)
+        self.assertIn(
+            "if: inputs.force_deploy == true || steps.check.outputs.changed == 'true'",
+            refresh,
+        )
+        self.assertIn("HOOK: ${{ secrets.CLOUDFLARE_DEPLOY_HOOK }}", refresh)
+
 
 if __name__ == "__main__":
     unittest.main()
