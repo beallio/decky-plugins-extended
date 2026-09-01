@@ -1,7 +1,15 @@
 # Decky Plugins Extended
 
-A custom Decky Loader plugin repository that merges community and custom
-plugins into a single compatible store.
+A custom Decky Loader plugin repository that does two things the official store
+does not:
+
+- **Newer versions of plugins the official store already carries.** Plugin
+  authors publish a GitHub release long before the official store ingests it,
+  and some plugins sit months behind. This catalog tracks those source
+  repositories and offers the newer releases as soon as they exist.
+- **Plugins the official store does not carry at all**, curated by hand.
+
+Everything appears in one store, alongside the official catalog's own entries.
 
 ## How to use on your Steam Deck
 
@@ -22,6 +30,29 @@ custom store URL.
 2. **Browse plugins.**
    - Return to the Decky Store using the shopping bag icon. It will populate
      with the extended plugin catalog.
+
+### What you will see
+
+Plugins the official store also carries look normal, except that the version
+dropdown offers releases the official store has not published yet. When this
+catalog is ahead, the plugin's description starts with a note naming both
+versions, for example:
+
+```text
+Official store has 0.9.0; this store has 0.15.0.
+```
+
+That tells you where the official store stopped, so you can decide whether to
+take the newer build. Pick any version from the dropdown; the newest is first.
+
+For a version the official store already publishes, this catalog serves the
+official store's own file rather than rebuilding it, so installing it gives you
+exactly what you would get from the default store. Only the versions the
+official store does not have are built and security-scanned here. Every release
+offered is therefore either the official store's own artifact or one this
+repository has audited.
+
+Plugins the official store does not carry appear as ordinary store entries.
 
 ## View the catalogs
 
