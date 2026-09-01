@@ -186,24 +186,63 @@ export function filterCatalog(catalog, query = "", category = "all", provenanceB
   });
 }
 
-export function sortCatalog(catalog, sort = "updated") {
+export function sortCatalog(
+  catalog,
+  sort = "updated",
+  direction = sort === "name" ? "asc" : "desc",
+) {
   const ordered = [...(catalog || [])];
+  const multiplier = direction === "asc" ? 1 : -1;
   return ordered.sort((left, right) => {
+    let comparison;
     if (sort === "name") {
-      return left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
-    }
-    if (sort === "installs") {
-      return (
-        right.downloads + right.updates - (left.downloads + left.updates) ||
-        left.name.localeCompare(right.name, undefined, { sensitivity: "base" })
-      );
+      comparison = left.name.localeCompare(right.name, undefined, {
+        sensitivity: "base",
+      });
+    } else if (sort === "installs") {
+      comparison = left.downloads + left.updates - (right.downloads + right.updates);
+    } else {
+      comparison =
+        Date.parse(left.updated || left.created || 0) -
+        Date.parse(right.updated || right.created || 0);
     }
     return (
-      Date.parse(right.updated || right.created || 0) -
-        Date.parse(left.updated || left.created || 0) ||
+      comparison * multiplier ||
       left.name.localeCompare(right.name, undefined, { sensitivity: "base" })
     );
   });
+}
+
+export function relatedPluginsFor(plugin, catalog, limit = 4) {
+  const tags = new Set(
+    (plugin?.tags || []).map((tag) => stringValue(tag).toLowerCase()).filter(Boolean),
+  );
+  if (!tags.size) return [];
+  const maximum = Math.min(4, Math.max(0, Number.isSafeInteger(limit) ? limit : 4));
+  return (catalog || [])
+    .filter(
+      (candidate) =>
+        candidate?.visible !== false &&
+        candidate !== plugin &&
+        stringValue(candidate?.name) !== stringValue(plugin?.name),
+    )
+    .map((candidate) => ({
+      plugin: candidate,
+      sharedTags: (candidate.tags || []).filter((tag) =>
+        tags.has(stringValue(tag).toLowerCase()),
+      ).length,
+    }))
+    .filter((candidate) => candidate.sharedTags > 0)
+    .sort(
+      (left, right) =>
+        right.plugin.downloads - left.plugin.downloads ||
+        right.sharedTags - left.sharedTags ||
+        left.plugin.name.localeCompare(right.plugin.name, undefined, {
+          sensitivity: "base",
+        }),
+    )
+    .slice(0, maximum)
+    .map((candidate) => candidate.plugin);
 }
 
 function repositorySlug(value) {
@@ -302,13 +341,17 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = [], channe
   const latest = latestHistory?.version || null;
   const source = latestHistory?.source || null;
   const metadataPlugin = metadataPluginFor(plugin, metadata);
-  const repositoryUrls = new Set(
-    (Array.isArray(metadataPlugin?.versions) ? metadataPlugin.versions : [])
+  const repositoryUrls = new Set([
+    ...(Array.isArray(metadataPlugin?.source_urls) ? metadataPlugin.source_urls : [])
+      .map(stringValue)
+      .filter(Boolean),
+    ...(Array.isArray(metadataPlugin?.versions) ? metadataPlugin.versions : [])
       .map((version) => stringValue(version?.source_url))
       .filter(Boolean),
-  );
+  ]);
+  const repositorySourceUrls = [...repositoryUrls].sort();
   const repositorySourceUrl =
-    repositoryUrls.size === 1 ? repositoryUrls.values().next().value : "";
+    repositorySourceUrls.length === 1 ? repositorySourceUrls[0] : "";
   const audit = source && latest ? findMatchingAuditRecord(source, latest, auditRecords) : null;
   const largePluginWarnings = largePluginWarningsFor(plugin, metadata, channel);
   const provenance = provenanceForPlugin(plugin, metadata);
@@ -317,6 +360,7 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = [], channe
     latest,
     source,
     repositorySourceUrl,
+    repositorySourceUrls,
     sourceAmbiguous: latestHistory?.sourceAmbiguous === true,
     versionHistory,
     provenance,
@@ -402,6 +446,7 @@ function startStorefront() {
     categoryButtons: [...document.querySelectorAll("[data-category]")],
     search: document.getElementById("search"),
     sort: document.getElementById("sort"),
+    sortDirection: document.getElementById("sort-direction"),
     grid: document.getElementById("plugin-grid"),
     loading: document.getElementById("catalog-loading"),
     error: document.getElementById("catalog-error"),
@@ -427,7 +472,7 @@ function startStorefront() {
     detailName: document.getElementById("detail-name"),
     detailContent: document.getElementById("detail-content"),
   };
-  if (!elements.grid || !elements.search || !elements.sort) {
+  if (!elements.grid || !elements.search || !elements.sort || !elements.sortDirection) {
     return;
   }
 
@@ -437,11 +482,16 @@ function startStorefront() {
   const initialSort = ["updated", "name", "installs"].includes(params.get("sort"))
     ? params.get("sort")
     : "updated";
+  const defaultDirection = initialSort === "name" ? "asc" : "desc";
+  const initialDirection = ["asc", "desc"].includes(params.get("direction"))
+    ? params.get("direction")
+    : defaultDirection;
   const state = {
     channel: initialChannel,
     category: initialCategory,
     query: stringValue(params.get("query")),
     sort: initialSort,
+    sortDirection: initialDirection,
     catalogByChannel: new Map(),
     metadata: null,
     auditRecords: [],
@@ -452,6 +502,7 @@ function startStorefront() {
   };
   elements.search.value = state.query;
   elements.sort.value = state.sort;
+  elements.sortDirection.value = state.sortDirection;
 
   function updateUrl() {
     const next = new URLSearchParams();
@@ -459,6 +510,10 @@ function startStorefront() {
     if (state.query) next.set("query", state.query);
     if (state.category !== "all") next.set("category", state.category);
     if (state.sort !== "updated") next.set("sort", state.sort);
+    const defaultSortDirection = state.sort === "name" ? "asc" : "desc";
+    if (state.sortDirection !== defaultSortDirection) {
+      next.set("direction", state.sortDirection);
+    }
     const query = next.toString();
     const url = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
     window.history.replaceState(null, "", url);
@@ -500,7 +555,11 @@ function startStorefront() {
   function visibleCatalog() {
     const catalog = state.catalogByChannel.get(state.channel) || [];
     const provenance = state.metadata?.plugins || {};
-    return sortCatalog(filterCatalog(catalog, state.query, state.category, provenance), state.sort);
+    return sortCatalog(
+      filterCatalog(catalog, state.query, state.category, provenance),
+      state.sort,
+      state.sortDirection,
+    );
   }
 
   function updateStatusCounts(catalog) {
@@ -562,7 +621,19 @@ function startStorefront() {
     const footer = createElement("div", "card-footer");
     const tags = createElement("div", "tag-list");
     plugin.tags.slice(0, 2).forEach((tag) => tags.append(createElement("span", "tag", tag)));
-    footer.append(tags, createElement("span", "updated", plugin.updated ? `Updated ${plugin.updated.slice(0, 10)}` : ""));
+    const metrics = createElement("div", "card-metrics");
+    const downloads = createElement("span", "card-downloads");
+    downloads.append(
+      detailIcon("download"),
+      createElement("span", "", `${plugin.downloads.toLocaleString()} downloads`),
+    );
+    metrics.append(downloads);
+    if (plugin.updated) {
+      metrics.append(
+        createElement("span", "updated", `Updated ${plugin.updated.slice(0, 10)}`),
+      );
+    }
+    footer.append(tags, metrics);
     body.append(footer);
     button.append(art, body);
     button.addEventListener("click", () => openDetail(plugin, button));
@@ -739,6 +810,57 @@ function startStorefront() {
     total.append(detailIcon(iconName), copy);
     return total;
   }
+  function relatedPluginSection(plugin) {
+    const catalog = state.catalogByChannel.get(state.channel) || [];
+    const related = relatedPluginsFor(plugin, catalog, 4);
+    if (!related.length) return null;
+    const section = createElement("section", "related-plugins");
+    const heading = document.createElement("h3");
+    heading.id = "related-plugins-heading";
+    heading.textContent = "Related plugins";
+    const grid = createElement("div", "related-plugin-grid");
+    for (const candidate of related) {
+      const card = createElement("article", "related-plugin");
+      const button = createElement("button");
+      button.type = "button";
+      button.dataset.detailFocus = `related-${candidate.name}`;
+      button.setAttribute("aria-label", `View ${candidate.name} details`);
+      const art = createElement("div", "related-plugin-art");
+      if (candidate.imageUrl) {
+        const image = document.createElement("img");
+        image.loading = "lazy";
+        image.alt = "";
+        image.src = candidate.imageUrl;
+        image.addEventListener("error", () => {
+          image.remove();
+          if (!art.querySelector(".monogram")) addMonogram(art, candidate.name);
+        });
+        art.append(image);
+      } else {
+        addMonogram(art, candidate.name);
+      }
+      const copy = createElement("div", "related-plugin-copy");
+      copy.append(
+        createElement("span", "related-plugin-name", candidate.name),
+        createElement(
+          "span",
+          "related-plugin-downloads",
+          `${candidate.downloads.toLocaleString()} downloads`,
+        ),
+      );
+      button.append(art, copy);
+      button.addEventListener("click", () => {
+        state.detailPluginName = candidate.name;
+        renderDetail(candidate);
+        elements.detailDialog.scrollTop = 0;
+        elements.detailDialog.focus({ preventScroll: true });
+      });
+      card.append(button);
+      grid.append(card);
+    }
+    section.append(heading, grid);
+    return section;
+  }
 
   function versionHistoryTable(history) {
     const section = createElement("section", "version-history");
@@ -797,6 +919,11 @@ function startStorefront() {
     elements.detailContent.replaceChildren();
 
     const hero = createElement("div", "detail-hero");
+    const meta = [`by ${plugin.author}`];
+    if (detail.latest?.name) meta.push(`Latest v${detail.latest.name}`);
+    if (plugin.updated) meta.push(`Updated ${plugin.updated.slice(0, 10)}`);
+    hero.append(createElement("p", "detail-meta", meta.join(" · ")));
+
     const detailArt = createElement("div", "detail-art");
     if (plugin.imageUrl) {
       const image = document.createElement("img");
@@ -811,22 +938,7 @@ function startStorefront() {
     } else {
       addMonogram(detailArt, plugin.name);
     }
-    const meta = [`by ${plugin.author}`];
-    if (detail.latest?.name) meta.push(`Latest v${detail.latest.name}`);
-    if (plugin.updated) meta.push(`Updated ${plugin.updated.slice(0, 10)}`);
-    hero.append(detailArt, createElement("p", "detail-meta", meta.join(" · ")));
-    const repositoryUrl =
-      detail.repositorySourceUrl || stringValue(detail.source?.source_url);
-    if (repositoryUrl) {
-      const actions = createElement("div", "detail-actions detail-primary-actions");
-      const source = createElement("a", "btn btn-secondary", "View repository");
-      source.dataset.detailFocus = "view-source";
-      source.href = repositoryUrl;
-      source.target = "_blank";
-      source.rel = "noopener";
-      actions.append(source);
-      hero.append(actions);
-    }
+    hero.append(detailArt);
     elements.detailContent.append(
       hero,
       createElement(
@@ -835,6 +947,28 @@ function startStorefront() {
         plugin.description || "No description provided.",
       ),
     );
+
+    if (detail.officialNote) {
+      elements.detailContent.append(createElement("p", "warning", detail.officialNote));
+    }
+    const repositoryUrls = detail.repositorySourceUrls.length
+      ? detail.repositorySourceUrls
+      : [stringValue(detail.source?.source_url)].filter(Boolean);
+    if (repositoryUrls.length) {
+      const actions = createElement("div", "detail-actions detail-primary-actions");
+      repositoryUrls.forEach((url, index) => {
+        const slug = url.replace(/^https:\/\/github\.com\//i, "").replace(/\/$/, "");
+        const label =
+          repositoryUrls.length === 1 ? "View repository" : `View ${slug || `repository ${index + 1}`}`;
+        const source = createElement("a", "btn btn-secondary", label);
+        source.dataset.detailFocus = `view-source-${index}`;
+        source.href = url;
+        source.target = "_blank";
+        source.rel = "noopener";
+        actions.append(source);
+      });
+      elements.detailContent.append(actions);
+    }
 
     const detailCopyStatus = createElement(
       "p",
@@ -859,9 +993,12 @@ function startStorefront() {
       );
     }
 
-    const auditLink = createElement("a", "detail-box-action", "Open audit log");
-    auditLink.dataset.detailFocus = "open-audit";
-    auditLink.href = "audit.html";
+    let auditLink = null;
+    if (detail.audit) {
+      auditLink = createElement("a", "detail-box-action", "Open audit log");
+      auditLink.dataset.detailFocus = "open-audit";
+      auditLink.href = "audit.html";
+    }
     const hashBox = detailBox("Latest hash", detail.latest?.hash || "", copyHash);
     hashBox.classList.add("detail-hash-box");
     if (detail.latest?.hash) hashBox.append(detailCopyStatus);
@@ -878,17 +1015,16 @@ function startStorefront() {
     );
     elements.detailContent.append(grid);
 
-
     const totals = createElement("div", "detail-totals");
     totals.setAttribute("aria-label", "Plugin totals");
     totals.append(
       detailTotal("Total downloads", plugin.downloads, "download"),
       detailTotal("Total updates", plugin.updates, "updates"),
     );
-    elements.detailContent.append(totals, versionHistoryTable(detail.versionHistory));
-    if (detail.officialNote) {
-      elements.detailContent.append(createElement("p", "warning", detail.officialNote));
-    }
+    elements.detailContent.append(totals);
+    const related = relatedPluginSection(plugin);
+    if (related) elements.detailContent.append(related);
+    elements.detailContent.append(versionHistoryTable(detail.versionHistory));
     if (detail.sourceAmbiguous) {
       elements.detailContent.append(
         createElement(
@@ -954,6 +1090,13 @@ function startStorefront() {
   });
   elements.sort.addEventListener("change", (event) => {
     state.sort = event.target.value;
+    state.sortDirection = state.sort === "name" ? "asc" : "desc";
+    elements.sortDirection.value = state.sortDirection;
+    updateUrl();
+    render();
+  });
+  elements.sortDirection.addEventListener("change", (event) => {
+    state.sortDirection = event.target.value;
     updateUrl();
     render();
   });

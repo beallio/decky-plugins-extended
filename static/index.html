@@ -44,10 +44,6 @@
           <button class="btn btn-primary" id="copy-store" type="button" aria-describedby="copy-status">Copy Stable URL</button>
           <button class="btn btn-quiet setup-button" id="open-setup" type="button">Show setup steps</button>
           <p class="copy-status" id="copy-status" role="status" aria-live="polite"></p>
-          <div class="fallback-links" aria-label="Direct store catalog links">
-            <a data-fallback-channel="stable" href="https://decky-extended-plugins.beallio.com/plugins.json">https://decky-extended-plugins.beallio.com/plugins.json</a>
-            <a data-fallback-channel="testing" href="https://decky-extended-plugins.beallio.com/testing_plugins.json">https://decky-extended-plugins.beallio.com/testing_plugins.json</a>
-          </div>
         </aside>
       </div>
     </section>
@@ -87,13 +83,21 @@
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m20 20-4.3-4.3m1.3-5.2a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           <input class="control" id="search" type="search" placeholder="Search plugins, authors, or tags" autocomplete="off">
         </label>
-        <label class="sort-wrap" for="sort"><span class="sr-only">Sort plugins</span>
-          <select class="control" id="sort">
-            <option value="updated">Recently updated</option>
-            <option value="name">Name</option>
-            <option value="installs">Most installs</option>
-          </select>
-        </label>
+        <div class="sort-controls">
+          <label class="sort-wrap" for="sort"><span class="sr-only">Sort plugins</span>
+            <select class="control" id="sort">
+              <option value="updated">Last updated</option>
+              <option value="name">Name</option>
+              <option value="installs">Total installs</option>
+            </select>
+          </label>
+          <label class="sort-wrap" for="sort-direction"><span class="sr-only">Sort direction</span>
+            <select class="control" id="sort-direction">
+              <option value="desc">Descending</option>
+              <option value="asc">Ascending</option>
+            </select>
+          </label>
+        </div>
       </div>
       <div class="chips" id="chips" aria-label="Plugin categories">
         <button class="chip" type="button" data-category="all" aria-pressed="true">All</button>

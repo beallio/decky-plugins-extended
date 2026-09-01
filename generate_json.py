@@ -571,15 +571,33 @@ def build_storefront_metadata(
             }
         )
 
-    by_plugin = {}
+    by_plugin = {
+        key: {
+            "names": set(names),
+            "versions": [],
+            "warnings": [],
+            "source_urls": set(),
+        }
+        for key, names in catalog_names_by_key.items()
+    }
     for contribution in contributions or []:
         if not isinstance(contribution, dict):
             continue
         display_name = str(contribution.get("name", "")).strip()
-        version = contribution.get("version")
-        if not display_name or not isinstance(version, dict):
+        if not display_name:
             continue
         key = display_name.casefold()
+        details = by_plugin.setdefault(
+            key,
+            {"names": set(), "versions": [], "warnings": [], "source_urls": set()},
+        )
+        details["names"].add(display_name)
+        source_url = str(contribution.get("source_url", "")).strip()
+        if source_url:
+            details["source_urls"].add(source_url)
+        version = contribution.get("version")
+        if not isinstance(version, dict):
+            continue
         normalized_name = normalize_version(str(version.get("name", "")).strip())
         normalized_tag = normalize_version(str(version.get("tag", "")).strip())
         record = {
@@ -594,10 +612,7 @@ def build_storefront_metadata(
             record["release_url"] = release_url
         if not all(record.values()):
             continue
-        details = by_plugin.setdefault(
-            key, {"names": set(), "versions": [], "warnings": []}
-        )
-        details["names"].add(display_name)
+        details["source_urls"].add(record["source_url"])
         identity = tuple(
             record[field]
             for field in ("name", "hash", "tag", "repository", "source_url")
@@ -649,7 +664,8 @@ def build_storefront_metadata(
         if not record["name"] or not record["tag"] or not record["repository"]:
             continue
         details = by_plugin.setdefault(
-            key, {"names": set(), "versions": [], "warnings": []}
+            key,
+            {"names": set(), "versions": [], "warnings": [], "source_urls": set()},
         )
         details["names"].add(display_name)
         if record not in details["warnings"]:
@@ -679,6 +695,9 @@ def build_storefront_metadata(
             "provenance": "official" if key in official_catalog_names else "extended",
             "versions": versions,
         }
+        source_urls = sorted(details["source_urls"])
+        if source_urls:
+            plugin_record["source_urls"] = source_urls
         warnings_for_plugin = sorted(
             details["warnings"],
             key=lambda warning: (
@@ -1100,6 +1119,14 @@ def main():
 
             releases = get_releases(owner, repo)
             repository_slug = _repository_slug(url)
+            if repository_slug:
+                storefront_contributions.append(
+                    {
+                        "name": plugin_name,
+                        "repository": repository_slug,
+                        "source_url": f"https://github.com/{repository_slug}",
+                    }
+                )
 
             stable_versions = []
             testing_versions = []
