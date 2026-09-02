@@ -43,3 +43,4 @@ https://github.com/bschelst/protondb-decky
 https://github.com/flexlug/decky-controller
 https://github.com/santojon/Deck-Shelves
 https://github.com/LucifersCircle/Decky-Cheat-Engine-Launcher
+https://github.com/beallio/protondb-decky
