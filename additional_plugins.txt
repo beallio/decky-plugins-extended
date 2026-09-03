@@ -1,7 +1,5 @@
 https://github.com/beallio/SDH-Ludusavi
 https://github.com/beallio/Decky-Metadata/
-https://github.com/0u73r-h34v3n/SDH-PlayTime
-https://github.com/SheffeyG/CheatDeck/
 https://github.com/mubaraknumann/unifideck
 https://github.com/panyiwei-home/Friendeck
 https://github.com/danielcopper/romm-tender
@@ -39,7 +37,6 @@ https://github.com/Rayekkk/DeckyVibranceHDR
 https://github.com/parvagans/achievement-companion
 https://github.com/lopesleo/DeckTools
 https://github.com/beallio/SDH-PlayTime-beallio-remix
-https://github.com/bschelst/protondb-decky
 https://github.com/flexlug/decky-controller
 https://github.com/santojon/Deck-Shelves
 https://github.com/LucifersCircle/Decky-Cheat-Engine-Launcher
