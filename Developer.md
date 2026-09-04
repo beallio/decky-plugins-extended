@@ -30,7 +30,8 @@ the repository is on GitHub, is not archived, is absent from
 `additional_plugins.txt`, has a `plugin.json` name that matches a published
 store plugin, and publishes at least one non-draft, non-prerelease single-zip
 release the official store does not already carry. Every rejection is printed
-with its reason, and `--check` exits 1 when either generated file is stale.
+with its reason, and `--check` exits 1 when any of its three generated files is
+stale.
 
 ## Versions the official store already publishes
 
@@ -65,6 +66,11 @@ deliberate: the merge replaces an upstream row whenever this catalog's artifact
 for the same version hashes differently, so an unsuppressed upstream check
 would report the official identity as missing on every run and trigger a
 rebuild loop.
+
+The update check applies the same store-version deferrals and oversized-release
+eligibility as the generator. It does not hash versions supplied by the official
+store, and it does not fail on oversized releases that the generator cannot
+publish.
 
 ## Add a plugin the official store does not carry
 
@@ -197,6 +203,11 @@ build reads a `GITHUB_TOKEN` configured as an environment variable in the
 Cloudflare Pages dashboard, and the same deploy publishes `functions/`.
 
 The GitHub Actions workflow has two jobs, neither of which publishes anything.
+
+Both jobs first run `store_discovery.py --check`. If the official database has
+changed and the committed discovery outputs are stale, the job fails with the
+regeneration command instead of building or polling an incomplete repository
+list.
 
 `build` runs when generator inputs change and on manual dispatch. It generates
 both catalogs with `uv` and validates their plugin IDs, names, version lists and

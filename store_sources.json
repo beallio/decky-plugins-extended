@@ -29,6 +29,9 @@
   "BT Wake Control": [
     "https://gitlab.com/finewolf-projects/decky-plugin-bluetooth-wake-control"
   ],
+  "CheatDeck": [
+    "https://github.com/sheffeyg/cheatdeck"
+  ],
   "Controller Tools": [
     "https://github.com/jfernandez/controllertools"
   ],
@@ -228,8 +231,14 @@
   "PlayCount": [
     "https://github.com/itsowen/playcount-decky"
   ],
+  "PlayTime": [
+    "https://github.com/0u73r-h34v3n/sdh-playtime"
+  ],
   "PowerTools": [
     "https://gitlab.com/NGnius/PowerTools"
+  ],
+  "ProtonDB Badges": [
+    "https://github.com/bschelst/protondb-decky"
   ],
   "Quick Launch": [
     "https://github.com/fisch03/sdh-quicklaunch"
