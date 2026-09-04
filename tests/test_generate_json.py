@@ -417,6 +417,7 @@ class GenerateJsonTests(unittest.TestCase):
 
     def test_merge_plugin_versions_updates_and_sorts_versions(self):
         plugin = {
+            "updated": "2024-01-01T00:00:00Z",
             "versions": [
                 {
                     "name": "1.0.0",
@@ -425,15 +426,23 @@ class GenerateJsonTests(unittest.TestCase):
                     "created": "2025-01-01T00:00:00Z",
                     "downloads": 10,
                     "updates": 4,
-                }
-            ]
+                },
+                {
+                    "name": "3.0.0",
+                    "hash": "d" * 64,
+                    "artifact": "https://example.invalid/3.zip",
+                    "created": "2024-06-01T00:00:00Z",
+                    "downloads": 7,
+                    "updates": 2,
+                },
+            ],
         }
         new_versions = [
             {
                 "name": "1.0.0",
                 "hash": "b" * 64,
                 "artifact": "https://example.invalid/new.zip",
-                "created": "2026-01-01T00:00:00Z",
+                "created": "2025-02-01T00:00:00Z",
                 "downloads": 0,
                 "updates": 0,
             },
@@ -450,11 +459,29 @@ class GenerateJsonTests(unittest.TestCase):
         generate_json.merge_plugin_versions(plugin, new_versions)
 
         self.assertEqual(
-            [version["name"] for version in plugin["versions"]], ["2.0.0", "1.0.0"]
+            [version["name"] for version in plugin["versions"]],
+            ["3.0.0", "2.0.0", "1.0.0"],
         )
-        self.assertEqual(plugin["versions"][1]["hash"], "b" * 64)
-        self.assertEqual(plugin["versions"][1]["downloads"], 10)
-        self.assertEqual(plugin["versions"][1]["updates"], 4)
+        self.assertEqual(plugin["updated"], "2026-02-01T00:00:00Z")
+        self.assertEqual(plugin["versions"][2]["hash"], "b" * 64)
+        self.assertEqual(plugin["versions"][2]["downloads"], 10)
+        self.assertEqual(plugin["versions"][2]["updates"], 4)
+
+        no_publication_date_plugin = {
+            "updated": "2024-01-01T00:00:00Z",
+            "versions": [{"name": "1.0.0", "hash": "e" * 64}],
+        }
+        generate_json.merge_plugin_versions(
+            no_publication_date_plugin,
+            [
+                {
+                    "name": "2.0.0",
+                    "hash": "f" * 64,
+                    "created": "not-a-timestamp",
+                }
+            ],
+        )
+        self.assertEqual(no_publication_date_plugin["updated"], "2024-01-01T00:00:00Z")
 
     def test_copy_static_files_publishes_storefront_assets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1032,11 +1059,13 @@ class GenerateJsonTests(unittest.TestCase):
                 "id": 7,
                 "name": "Merged Plugin",
                 "description": "Official description",
+                "updated": "2025-01-01T00:00:00Z",
                 "versions": [
                     {
                         "name": "1.0.0",
                         "hash": "a" * 64,
                         "artifact": "https://example.invalid/official.zip",
+                        "created": "2025-01-01T00:00:00Z",
                     }
                 ],
             },
@@ -1044,11 +1073,13 @@ class GenerateJsonTests(unittest.TestCase):
                 "id": 8,
                 "name": "Unconfigured Plugin",
                 "description": "Unconfigured description",
+                "updated": "2024-01-01T00:00:00Z",
                 "versions": [
                     {
                         "name": "1.0.0",
                         "hash": "b" * 64,
                         "artifact": "https://example.invalid/unconfigured.zip",
+                        "created": "2024-01-01T00:00:00Z",
                     }
                 ],
             },
@@ -1127,6 +1158,8 @@ class GenerateJsonTests(unittest.TestCase):
                 "Official store has 1.0.0; this store has 2.0.0."
             )
         )
+        self.assertEqual(merged["updated"], "2026-01-01T00:00:00Z")
+        self.assertEqual(unconfigured["updated"], "2024-01-01T00:00:00Z")
         self.assertEqual(unconfigured["description"], "Unconfigured description")
 
 

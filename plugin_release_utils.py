@@ -916,7 +916,7 @@ def _numeric_id(value: Any) -> int:
         return -1
 
 
-def _timestamp_key(value: Any) -> tuple[int, datetime]:
+def timestamp_order_key(value: Any) -> tuple[int, datetime]:
     if not isinstance(value, str) or not value:
         return 0, datetime.min.replace(tzinfo=timezone.utc)
     try:
@@ -933,7 +933,7 @@ def release_order_key(release: dict[str, Any]) -> tuple[Any, ...]:
     timestamp = release.get("published_at") or release.get("created_at")
     asset = get_zip_asset(release) or {}
     return (
-        _timestamp_key(timestamp),
+        timestamp_order_key(timestamp),
         _numeric_id(release.get("id")),
         _numeric_id(asset.get("id")),
     )
