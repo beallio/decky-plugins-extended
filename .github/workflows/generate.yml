@@ -8,6 +8,7 @@ on:
       - 'store_plugins.txt'
       - 'store_sources.json'
       - 'plugin_release_utils.py'
+      - 'store_discovery.py'
       - 'generate_json.py'
       - 'pyproject.toml'
       - 'uv.lock'
@@ -55,6 +56,11 @@ jobs:
         with:
           python-version-file: 'pyproject.toml'
 
+      - name: Verify official catalog source data
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uv run store_discovery.py --check
+
       - name: Run script
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -82,6 +88,11 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version-file: 'pyproject.toml'
+
+      - name: Verify official catalog source data
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uv run store_discovery.py --check
 
       - name: Check for upstream and plugin updates
         id: check
