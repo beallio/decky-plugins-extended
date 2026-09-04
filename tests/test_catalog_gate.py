@@ -518,6 +518,47 @@ def test_reconciliation_requires_normalized_name_and_audited_hash():
     assert [(v["name"], v["hash"]) for v in plugin["versions"]] == [("2.0.0", "c" * 64)]
 
 
+def test_custom_update_check_defers_to_official_store_versions(monkeypatch):
+    release = _release("v1.0.0", 1, FALLBACK_HASH)
+    monkeypatch.setattr(generate_json, "read_repo_urls", lambda: [REPOSITORY])
+    monkeypatch.setattr(
+        generate_json,
+        "get_repo_info",
+        lambda *_args: {"default_branch": "main"},
+    )
+    monkeypatch.setattr(
+        generate_json, "get_plugin_json", lambda *_args: {"name": "Plugin"}
+    )
+    monkeypatch.setattr(
+        generate_json, "get_package_json", lambda *_args: {"name": "plugin"}
+    )
+    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: [release])
+    monkeypatch.setattr(
+        generate_json,
+        "load_store_versions",
+        lambda: {REPOSITORY: {"1.0.0"}},
+    )
+    monkeypatch.setattr(
+        generate_json,
+        "build_version_object",
+        lambda *_args, **_kwargs: pytest.fail(
+            "official store versions must not inspect the GitHub artifact"
+        ),
+    )
+    managed_plugin_names = set()
+
+    assert (
+        check_for_updates.check_custom_repos(
+            {"Plugin": {("1.0.0", OFFICIAL_HASH)}},
+            {},
+            BLOCKABLE_RULES,
+            managed_plugin_names=managed_plugin_names,
+        )
+        == []
+    )
+    assert managed_plugin_names == {"Plugin"}
+
+
 def test_custom_update_check_ignores_blocked_newest_release(monkeypatch):
     releases = [
         _release("v2.0.0", 2, BLOCKED_HASH),

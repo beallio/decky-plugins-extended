@@ -215,11 +215,13 @@ def check_custom_repos(
 ):
     missing = []
     live = _casefold_live_index(live)
+    store_versions = g.load_store_versions()
     for url in g.read_repo_urls():
         try:
             url = g.canonicalize_github_repository_url(url)
             owner, repo = g.parse_github_repository_url(url)
             branch = g.get_repo_info(owner, repo).get("default_branch", "main")
+            deferred_versions = store_versions.get(url, set())
             name = g.resolve_plugin_name(
                 g.get_plugin_json(owner, repo, branch),
                 g.get_package_json(owner, repo, branch),
@@ -230,6 +232,12 @@ def check_custom_repos(
             valid_version_count = 0
             for release in g.get_releases(owner, repo):
                 if not g.is_release_eligible(release, allow_prerelease=False):
+                    continue
+                if (
+                    g.normalize_version(release.get("tag_name", "1.0.0"))
+                    in deferred_versions
+                ):
+                    valid_version_count += 1
                     continue
                 version = g.build_version_object(release, policy=download_policy)
                 if version is None:
