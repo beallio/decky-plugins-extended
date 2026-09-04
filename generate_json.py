@@ -29,6 +29,7 @@ from plugin_release_utils import (
     normalize_version,
     parse_github_repository_url,
     release_exceeds_download_limit,
+    timestamp_order_key,
     validate_download_policy,
     version_sort_key,
 )
@@ -358,6 +359,17 @@ def merge_plugin_versions(existing_plugin, new_versions):
             existing_versions[nv["name"]] = nv
 
     sort_versions(existing_plugin["versions"])
+
+    publication_dates = [
+        version.get("created") for version in existing_plugin["versions"]
+    ]
+    valid_publication_dates = [
+        value for value in publication_dates if timestamp_order_key(value)[0]
+    ]
+    if valid_publication_dates:
+        existing_plugin["updated"] = max(
+            valid_publication_dates, key=timestamp_order_key
+        )
 
 
 def remove_blocked_versions(existing_plugin, blocked_identities):
