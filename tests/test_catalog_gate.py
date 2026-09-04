@@ -559,6 +559,42 @@ def test_custom_update_check_defers_to_official_store_versions(monkeypatch):
     assert managed_plugin_names == {"Plugin"}
 
 
+def test_custom_update_check_skips_oversized_release_without_digest(monkeypatch):
+    policy = _download_policy()
+    release = _release("v1.0.0", 1, "invalid")
+    release["assets"][0]["size"] = policy["downloads"]["release_max_bytes"] + 1
+    monkeypatch.setattr(generate_json, "read_repo_urls", lambda: [REPOSITORY])
+    monkeypatch.setattr(
+        generate_json,
+        "get_repo_info",
+        lambda *_args: {"default_branch": "main"},
+    )
+    monkeypatch.setattr(
+        generate_json, "get_plugin_json", lambda *_args: {"name": "Plugin"}
+    )
+    monkeypatch.setattr(
+        generate_json, "get_package_json", lambda *_args: {"name": "plugin"}
+    )
+    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: [release])
+    monkeypatch.setattr(
+        generate_json,
+        "build_version_object",
+        lambda *_args, **_kwargs: pytest.fail(
+            "the generator excludes oversized releases without a GitHub digest"
+        ),
+    )
+
+    assert (
+        check_for_updates.check_custom_repos(
+            {},
+            {},
+            BLOCKABLE_RULES,
+            download_policy=policy,
+        )
+        == []
+    )
+
+
 def test_custom_update_check_ignores_blocked_newest_release(monkeypatch):
     releases = [
         _release("v2.0.0", 2, BLOCKED_HASH),

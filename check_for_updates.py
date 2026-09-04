@@ -216,6 +216,7 @@ def check_custom_repos(
     missing = []
     live = _casefold_live_index(live)
     store_versions = g.load_store_versions()
+    download_limits = g.validate_download_policy(download_policy)
     for url in g.read_repo_urls():
         try:
             url = g.canonicalize_github_repository_url(url)
@@ -238,6 +239,11 @@ def check_custom_repos(
                     in deferred_versions
                 ):
                     valid_version_count += 1
+                    continue
+                zip_asset = g.get_zip_asset(release) or {}
+                if g.release_exceeds_download_limit(
+                    release, download_limits.release_max_bytes
+                ) and not g.normalize_github_sha256_digest(zip_asset.get("digest")):
                     continue
                 version = g.build_version_object(release, policy=download_policy)
                 if version is None:
