@@ -248,12 +248,16 @@ def test_gate_removes_blocked_existing_version_and_uses_fallback(
         _release("v2.0.0", 2, BLOCKED_HASH),
         _release("v1.0.0", 1, FALLBACK_HASH),
     ]
+    blocked = _version("v2.0.0", BLOCKED_HASH)
+    blocked["created"] = "2026-03-01T00:00:00Z"
+    fallback = _version("v1.0.0", FALLBACK_HASH)
+    fallback["created"] = "2025-12-01T00:00:00Z"
     stable, testing = _run_generator(
         monkeypatch,
         tmp_path,
         releases,
         _verdicts(),
-        [_version("v2.0.0", BLOCKED_HASH), _version("v1.0.0", FALLBACK_HASH)],
+        [blocked, fallback],
     )
 
     for catalog in (stable, testing):
@@ -262,6 +266,7 @@ def test_gate_removes_blocked_existing_version_and_uses_fallback(
         assert ("2.0.0", BLOCKED_HASH) not in identities
         assert plugin["versions"][0]["name"] == "1.0.0"
         assert plugin["versions"][0]["hash"] == FALLBACK_HASH
+        assert plugin["updated"] == "2025-12-01T00:00:00Z"
     output = capsys.readouterr().out
     assert "Plugin" in output
     assert "v2.0.0" in output
@@ -412,6 +417,10 @@ def test_fully_blocked_repository_keeps_the_official_store_versions(
     # row can share a version name with a blocked release while carrying bytes
     # this audit never covered. Blocking every release of the configured
     # repository must not delete a plugin the official store still ships.
+    official = _version("v1.0.0", OFFICIAL_HASH)
+    official["created"] = "2025-12-01T00:00:00Z"
+    blocked = _version("v2.0.0", BLOCKED_HASH)
+    blocked["created"] = "2026-03-01T00:00:00Z"
     stable, testing = _run_generator(
         monkeypatch,
         tmp_path,
@@ -420,7 +429,7 @@ def test_fully_blocked_repository_keeps_the_official_store_versions(
             _release("v1.0.0", 1, FALLBACK_HASH),
         ],
         _verdicts(all_blocked=True),
-        [_version("v1.0.0", OFFICIAL_HASH)],
+        [blocked, official],
     )
 
     output = capsys.readouterr().out
@@ -433,6 +442,7 @@ def test_fully_blocked_repository_keeps_the_official_store_versions(
         entry = next(plugin for plugin in catalog if plugin["name"] == "Plugin")
         assert [version["name"] for version in entry["versions"]] == ["1.0.0"]
         assert entry["versions"][0]["hash"] == OFFICIAL_HASH
+        assert entry["updated"] == "2025-12-01T00:00:00Z"
 
 
 def test_fully_blocked_repository_still_drops_the_audited_identity(

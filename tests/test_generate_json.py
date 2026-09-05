@@ -467,6 +467,12 @@ class GenerateJsonTests(unittest.TestCase):
         self.assertEqual(plugin["versions"][2]["downloads"], 10)
         self.assertEqual(plugin["versions"][2]["updates"], 4)
 
+        generate_json.merge_plugin_versions(
+            plugin,
+            [{"name": "4.0.0", "hash": "e" * 64, "created": "2025-12-01T00:00:00Z"}],
+        )
+        self.assertEqual(plugin["updated"], "2026-02-01T00:00:00Z")
+
         no_publication_date_plugin = {
             "updated": "2024-01-01T00:00:00Z",
             "versions": [{"name": "1.0.0", "hash": "e" * 64}],
@@ -482,6 +488,93 @@ class GenerateJsonTests(unittest.TestCase):
             ],
         )
         self.assertEqual(no_publication_date_plugin["updated"], "2024-01-01T00:00:00Z")
+
+    def test_refresh_plugin_updated_uses_utc_order_and_keeps_first_equal_string(self):
+        plugin = {
+            "updated": "repository activity",
+            "versions": [
+                {"created": "2026-02-01T01:00:00+02:00"},
+                {"created": "2026-01-31T16:00:00-08:00"},
+                {"created": "2026-02-01T00:00:00Z"},
+                {},
+                {"created": None},
+                {"created": 123},
+                {"created": "not-a-date"},
+            ],
+        }
+        generate_json.refresh_plugin_updated(plugin)
+        self.assertEqual(plugin["updated"], "2026-01-31T16:00:00-08:00")
+
+    def test_refresh_plugin_updated_preserves_no_valid_date_state(self):
+        for versions in (
+            None,
+            [],
+            [{}, {"created": None}, {"created": 4}, {"created": "bad"}],
+        ):
+            for original in ({}, {"updated": None}, {"updated": "upstream value"}):
+                with self.subTest(versions=versions, original=original):
+                    plugin = {**original, "versions": versions}
+                    generate_json.refresh_plugin_updated(plugin)
+                    self.assertEqual(plugin, {**original, "versions": versions})
+
+    def test_main_new_entry_without_publication_dates_has_null_updated(self):
+        for created in (None, "invalid"):
+            with (
+                self.subTest(created=created),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
+                workdir = Path(temp_dir)
+                (workdir / "additional_plugins.txt").write_text(
+                    "https://github.com/example/undated\n", encoding="utf-8"
+                )
+                version = {
+                    "name": "1.0.0",
+                    "hash": "a" * 64,
+                    "artifact": "https://example.invalid/undated.zip",
+                }
+                if created is not None:
+                    version["created"] = created
+                old_cwd = Path.cwd()
+                try:
+                    os.chdir(workdir)
+                    with (
+                        patch.object(generate_json, "fetch_json", return_value=[]),
+                        patch.object(
+                            generate_json,
+                            "get_repo_info",
+                            return_value={
+                                "default_branch": "main",
+                                "updated_at": "2026-09-01T00:00:00Z",
+                            },
+                        ),
+                        patch.object(
+                            generate_json,
+                            "get_package_json",
+                            return_value={"name": "Undated"},
+                        ),
+                        patch.object(
+                            generate_json,
+                            "get_plugin_json",
+                            return_value={"name": "Undated"},
+                        ),
+                        patch.object(
+                            generate_json,
+                            "get_releases",
+                            return_value=[{"tag_name": "v1.0.0"}],
+                        ),
+                        patch.object(
+                            generate_json, "build_version_object", return_value=version
+                        ),
+                        patch.object(
+                            generate_json, "resolve_image_url", return_value=""
+                        ),
+                    ):
+                        generate_json.main()
+                finally:
+                    os.chdir(old_cwd)
+                for filename in ("plugins.json", "testing_plugins.json"):
+                    catalog = json.loads((workdir / "public" / filename).read_text())
+                    self.assertIsNone(catalog[0]["updated"])
 
     def test_copy_static_files_publishes_storefront_assets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -720,7 +813,7 @@ class GenerateJsonTests(unittest.TestCase):
             "default_branch": "main",
             "description": "Repository description",
             "created_at": "2025-01-01T00:00:00Z",
-            "updated_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-09-01T00:00:00Z",
         }
         # The store entry must be keyed on the plugin.json name, not this one.
         plugin_json = {"name": "Custom Plugin"}
@@ -733,6 +826,7 @@ class GenerateJsonTests(unittest.TestCase):
         releases = [
             {
                 "tag_name": "v3.0.0",
+                "published_at": "2026-03-01T00:00:00Z",
                 "prerelease": False,
                 "assets": [
                     {
@@ -745,6 +839,7 @@ class GenerateJsonTests(unittest.TestCase):
             },
             {
                 "tag_name": "v2.0.0-beta.1",
+                "published_at": "2026-02-01T00:00:00Z",
                 "prerelease": True,
                 "assets": [
                     {
@@ -758,6 +853,7 @@ class GenerateJsonTests(unittest.TestCase):
             },
             {
                 "tag_name": "v1.0.0",
+                "published_at": "2026-01-01T00:00:00Z",
                 "prerelease": False,
                 "assets": [
                     {
@@ -786,7 +882,7 @@ class GenerateJsonTests(unittest.TestCase):
                 "name": name,
                 "hash": ("c" if release["prerelease"] else "d") * 64,
                 "artifact": f"https://example.invalid/{name}.zip",
-                "created": "2026-01-01T00:00:00Z",
+                "created": release["published_at"],
                 "downloads": 0,
                 "updates": 0,
             }
@@ -842,6 +938,8 @@ class GenerateJsonTests(unittest.TestCase):
         # Testing IDs are synced to their stable counterpart, so this is 8 and
         # not the 12 that the independent testing ID space would have assigned.
         self.assertEqual(testing_plugin["id"], stable_plugin["id"])
+        self.assertEqual(stable_plugin["updated"], "2026-01-01T00:00:00Z")
+        self.assertEqual(testing_plugin["updated"], "2026-02-01T00:00:00Z")
         self.assertEqual(
             [version["name"] for version in stable_plugin["versions"]], ["1.0.0"]
         )
@@ -1079,7 +1177,7 @@ class GenerateJsonTests(unittest.TestCase):
                         "name": "1.0.0",
                         "hash": "b" * 64,
                         "artifact": "https://example.invalid/unconfigured.zip",
-                        "created": "2024-01-01T00:00:00Z",
+                        "created": "2024-02-01T00:00:00Z",
                     }
                 ],
             },
@@ -1159,7 +1257,7 @@ class GenerateJsonTests(unittest.TestCase):
             )
         )
         self.assertEqual(merged["updated"], "2026-01-01T00:00:00Z")
-        self.assertEqual(unconfigured["updated"], "2024-01-01T00:00:00Z")
+        self.assertEqual(unconfigured["updated"], "2024-02-01T00:00:00Z")
         self.assertEqual(unconfigured["description"], "Unconfigured description")
 
 

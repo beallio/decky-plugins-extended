@@ -337,6 +337,17 @@ def annotate_official_version(entry, official_version):
     return True
 
 
+def refresh_plugin_updated(plugin) -> None:
+    """Use the latest valid publication date without changing its source string."""
+    latest_key = None
+    for version in plugin.get("versions") or []:
+        value = version.get("created")
+        key = timestamp_order_key(value)
+        if key[0] and (latest_key is None or key > latest_key):
+            latest_key = key
+            plugin["updated"] = value
+
+
 def merge_plugin_versions(existing_plugin, new_versions):
     existing_versions = {v["name"]: v for v in existing_plugin.get("versions", [])}
 
@@ -361,16 +372,7 @@ def merge_plugin_versions(existing_plugin, new_versions):
 
     sort_versions(existing_plugin["versions"])
 
-    publication_dates = [
-        version.get("created") for version in existing_plugin["versions"]
-    ]
-    valid_publication_dates = [
-        value for value in publication_dates if timestamp_order_key(value)[0]
-    ]
-    if valid_publication_dates:
-        existing_plugin["updated"] = max(
-            valid_publication_dates, key=timestamp_order_key
-        )
+    refresh_plugin_updated(existing_plugin)
 
 
 def remove_blocked_versions(existing_plugin, blocked_identities):
@@ -1344,7 +1346,7 @@ def main():
                     "downloads": 0,
                     "updates": 0,
                     "created": repo_info.get("created_at"),
-                    "updated": repo_info.get("updated_at"),
+                    "updated": None,
                 }
                 testing_plugins.append(new_testing)
 
@@ -1370,7 +1372,7 @@ def main():
                         "downloads": 0,
                         "updates": 0,
                         "created": repo_info.get("created_at"),
-                        "updated": repo_info.get("updated_at"),
+                        "updated": None,
                     }
                     plugins.append(new_stable)
             else:
@@ -1413,6 +1415,9 @@ def main():
             testing_plugin["id"] = stable_plugin["id"]
 
     print("\nValidating plugin schemas...")
+    for catalog in (plugins, testing_plugins):
+        for plugin in catalog:
+            refresh_plugin_updated(plugin)
     validate_plugin_schema(plugins, "stable", custom_plugin_names)
     validate_plugin_schema(testing_plugins, "testing", custom_plugin_names)
 
