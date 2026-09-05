@@ -165,7 +165,9 @@ def resolve_author(pkg, owner) -> str:
     """Keep package authors, but mark complete template identities unavailable."""
     author = pkg.get("author", owner)
     if isinstance(author, dict):
-        name = author.get("name", owner)
+        if "name" not in author:
+            return owner.strip()
+        name = author["name"]
         if not isinstance(name, str):
             return ""
         display_name = name.strip()

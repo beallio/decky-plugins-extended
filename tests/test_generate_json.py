@@ -213,6 +213,10 @@ class GenerateJsonTests(unittest.TestCase):
                 self.assertEqual(
                     generate_json.resolve_author(package, "owner"), expected
                 )
+        self.assertEqual(
+            generate_json.resolve_author({"author": {"email": "you@you.tld"}}, "You"),
+            "You",
+        )
 
     def test_resolve_tags_promotes_the_root_flag(self):
         # The store card shows its root warning off a 'root' tag, not off flags.
