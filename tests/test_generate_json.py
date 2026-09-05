@@ -1401,6 +1401,119 @@ class GenerateJsonTests(unittest.TestCase):
         self.assertEqual(unconfigured["updated"], "2024-02-01T00:00:00Z")
         self.assertEqual(unconfigured["description"], "Unconfigured description")
 
+    def test_main_annotates_once_when_two_repositories_share_a_plugin_name(self):
+        """The note reports the store, not this catalog's own earlier merge.
+
+        A fork in additional_plugins.txt and the store's own source repository
+        both resolve to one plugin name, so the entry is merged into twice. The
+        second merge must not read the first merge back as the official version.
+        """
+        base_stable = [
+            {
+                "id": 7,
+                "name": "Merged Plugin",
+                "description": "Official description",
+                "updated": "2025-01-01T00:00:00Z",
+                "versions": [
+                    {
+                        "name": "1.0.0",
+                        "hash": "a" * 64,
+                        "artifact": "https://example.invalid/official.zip",
+                        "created": "2025-01-01T00:00:00Z",
+                    }
+                ],
+            }
+        ]
+        repo_info = {
+            "default_branch": "main",
+            "description": "Repository description",
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        plugin_json = {"name": "Merged Plugin"}
+        package = {
+            "name": "merged-plugin",
+            "author": {"name": "Decky Author"},
+            "description": "Plugin description",
+            "keywords": "utility",
+        }
+
+        def get_releases(owner, repo):
+            del owner
+            tag = "v2.0.0-fork.2" if repo == "fork-plugin" else "v2.0.0"
+            return [{"tag_name": tag, "prerelease": False}]
+
+        def build_version_object(release, existing_plugin=None, policy=None):
+            del existing_plugin, policy
+            name = release["tag_name"].lstrip("v")
+            return {
+                "name": name,
+                "hash": "c" * 64,
+                "artifact": f"https://example.invalid/{name}.zip",
+                "created": "2026-01-01T00:00:00Z",
+                "downloads": 0,
+                "updates": 0,
+            }
+
+        def fetch_json(url):
+            if url == generate_json.PLUGINS_URL:
+                return copy.deepcopy(base_stable)
+            return []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workdir = Path(temp_dir)
+            # The fork is read first, so it is the merge the second pass could
+            # mistake for the official store.
+            (workdir / "additional_plugins.txt").write_text(
+                "https://github.com/example/fork-plugin\n", encoding="utf-8"
+            )
+            (workdir / "store_plugins.txt").write_text(
+                "https://github.com/example/upstream-plugin\n", encoding="utf-8"
+            )
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(workdir)
+                with (
+                    patch.object(generate_json, "fetch_json", side_effect=fetch_json),
+                    patch.object(
+                        generate_json, "get_repo_info", return_value=repo_info
+                    ),
+                    patch.object(
+                        generate_json, "get_package_json", return_value=package
+                    ),
+                    patch.object(
+                        generate_json, "get_plugin_json", return_value=plugin_json
+                    ),
+                    patch.object(
+                        generate_json, "get_releases", side_effect=get_releases
+                    ),
+                    patch.object(
+                        generate_json,
+                        "build_version_object",
+                        side_effect=build_version_object,
+                    ),
+                ):
+                    generate_json.main()
+            finally:
+                os.chdir(old_cwd)
+
+            stable = json.loads(
+                (workdir / "public/plugins.json").read_text(encoding="utf-8")
+            )
+
+        merged = next(plugin for plugin in stable if plugin["name"] == "Merged Plugin")
+        self.assertTrue(
+            merged["description"].startswith(
+                "Official store has 1.0.0; this store has 2.0.0."
+            ),
+            merged["description"],
+        )
+        self.assertEqual(
+            merged["description"].count(generate_json.OFFICIAL_VERSION_NOTE_PREFIX),
+            1,
+            merged["description"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

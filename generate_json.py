@@ -293,8 +293,10 @@ def sort_versions(versions):
 def official_latest_version(entry):
     """The version an upstream catalog entry leads with before this run merges.
 
-    Called before merge_plugin_versions() mutates the entry, so it reports what
-    the official store publishes rather than what this catalog assembles.
+    Call this on the freshly fetched catalog, before the repository loop starts:
+    merge_plugin_versions() mutates entries in place, and two repositories can
+    resolve to one plugin name, so a call from inside the loop can read back
+    this catalog's own merge as the official store's version.
 
     The ordering rule must match the one annotate_official_version() applies to
     the merged side. Ranking the official side by created timestamp while
@@ -1057,6 +1059,15 @@ def main():
     official_catalog_names = _catalog_name_keys(plugins) | _catalog_name_keys(
         testing_plugins
     )
+    # Capture what the store leads with before any merge touches these entries.
+    # Two repositories can resolve to one plugin name, so reading this inside the
+    # loop lets the second pass mistake the first pass's merge for the store.
+    official_stable_versions = {
+        p.get("name", "").lower(): official_latest_version(p) for p in plugins
+    }
+    official_testing_versions = {
+        p.get("name", "").lower(): official_latest_version(p) for p in testing_plugins
+    }
 
     # Maintain independent ID spaces
     max_stable_id = max([p.get("id", 0) for p in plugins]) if plugins else 0
@@ -1328,9 +1339,7 @@ def main():
             # --- TESTING PLUGINS ---
             if existing_testing:
                 print("  Found in testing plugins. Merging versions...")
-                official_testing_version = official_latest_version(existing_testing)
                 merge_plugin_versions(existing_testing, testing_versions)
-                annotate_official_version(existing_testing, official_testing_version)
             else:
                 print("  Adding to testing plugins...")
                 max_testing_id += 1
@@ -1354,9 +1363,7 @@ def main():
             if stable_versions:
                 if existing_stable:
                     print("  Found in stable plugins. Merging versions...")
-                    official_stable_version = official_latest_version(existing_stable)
                     merge_plugin_versions(existing_stable, stable_versions)
-                    annotate_official_version(existing_stable, official_stable_version)
                 else:
                     print("  Adding to stable plugins...")
                     max_stable_id += 1
@@ -1387,6 +1394,17 @@ def main():
             raise SystemExit(1) from exc
         except Exception as e:
             errors.append(f"Failed to process {url}: {e}")
+
+    # Once every repository has merged, so the note reports the version this
+    # catalog actually settled on and each entry is annotated exactly once.
+    for entry in plugins:
+        annotate_official_version(
+            entry, official_stable_versions.get(entry.get("name", "").lower())
+        )
+    for entry in testing_plugins:
+        annotate_official_version(
+            entry, official_testing_versions.get(entry.get("name", "").lower())
+        )
 
     if errors:
         print("\n=== ERRORS ===")
