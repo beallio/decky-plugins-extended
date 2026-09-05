@@ -620,12 +620,13 @@ function startStorefront() {
     const tags = createElement("div", "tag-list");
     plugin.tags.slice(0, 2).forEach((tag) => tags.append(createElement("span", "tag", tag)));
     const metrics = createElement("div", "card-metrics");
-    const downloads = createElement("span", "card-downloads");
-    downloads.append(
+    const installs = plugin.downloads + plugin.updates;
+    const installMetric = createElement("span", "card-installs");
+    installMetric.append(
       detailIcon("download"),
-      createElement("span", "", `${plugin.downloads.toLocaleString()} downloads`),
+      createElement("span", "", `${installs.toLocaleString()} ${installs === 1 ? "install" : "installs"}`),
     );
-    metrics.append(downloads);
+    metrics.append(installMetric);
     if (plugin.updated) {
       metrics.append(
         createElement("span", "updated", `Updated ${plugin.updated.slice(0, 10)}`),

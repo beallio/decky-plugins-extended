@@ -147,8 +147,8 @@ select.control { min-width: 176px; padding: 0 34px 0 12px; }
 .description { display: -webkit-box; margin: 12px 0; overflow: hidden; color: var(--soft); font-size: 13px; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .card-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--faint); font-size: 11px; }
 .card-metrics { display: grid; flex: 0 0 auto; gap: 3px; justify-items: end; }
-.card-downloads { display: inline-flex; align-items: center; gap: 4px; color: var(--soft); font-weight: 750; white-space: nowrap; }
-.card-downloads .detail-icon { width: 15px; height: 15px; }
+.card-installs { display: inline-flex; align-items: center; gap: 4px; color: var(--soft); font-weight: 750; white-space: nowrap; }
+.card-installs .detail-icon { width: 15px; height: 15px; }
 .tag-list { display: flex; gap: 4px; overflow: hidden; }
 .tag { overflow: hidden; max-width: 88px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 999px; text-overflow: ellipsis; white-space: nowrap; }
 

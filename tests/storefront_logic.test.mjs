@@ -311,8 +311,8 @@ test("text and category filters are case-insensitive and direct tags still match
 
 test("catalog sorting supports both directions without mutating source entries", () => {
   const entries = [
-    plugin({ name: "Zulu", updated: "2026-01-01T00:00:00Z", downloads: 1 }),
-    plugin({ name: "Alpha", updated: "2026-08-01T00:00:00Z", downloads: 40 }),
+    plugin({ name: "Zulu", updated: "2026-01-01T00:00:00Z", downloads: 40, updates: 1 }),
+    plugin({ name: "Alpha", updated: "2026-08-01T00:00:00Z", downloads: 10, updates: 50 }),
   ];
   const original = entries.map((entry) => entry.name);
   assert.deepEqual(sortCatalog(entries, "name", "asc").map((entry) => entry.name), [
