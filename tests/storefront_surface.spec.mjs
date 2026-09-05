@@ -41,7 +41,7 @@ const stableCatalog = [
     visible: true,
     updated: "2026-08-30T00:00:00Z",
     downloads: 10,
-    updates: 2,
+    updates: 50,
   },
   {
     id: 2,
@@ -69,7 +69,7 @@ const testingCatalog = [
   {
     id: 3,
     name: "Testing Preview",
-    author: "Preview Author",
+    author: "You <you@you.tld>",
     description: "A prerelease utility.",
     tags: ["utility"],
     versions: [{ name: "3.0.0-beta.1", hash: HASH_C }],
@@ -257,8 +257,9 @@ test("actual static assets load over HTTP and publish every direct artifact", as
     "Large release",
   );
   const alphaCard = page.locator("[data-plugin-key='alpha tool']");
-  await expect(alphaCard.locator(".card-downloads")).toHaveText("10 downloads");
-  await expect(alphaCard.locator(".card-downloads [data-icon='download']")).toHaveCount(1);
+  await expect(alphaCard.locator(".card-installs")).toHaveText("60 installs");
+  await expect(alphaCard.locator(".card-installs [data-icon='download']")).toHaveCount(1);
+  await expect(page.locator("[data-plugin-key='radio deck'] .card-installs")).toHaveText("41 installs");
   await expect(page.locator(".install-panel a[href$='.json']")).toHaveCount(0);
   await expect(page.locator(".install-panel")).not.toContainText(".json");
   const responses = await page.evaluate(async () =>
@@ -325,6 +326,11 @@ test("a fast channel switch ignores a stale stable response", async ({ page }) =
   await page.waitForTimeout(260);
   await expect(page.getByText("Testing Preview", { exact: true })).toBeVisible();
   await expect(page.locator("#result-total")).toContainText("3 plugins");
+  const preview = page.locator("[data-plugin-key='testing preview']");
+  await expect(preview.locator(".author")).toHaveText("by You <you@you.tld>");
+  await preview.click();
+  await expect(page.locator(".detail-meta")).toContainText("by You <you@you.tld>");
+  await page.keyboard.press("Escape");
   stableDelay = 0;
 });
 
@@ -353,6 +359,17 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
     "Alpha Tool",
     "Radio Deck",
   ]);
+  await page.locator("#sort").selectOption("installs");
+  await expect(page.locator(".plugin-card .card-title")).toHaveText([
+    "Alpha Tool",
+    "Radio Deck",
+  ]);
+  await page.locator("#sort-direction").selectOption("asc");
+  await expect(page.locator(".plugin-card .card-title")).toHaveText([
+    "Radio Deck",
+    "Alpha Tool",
+  ]);
+  await page.locator("#sort").selectOption("name");
 
   await page.locator("#search").fill("Radio");
   await page.getByRole("button", { name: "Media" }).click();
@@ -465,7 +482,7 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
     true,
   );
   const totals = page.locator(".detail-totals");
-  await expect(totals.locator(".detail-total-value")).toHaveText(["10", "2"]);
+  await expect(totals.locator(".detail-total-value")).toHaveText(["10", "50"]);
   await expect(totals.locator("[data-icon='download']")).toHaveCount(1);
   await expect(totals.locator("[data-icon='updates']")).toHaveCount(1);
   await expect(versionHistory).toBeVisible();
@@ -593,6 +610,7 @@ test("detail view ranks related plugins by shared tags and downloads", async ({ 
   await expect(
     related.getByRole("button", { name: "View Testing Preview details" }),
   ).toBeVisible();
+  await expect(related.locator(".related-plugin-downloads")).toHaveText("1 downloads");
   assert.equal(
     await related.evaluate(
       (section) =>

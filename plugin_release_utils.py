@@ -814,11 +814,13 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 # Matches the version inside a release tag: "v1.2.3", "Release-0.7.1",
 # "decky-romm-sync-v0.29.0" all yield the bare version.
-_VERSION_IN_TAG = re.compile(r"\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.\-]+)?")
+_VERSION_IN_TAG = re.compile(
+    r"(?<!\d)(?<!\d\.)\d+\.\d+(?:\.\d+){0,2}(?:[-+][0-9A-Za-z.\-]+)?(?!\d|\.\d)"
+)
 
-# Full semver: major.minor[.patch][-prerelease][+build]
+# Full version: major[.minor][.patch][.revision][-prerelease][+build]
 _SEMVER = re.compile(
-    r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.\-]+))?(?:\+[0-9A-Za-z.\-]+)?$"
+    r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.\-]+))?(?:\+[0-9A-Za-z.\-]+)?$"
 )
 
 
@@ -838,7 +840,7 @@ def normalize_version(tag_name: str) -> str:
 
 
 def parse_semver(name: str) -> Optional[tuple]:
-    """Return (major, minor, patch, prerelease_identifiers) or None.
+    """Return (major, minor, patch, revision, prerelease_identifiers) or None.
 
     Prerelease identifiers are compared per semver: numeric ones numerically,
     so beta.10 outranks beta.9.  Build metadata is ignored, as compare-versions
@@ -847,11 +849,11 @@ def parse_semver(name: str) -> Optional[tuple]:
     match = _SEMVER.match((name or "").strip())
     if not match:
         return None
-    major, minor, patch, prerelease = match.groups()
+    major, minor, patch, revision, prerelease = match.groups()
     identifiers: list = []
     for part in (prerelease or "").split(".") if prerelease else []:
         identifiers.append((0, int(part), "") if part.isdigit() else (1, 0, part))
-    return int(major), int(minor or 0), int(patch or 0), identifiers
+    return int(major), int(minor or 0), int(patch or 0), int(revision or 0), identifiers
 
 
 def version_sort_key(name: str, created: str = "") -> tuple:
@@ -869,9 +871,18 @@ def version_sort_key(name: str, created: str = "") -> tuple:
     """
     parsed = parse_semver(name)
     if parsed is None:
-        return (0, 0, 0, 0, 0, [], created)
-    major, minor, patch, prerelease = parsed
-    return (1, major, minor, patch, 0 if prerelease else 1, prerelease, created)
+        return (0, 0, 0, 0, 0, 0, [], created)
+    major, minor, patch, revision, prerelease = parsed
+    return (
+        1,
+        major,
+        minor,
+        patch,
+        revision,
+        0 if prerelease else 1,
+        prerelease,
+        created,
+    )
 
 
 def has_exactly_one_zip(release: dict[str, Any]) -> bool:

@@ -25,11 +25,8 @@ function numberValue(value) {
 
 export function normalizeVersionName(value) {
   const text = stringValue(value);
-  // Keep this aligned with plugin_release_utils.normalize_version(). Decky's
-  // producer extracts a two- or three-component version from a tag, including
-  // a prerelease or build suffix. It deliberately does not consume a fourth
-  // numeric component such as the trailing .4 in v1.2.3.4.
-  const match = text.match(/\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/);
+  // Keep numeric components and suffixes aligned with the producer normalizer.
+  const match = text.match(/(?<!\d)(?<!\d\.)\d+\.\d+(?:\.\d+){0,2}(?:[-+][0-9A-Za-z.-]+)?(?!\d|\.\d)/);
   return (match?.[0] || text.replace(/^v+/, "")).toLowerCase();
 }
 
@@ -38,7 +35,7 @@ export function normalizeAuditTag(value) {
   // Keep this aligned with the producer's normalize_version(). Audit records
   // identify a Git tag, so its case is part of the identity even when version
   // display and search may be case-insensitive.
-  const match = text.match(/\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/);
+  const match = text.match(/(?<!\d)(?<!\d\.)\d+\.\d+(?:\.\d+){0,2}(?:[-+][0-9A-Za-z.-]+)?(?!\d|\.\d)/);
   return match?.[0] || text.replace(/^v+/, "");
 }
 
@@ -623,12 +620,13 @@ function startStorefront() {
     const tags = createElement("div", "tag-list");
     plugin.tags.slice(0, 2).forEach((tag) => tags.append(createElement("span", "tag", tag)));
     const metrics = createElement("div", "card-metrics");
-    const downloads = createElement("span", "card-downloads");
-    downloads.append(
+    const installs = plugin.downloads + plugin.updates;
+    const installMetric = createElement("span", "card-installs");
+    installMetric.append(
       detailIcon("download"),
-      createElement("span", "", `${plugin.downloads.toLocaleString()} downloads`),
+      createElement("span", "", `${installs.toLocaleString()} ${installs === 1 ? "install" : "installs"}`),
     );
-    metrics.append(downloads);
+    metrics.append(installMetric);
     if (plugin.updated) {
       metrics.append(
         createElement("span", "updated", `Updated ${plugin.updated.slice(0, 10)}`),

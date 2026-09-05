@@ -768,11 +768,27 @@ def test_normalize_version():
     assert normalize_version("Release-0.7.1") == "0.7.1"
     assert normalize_version("decky-romm-sync-v0.29.0") == "0.29.0"
     assert normalize_version("invalid") == "invalid"
+    assert normalize_version("v0.7") == "0.7"
+    assert normalize_version("v0.7.6.5") == "0.7.6.5"
+    assert normalize_version("release-1.2.3.4") == "1.2.3.4"
+    assert normalize_version("v0.7.6.5-alpha") == "0.7.6.5-alpha"
+    assert normalize_version("v1.2.3.4.5") == "1.2.3.4.5"
+    assert normalize_version("release-1.2.3.4.5") == "release-1.2.3.4.5"
 
 
 def test_parse_semver():
-    assert parse_semver("1.2.3") == (1, 2, 3, [])
-    assert parse_semver("1.0.0-beta.1") == (1, 0, 0, [(1, 0, "beta"), (0, 1, "")])
+    assert parse_semver("1.2.3") == (1, 2, 3, 0, [])
+    assert parse_semver("1.0.0-beta.1") == (1, 0, 0, 0, [(1, 0, "beta"), (0, 1, "")])
+    assert parse_semver("0.7.6.5-beta.1+build.2") == (
+        0,
+        7,
+        6,
+        5,
+        [(1, 0, "beta"), (0, 1, "")],
+    )
+    assert parse_semver("1") == (1, 0, 0, 0, [])
+    assert parse_semver("1.2") == (1, 2, 0, 0, [])
+    assert parse_semver("1.2.3.4.5") is None
     assert parse_semver("not-a-version") is None
 
 
@@ -782,6 +798,54 @@ def test_version_sort_key():
     k3 = version_sort_key("2.0.0-beta.1")
     assert k1 > k2
     assert k3 > k1
+
+
+def test_version_sort_key_orders_numeric_revisions_and_prereleases():
+    created = "2026-01-01T00:00:00Z"
+    versions = [
+        "0.7.6",
+        "0.7.6.5-beta.1",
+        "0.7.6.5-beta.9",
+        "0.7.6.5-beta.10",
+        "0.7.6.5",
+        "0.7.6.9",
+        "0.7.6.10",
+    ]
+    keys = [version_sort_key(version, created) for version in versions]
+    assert all(lower < higher for lower, higher in zip(keys, keys[1:]))
+    assert version_sort_key("0.7.6.0", created) == version_sort_key("0.7.6", created)
+    assert version_sort_key("0.7.6.5+build.2", created) == version_sort_key(
+        "0.7.6.5", created
+    )
+    assert version_sort_key("1.2.3.4.5", created) < version_sort_key("0.7.6", created)
+
+
+def test_version_sort_key_preserves_created_tiebreaker():
+    older = "2026-01-01T00:00:00Z"
+    newer = "2026-02-01T00:00:00Z"
+    assert version_sort_key("0.7.6.5", newer) > version_sort_key("0.7.6.5", older)
+    assert version_sort_key("0.7.6", newer) > version_sort_key("0.7.6.0", older)
+    assert version_sort_key("nightly", newer) > version_sort_key("nightly", older)
+
+
+def test_select_best_release_prefers_numeric_revision_over_publication_date():
+    lower = _release(1, 10, published_at="2026-02-01T00:00:00Z")
+    lower["tag_name"] = "v0.7.6.9"
+    higher = _release(2, 20, published_at="2026-01-01T00:00:00Z")
+    higher["tag_name"] = "v0.7.6.10"
+
+    assert select_best_release([lower, higher]) is higher
+
+
+def test_select_best_release_higher_revision_prerelease_is_testing_only():
+    stable = _release(1, 10, published_at="2026-02-01T00:00:00Z")
+    stable["tag_name"] = "v0.7.6"
+    prerelease = _release(2, 20, prerelease=True, published_at="2026-01-01T00:00:00Z")
+    prerelease["tag_name"] = "v0.7.6.5-beta.1"
+    releases = [stable, prerelease]
+
+    assert select_best_release(releases, allow_prerelease=False) is stable
+    assert select_best_release(releases, allow_prerelease=True) is prerelease
 
 
 def test_select_best_release_stable_only():

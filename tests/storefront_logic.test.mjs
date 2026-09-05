@@ -152,10 +152,10 @@ test("large release warnings are channel-aware and explicit", () => {
 test("audit envelopes and producer-normalized tags retain exact current identities", () => {
   const entry = plugin({
     name: "Release Notes",
-    versions: [{ name: "1.2.3", hash: "d".repeat(64) }],
+    versions: [{ name: "1.2.3.4", hash: "d".repeat(64) }],
   });
   const source = {
-    name: "1.2.3",
+    name: "1.2.3.4",
     hash: "d".repeat(64),
     tag: "v1.2.3.4",
     repository: "owner/release-notes",
@@ -174,7 +174,7 @@ test("audit envelopes and producer-normalized tags retain exact current identiti
     { schema_version: 1, plugins: { "release notes": { name: "Release Notes", provenance: "official", versions: [source] } } },
     auditRecordsFrom({ enforcement_mode: "enforce", releases: [audit] }),
   );
-  assert.equal(normalizeVersionName("v1.2.3.4"), "1.2.3");
+  assert.equal(normalizeVersionName("v1.2.3.4"), "1.2.3.4");
   assert.equal(detail.source, source);
   assert.equal(detail.audit, audit);
   assert.deepEqual(classifyPrimaryBadge(entry, detail, "stable"), {
@@ -184,6 +184,50 @@ test("audit envelopes and producer-normalized tags retain exact current identiti
   assert.deepEqual(auditRecordsFrom({ records: [audit] }), [audit]);
   assert.deepEqual(auditRecordsFrom({ releases: [audit] }), [audit]);
   assert.deepEqual(auditRecordsFrom({ payload: { releases: [audit] } }), [audit]);
+});
+
+test("three- and four-component identities stay separate even with the same hash", () => {
+  const entry = plugin({
+    versions: [{ name: "1.2.3.4", hash: "d".repeat(64) }],
+  });
+  const source = {
+    name: "1.2.3.4",
+    tag: "v1.2.3.4",
+    hash: "d".repeat(64),
+    repository: "owner/plugin",
+    source_url: "https://github.com/owner/plugin",
+  };
+  const wrongSource = { ...source, name: "1.2.3", tag: "v1.2.3" };
+  const metadata = { plugins: { "example plugin": { name: entry.name, versions: [wrongSource, source] } } };
+  const audit = {
+    repository: "owner/plugin",
+    tag: "v1.2.3.4",
+    identity_status: "CURRENT",
+    outcome: "APPLIED",
+    current_artifact_sha256: "d".repeat(64),
+    classification: "PASS",
+  };
+  const wrongAudit = { ...audit, tag: "v1.2.3", classification: "BLOCK" };
+  const detail = buildDetailViewModel(entry, metadata, [wrongAudit, audit]);
+  assert.equal(detail.source, source);
+  assert.equal(detail.audit, audit);
+  assert.equal(buildDetailViewModel(entry, metadata, [wrongAudit]).audit, null);
+  assert.equal(buildDetailViewModel(entry, {
+    plugins: { "example plugin": { name: entry.name, versions: [wrongSource] } },
+  }, [wrongAudit]).source, null);
+});
+
+test("version normalizers preserve bounded numeric runs and suffix case rules", () => {
+  for (const [tag, expected] of [
+    ["v0.7.6.5", "0.7.6.5"],
+    ["release-1.2.3.4", "1.2.3.4"],
+    ["v0.7.6.5-ALPHA", "0.7.6.5-ALPHA"],
+    ["v1.2.3.4.5", "1.2.3.4.5"],
+    ["release-1.2.3.4.5", "release-1.2.3.4.5"],
+  ]) {
+    assert.equal(normalizeAuditTag(tag), expected);
+    assert.equal(normalizeVersionName(tag), expected.toLowerCase());
+  }
 });
 
 test("audit tags retain producer case and reject case-distinct aliases", () => {
@@ -267,8 +311,8 @@ test("text and category filters are case-insensitive and direct tags still match
 
 test("catalog sorting supports both directions without mutating source entries", () => {
   const entries = [
-    plugin({ name: "Zulu", updated: "2026-01-01T00:00:00Z", downloads: 1 }),
-    plugin({ name: "Alpha", updated: "2026-08-01T00:00:00Z", downloads: 40 }),
+    plugin({ name: "Zulu", updated: "2026-01-01T00:00:00Z", downloads: 40, updates: 1 }),
+    plugin({ name: "Alpha", updated: "2026-08-01T00:00:00Z", downloads: 10, updates: 50 }),
   ];
   const original = entries.map((entry) => entry.name);
   assert.deepEqual(sortCatalog(entries, "name", "asc").map((entry) => entry.name), [

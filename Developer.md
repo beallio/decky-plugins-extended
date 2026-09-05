@@ -98,6 +98,12 @@ the official store; `package.json` `keywords` and `description` are only the
 fallback. A plugin that declares `"flags": ["root"]` also gets a `root` tag,
 because that is how the store card decides to show its "runs as root" warning.
 
+Authors come from `package.json`: string values are kept as supplied, and npm
+author objects use their `name` field. Template-style names are displayed by
+design and are not filtered. A missing author key or missing object name falls
+back to the repository owner.
+Merged official entries keep their existing author metadata.
+
 Store card images come from `plugin.json`'s `publish.image`, the same field the
 official store ingests. Cards are 320x200 and cropped with `object-fit: cover`,
 so a wide banner works better than a tall icon. A repository that has no image,
@@ -113,9 +119,25 @@ else. Tags with no version in them at all (`nightly`, `dev-build`) are passed
 through unchanged; keep those as GitHub prereleases so they stay out of the
 stable catalog.
 
+Two through four numeric components are preserved. For example, `v0.7.6.5`
+becomes `0.7.6.5`, not `0.7.6`. The fourth component is a numeric revision:
+`0.7.6.10 > 0.7.6.9`, and an omitted revision has the same precedence as zero.
+A revision prerelease ranks below its corresponding release but above the
+previous revision. Five-component tags are not reduced to shorter identities.
+Catalog rows, source metadata, and audit matching all keep the fourth component;
+audit matching still requires the exact case-sensitive tag and artifact hash.
+
 Stable releases are included in both catalogs. GitHub prereleases are included
 only in the testing catalog. Releases with zero or multiple `.zip` assets are
 skipped.
+
+Every catalog entry's `updated` value is the latest valid publication timestamp
+among its retained versions, calculated separately for Stable and Testing after
+release filtering. UTC ordering selects the original timestamp string; equal
+times keep the first encountered string. Existing entries without valid version
+dates keep their upstream `updated` value. New entries without valid version
+dates use JSON null, not repository activity. Repository creation dates are
+unchanged.
 
 ## Landing page
 
@@ -148,6 +170,12 @@ POSTs its increment after an install. Counts are *added* to whatever the entry
 already carries, so plugins merged with an upstream entry keep Deckbrew's totals
 and gain the installs made through this store. Without the binding everything
 still works; custom entries just stay at zero.
+
+On the website, main cards show **installs**: top-level `downloads + updates`.
+This is also the value used by the **Total installs** sort option. Related cards
+remain ranked and labeled by downloads only. Detail totals and version-history
+columns show downloads and updates separately. A local static server does not
+run the D1 middleware, so local card totals use only the generated JSON values.
 
 Setup:
 
