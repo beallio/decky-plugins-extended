@@ -230,24 +230,34 @@ committed — `public/` is gitignored and holds only local build output. The
 build reads a `GITHUB_TOKEN` configured as an environment variable in the
 Cloudflare Pages dashboard, and the same deploy publishes `functions/`.
 
-The GitHub Actions workflow has two jobs, neither of which publishes anything.
+The GitHub Actions workflow has two jobs.
 
-Both jobs first run `store_discovery.py --check`. If the official database has
-changed and the committed discovery outputs are stale, the job fails with the
-regeneration command instead of building or polling an incomplete repository
-list.
+Both jobs first run `store_discovery.py`, which regenerates `store_plugins.txt`,
+`store_versions.json` and `store_sources.json` from the live official database.
+The official store publishes releases on its own schedule, so the committed
+discovery outputs go stale on their own; regenerating means neither job builds
+or polls an incomplete repository list. `store_discovery.py --check` reports
+staleness without writing and is the form to use locally or in a pre-commit
+hook.
 
 `build` runs when generator inputs change and on manual dispatch. It generates
 both catalogs with `uv` and validates their plugin IDs, names, version lists and
 SHA-256 hashes, so a bad `additional_plugins.txt` entry surfaces as a failed
-check instead of a failed Cloudflare build.
+check instead of a failed Cloudflare build. It publishes nothing, and it
+discards its refreshed discovery outputs.
 
-`refresh` runs every 6 hours and on manual dispatch. Because Cloudflare only
-rebuilds on push, the catalog would otherwise stay frozen at whatever upstream
-looked like at the last deploy. `check_for_updates.py` compares the live catalog
-against the upstream catalog and the latest release of every configured
-repository, and only when something is missing does the job POST the Cloudflare
-deploy hook. The check asks whether a version is *absent* from the live entry
+`refresh` runs every 6 hours and on manual dispatch. It is the single writer of
+the discovery outputs: when they moved, it commits and pushes them, which is
+also what keeps the committed data current. A push made with `GITHUB_TOKEN`
+raises no workflow event, so this cannot loop back into the workflow, but
+Cloudflare does rebuild on it — the job therefore skips the deploy hook on any
+run where it pushed.
+
+Because Cloudflare only rebuilds on push, the catalog would otherwise stay
+frozen at whatever upstream looked like at the last deploy. `check_for_updates.py`
+compares the live catalog against the upstream catalog and the latest release of
+every configured repository, and only when something is missing does the job
+POST the Cloudflare deploy hook. The check asks whether a version is *absent* from the live entry
 rather than whether the newest versions match, because merging GitHub releases
 into upstream entries regularly leaves this catalog ahead of Deckbrew's.
 

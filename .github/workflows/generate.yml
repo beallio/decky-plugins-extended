@@ -56,10 +56,13 @@ jobs:
         with:
           python-version-file: 'pyproject.toml'
 
-      - name: Verify official catalog source data
+      # Regenerate rather than --check: upstream can publish a release between
+      # the last refresh commit and this push, and stale catalog data is the
+      # refresh job's to publish, not this job's to fail on.
+      - name: Refresh official catalog source data
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uv run store_discovery.py --check
+        run: uv run store_discovery.py
 
       - name: Run script
         env:
@@ -72,6 +75,8 @@ jobs:
   refresh:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout repository
         # actions/checkout v7
@@ -89,10 +94,37 @@ jobs:
         with:
           python-version-file: 'pyproject.toml'
 
-      - name: Verify official catalog source data
+      - name: Refresh official catalog source data
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uv run store_discovery.py --check
+        run: uv run store_discovery.py
+
+      # This job is the single writer of the generated catalog data. A push made
+      # with GITHUB_TOKEN raises no workflow event, so committing here cannot
+      # loop back into this workflow, but Cloudflare does rebuild on it.
+      - name: Publish refreshed catalog source data
+        id: publish
+        run: |
+          tracked='store_plugins.txt store_versions.json store_sources.json'
+          if git diff --quiet -- $tracked; then
+            echo "Catalog source data is already current."
+            exit 0
+          fi
+
+          git config user.name "decky-plugins-extended catalog bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- $tracked
+          git commit -m "chore(catalog): refresh official store source data"
+
+          git status --porcelain
+          git reset --hard HEAD
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            echo "Initial catalog push raced with another update; rebasing and retrying once."
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       - name: Check for upstream and plugin updates
         id: check
@@ -100,8 +132,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: uv run check_for_updates.py
 
+      # The commit above already pushed, and Cloudflare rebuilds on push, so the
+      # hook would only buy a duplicate build.
       - name: Trigger a Cloudflare rebuild
-        if: inputs.force_deploy == true || steps.check.outputs.changed == 'true'
+        if: steps.publish.outputs.pushed != 'true' && (inputs.force_deploy == true || steps.check.outputs.changed == 'true')
         env:
           HOOK: ${{ secrets.CLOUDFLARE_DEPLOY_HOOK }}
         run: |
