@@ -98,13 +98,10 @@ the official store; `package.json` `keywords` and `description` are only the
 fallback. A plugin that declares `"flags": ["root"]` also gets a `root` tag,
 because that is how the store card decides to show its "runs as root" warning.
 
-Authors come from `package.json`. The complete template identities
-`Your Name <you@example.com>` and `You <you@you.tld>`, including equivalent npm
-name/email objects, become an empty author value. Matching ignores outer
-whitespace and case. The storefront displays this as `Unknown author`.
-Real names remain intact, including standalone `You` and `Your Name`.
-Only a missing author key or missing object name falls back to the repository
-owner; explicit empty, null, or non-string values remain unavailable.
+Authors come from `package.json`: string values are kept as supplied, and npm
+author objects use their `name` field. Template-style names are displayed by
+design and are not filtered. A missing author key or missing object name falls
+back to the repository owner.
 Merged official entries keep their existing author metadata.
 
 Store card images come from `plugin.json`'s `publish.image`, the same field the

@@ -69,7 +69,7 @@ const testingCatalog = [
   {
     id: 3,
     name: "Testing Preview",
-    author: "",
+    author: "You <you@you.tld>",
     description: "A prerelease utility.",
     tags: ["utility"],
     versions: [{ name: "3.0.0-beta.1", hash: HASH_C }],
@@ -327,11 +327,9 @@ test("a fast channel switch ignores a stale stable response", async ({ page }) =
   await expect(page.getByText("Testing Preview", { exact: true })).toBeVisible();
   await expect(page.locator("#result-total")).toContainText("3 plugins");
   const preview = page.locator("[data-plugin-key='testing preview']");
-  await expect(preview.locator(".author")).toHaveText("by Unknown author");
+  await expect(preview.locator(".author")).toHaveText("by You <you@you.tld>");
   await preview.click();
-  await expect(page.locator(".detail-meta")).toContainText("by Unknown author");
-  await expect(page.locator("#detail-dialog")).not.toContainText("you@example.com");
-  await expect(page.locator("#detail-dialog")).not.toContainText("you@you.tld");
+  await expect(page.locator(".detail-meta")).toContainText("by You <you@you.tld>");
   await page.keyboard.press("Escape");
   stableDelay = 0;
 });

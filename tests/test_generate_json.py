@@ -175,49 +175,6 @@ class GenerateJsonTests(unittest.TestCase):
         )
         self.assertIsNone(generate_json.resolve_plugin_name(None, {}))
 
-    def test_resolve_author_recognizes_only_complete_template_identities(self):
-        for author in (
-            "Your Name <you@example.com>",
-            "You <you@you.tld>",
-            "  YOUR NAME <YOU@EXAMPLE.COM>  ",
-            {"name": "Your Name", "email": "you@example.com"},
-            {"name": " You ", "email": " YOU@YOU.TLD "},
-        ):
-            with self.subTest(author=author):
-                self.assertEqual(
-                    generate_json.resolve_author({"author": author}, "owner"), ""
-                )
-
-    def test_resolve_author_preserves_real_authors_and_missing_value_fallbacks(self):
-        for package, expected in (
-            ({"author": " You "}, "You"),
-            ({"author": "Your Name"}, "Your Name"),
-            ({"author": "You <real@example.com>"}, "You <real@example.com>"),
-            ({"author": "John Doe"}, "John Doe"),
-            ({"author": {"name": " You ", "email": "real@example.com"}}, "You"),
-            ({"author": {"name": "Your Name"}}, "Your Name"),
-            (
-                {"author": {"name": "Your Name <you@example.com>"}},
-                "Your Name <you@example.com>",
-            ),
-            ({}, "owner"),
-            ({"author": {"email": "someone@example.com"}}, "owner"),
-            ({"author": ""}, ""),
-            ({"author": None}, ""),
-            ({"author": 7}, ""),
-            ({"author": {"name": None}}, ""),
-            ({"author": {"name": ""}}, ""),
-            ({"author": {"name": 7}}, ""),
-        ):
-            with self.subTest(package=package):
-                self.assertEqual(
-                    generate_json.resolve_author(package, "owner"), expected
-                )
-        self.assertEqual(
-            generate_json.resolve_author({"author": {"email": "you@you.tld"}}, "You"),
-            "You",
-        )
-
     def test_resolve_tags_promotes_the_root_flag(self):
         # The store card shows its root warning off a 'root' tag, not off flags.
         plugin_json = {
@@ -1120,7 +1077,7 @@ class GenerateJsonTests(unittest.TestCase):
         for channel, catalog in catalogs.items():
             with self.subTest(channel=channel):
                 self.assertEqual([plugin["name"] for plugin in catalog], ["Friendeck"])
-                self.assertEqual(catalog[0]["author"], "")
+                self.assertEqual(catalog[0]["author"], "Your Name <you@example.com>")
                 self.assertEqual(
                     [
                         (version["name"], version["hash"], version["artifact"])

@@ -161,31 +161,6 @@ def image_is_usable(url):
     return True
 
 
-def resolve_author(pkg, owner) -> str:
-    """Keep package authors, but mark complete template identities unavailable."""
-    author = pkg.get("author", owner)
-    if isinstance(author, dict):
-        if "name" not in author:
-            return owner.strip()
-        name = author["name"]
-        if not isinstance(name, str):
-            return ""
-        display_name = name.strip()
-        email = author.get("email")
-        identity = f"{display_name} <{email.strip()}>" if isinstance(email, str) else ""
-    elif isinstance(author, str):
-        display_name = author.strip()
-        identity = display_name
-    else:
-        return ""
-    if identity.casefold() in (
-        "your name <you@example.com>",
-        "you <you@you.tld>",
-    ):
-        return ""
-    return display_name
-
-
 def resolve_tags(plugin_json, pkg):
     """The store card decides whether to show the "runs as root" warning by
     looking for a 'root' tag (PluginCard: storePlugin.tags.some(t => t ===
@@ -1339,7 +1314,9 @@ def main():
 
             custom_plugin_names.add(plugin_name)
 
-            author = resolve_author(pkg, owner)
+            author = pkg.get("author", owner)
+            if isinstance(author, dict):
+                author = author.get("name", owner)
 
             tags = resolve_tags(plugin_json, pkg)
             description = resolve_description(plugin_json, pkg, repo_info)
