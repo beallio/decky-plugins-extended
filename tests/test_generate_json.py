@@ -982,6 +982,146 @@ class GenerateJsonTests(unittest.TestCase):
         )
         self.assertEqual(testing_plugin["image_url"], stable_plugin["image_url"])
 
+    def test_main_preserves_four_component_release_identity(self):
+        repository = "example/friendeck"
+        source_url = f"https://github.com/{repository}"
+        repo_info = {
+            "default_branch": "main",
+            "description": "Friend activity",
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2026-09-01T00:00:00Z",
+        }
+        package = {"name": "friendeck", "author": "Decky Author"}
+        plugin_json = {"name": "Friendeck"}
+        releases = [
+            {
+                "tag_name": "0.7.6",
+                "html_url": f"{source_url}/releases/tag/0.7.6",
+                "published_at": "2026-02-01T00:00:00Z",
+                "prerelease": False,
+                "assets": [
+                    {
+                        "id": 76,
+                        "name": "Friendeck.zip",
+                        "size": 1_000,
+                        "digest": f"sha256:{'a' * 64}",
+                        "browser_download_url": (
+                            f"{source_url}/releases/download/0.7.6/Friendeck.zip"
+                        ),
+                    }
+                ],
+            },
+            {
+                "tag_name": "0.7.6.5",
+                "html_url": f"{source_url}/releases/tag/0.7.6.5",
+                "published_at": "2026-01-01T00:00:00Z",
+                "prerelease": False,
+                "assets": [
+                    {
+                        "id": 765,
+                        "name": "Friendeck.zip",
+                        "size": 1_000,
+                        "digest": f"sha256:{'b' * 64}",
+                        "browser_download_url": (
+                            f"{source_url}/releases/download/0.7.6.5/Friendeck.zip"
+                        ),
+                    }
+                ],
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workdir = Path(temp_dir)
+            (workdir / "additional_plugins.txt").write_text(
+                f"{source_url}\n", encoding="utf-8"
+            )
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(workdir)
+                with (
+                    patch.object(generate_json, "fetch_json", side_effect=[[], []]),
+                    patch.object(
+                        generate_json, "get_repo_info", return_value=repo_info
+                    ),
+                    patch.object(
+                        generate_json, "get_package_json", return_value=package
+                    ),
+                    patch.object(
+                        generate_json, "get_plugin_json", return_value=plugin_json
+                    ),
+                    patch.object(generate_json, "get_releases", return_value=releases),
+                    patch.object(generate_json, "resolve_image_url", return_value=""),
+                    patch.object(
+                        generate_json,
+                        "calculate_hash",
+                        side_effect=AssertionError("Unexpected artifact download"),
+                    ),
+                ):
+                    generate_json.main()
+            finally:
+                os.chdir(old_cwd)
+
+            catalogs = {
+                channel: json.loads(
+                    (workdir / f"public/{filename}").read_text(encoding="utf-8")
+                )
+                for channel, filename in (
+                    ("stable", "plugins.json"),
+                    ("testing", "testing_plugins.json"),
+                )
+            }
+            storefront = json.loads(
+                (workdir / "public/storefront.json").read_text(encoding="utf-8")
+            )
+
+        for channel, catalog in catalogs.items():
+            with self.subTest(channel=channel):
+                self.assertEqual([plugin["name"] for plugin in catalog], ["Friendeck"])
+                self.assertEqual(
+                    [
+                        (version["name"], version["hash"], version["artifact"])
+                        for version in catalog[0]["versions"]
+                    ],
+                    [
+                        (
+                            "0.7.6.5",
+                            "b" * 64,
+                            f"{source_url}/releases/download/0.7.6.5/Friendeck.zip",
+                        ),
+                        (
+                            "0.7.6",
+                            "a" * 64,
+                            f"{source_url}/releases/download/0.7.6/Friendeck.zip",
+                        ),
+                    ],
+                )
+
+        metadata = storefront["plugins"]["friendeck"]
+        self.assertEqual(metadata["catalog_names"], ["Friendeck"])
+        self.assertEqual(metadata["provenance"], "extended")
+        self.assertEqual(metadata["source_urls"], [source_url])
+        self.assertCountEqual(
+            metadata["versions"],
+            [
+                {
+                    "name": "0.7.6",
+                    "hash": "a" * 64,
+                    "tag": "0.7.6",
+                    "repository": repository,
+                    "source_url": source_url,
+                    "release_url": f"{source_url}/releases/tag/0.7.6",
+                },
+                {
+                    "name": "0.7.6.5",
+                    "hash": "b" * 64,
+                    "tag": "0.7.6.5",
+                    "repository": repository,
+                    "source_url": source_url,
+                    "release_url": f"{source_url}/releases/tag/0.7.6.5",
+                },
+            ],
+        )
+
     def test_main_publishes_storefront_metadata_for_same_name_repositories(self):
         base_stable = [
             {
