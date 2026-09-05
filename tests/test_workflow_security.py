@@ -344,8 +344,11 @@ class WorkflowSecurityTests(unittest.TestCase):
 
         self.assertIn("force_deploy:", workflow)
         self.assertIn("type: boolean", workflow)
+        # A run that pushed refreshed catalog data has already triggered
+        # Cloudflare through the push itself, so the hook is skipped there.
         self.assertIn(
-            "if: inputs.force_deploy == true || steps.check.outputs.changed == 'true'",
+            "if: steps.publish.outputs.pushed != 'true'"
+            " && (inputs.force_deploy == true || steps.check.outputs.changed == 'true')",
             refresh,
         )
         self.assertIn("HOOK: ${{ secrets.CLOUDFLARE_DEPLOY_HOOK }}", refresh)
