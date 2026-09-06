@@ -794,8 +794,11 @@ class GenerateJsonTests(unittest.TestCase):
         self.assertEqual(metadata["testing_count"], 2)
         self.assertEqual(metadata["stable_extended_count"], 1)
         self.assertEqual(metadata["testing_extended_count"], 1)
+        # In the store's catalog and carrying builds from here, so it is both.
+        self.assertEqual(metadata["plugins"]["official plugin"]["provenance"], "both")
+        # In the store's catalog with nothing contributed here stays official.
         self.assertEqual(
-            metadata["plugins"]["official plugin"]["provenance"], "official"
+            metadata["plugins"]["extended two"]["provenance"], "extended"
         )
         self.assertEqual(metadata["plugins"]["extended one"]["provenance"], "extended")
         self.assertEqual(
@@ -1381,9 +1384,7 @@ class GenerateJsonTests(unittest.TestCase):
             published = {path.name for path in (workdir / "public").iterdir()}
 
         self.assertEqual(storefront["schema_version"], 1)
-        self.assertEqual(
-            storefront["plugins"]["shared plugin"]["provenance"], "official"
-        )
+        self.assertEqual(storefront["plugins"]["shared plugin"]["provenance"], "both")
         self.assertEqual(
             storefront["plugins"]["shared plugin"]["source_urls"],
             [

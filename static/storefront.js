@@ -140,7 +140,8 @@ function metadataPluginFor(plugin, metadata) {
 
 function provenanceForPlugin(plugin, metadata) {
   const provenance = stringValue(metadataPluginFor(plugin, metadata)?.provenance);
-  return provenance === "official" || provenance === "extended" ? provenance : "";
+  // "both" is a plugin the official store carries that this store also builds.
+  return ["official", "extended", "both"].includes(provenance) ? provenance : "";
 }
 
 export function matchesCategory(plugin, category, provenance = "") {
@@ -151,6 +152,8 @@ export function matchesCategory(plugin, category, provenance = "") {
     return Boolean(plugin.officialVersion && plugin.storeVersion);
   }
   if (category === "extended") {
+    // The chip reads "Extended only", so it stays exclusive: a mixed plugin is
+    // in the official catalog too and was never matched here.
     return provenance === "extended";
   }
   const normalizedTags = new Set(
@@ -362,9 +365,8 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = [], channe
     versionHistory,
     provenance,
     provenanceLabel: provenance
-      ? provenance === "official"
-        ? "Official catalog"
-        : "Extended catalog"
+      ? { official: "Official catalog", extended: "Extended catalog" }[provenance] ||
+        "Official and extended"
       : metadata?.schema_version === 1 && !metadataPlugin
         ? "Unknown"
         : "Unavailable",
@@ -398,6 +400,9 @@ export function classifyPrimaryBadge(plugin, detail, channel) {
   }
   if (detail?.provenance === "extended") {
     return { kind: "extended", label: "Extended only" };
+  }
+  if (detail?.provenance === "both") {
+    return { kind: "extended", label: "Extended builds" };
   }
   return null;
 }
@@ -447,6 +452,7 @@ function startStorefront() {
     channelButtons: [...document.querySelectorAll("[data-channel]")],
     categoryButtons: [...document.querySelectorAll("[data-category]")],
     search: document.getElementById("search"),
+    searchClear: document.getElementById("search-clear"),
     sort: document.getElementById("sort"),
     sortDirection: document.getElementById("sort-direction"),
     grid: document.getElementById("plugin-grid"),
@@ -475,6 +481,15 @@ function startStorefront() {
     detailMeta: document.getElementById("detail-meta"),
     detailContent: document.getElementById("detail-content"),
   };
+  function syncSearchClear() {
+    // The query round-trips through the URL, so a shared link can arrive
+    // already filtered; the button is the way back out.
+    // Optional: a cached index.html without the button must not break the page.
+    if (elements.searchClear) {
+      elements.searchClear.hidden = !elements.search.value;
+    }
+  }
+
   if (!elements.grid || !elements.search || !elements.sort || !elements.sortDirection) {
     return;
   }
@@ -504,6 +519,7 @@ function startStorefront() {
     previousOverflow: "",
   };
   elements.search.value = state.query;
+  syncSearchClear();
   elements.sort.value = state.sort;
   elements.sortDirection.value = state.sortDirection;
 
@@ -1091,8 +1107,17 @@ function startStorefront() {
   });
   elements.search.addEventListener("input", (event) => {
     state.query = event.target.value;
+    syncSearchClear();
     updateUrl();
     render();
+  });
+  elements.searchClear?.addEventListener("click", () => {
+    elements.search.value = "";
+    state.query = "";
+    syncSearchClear();
+    updateUrl();
+    render();
+    elements.search.focus();
   });
   elements.sort.addEventListener("change", (event) => {
     state.sort = event.target.value;

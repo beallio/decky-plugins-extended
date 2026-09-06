@@ -115,6 +115,12 @@ h1 { max-width: 760px; margin: 0; font-size: clamp(42px, 6vw, 72px); line-height
 .sort-controls { display: grid; grid-template-columns: repeat(2, minmax(140px, auto)); gap: 12px; }
 .search-wrap { position: relative; }
 .search-wrap svg { position: absolute; top: 50%; left: 13px; width: 18px; height: 18px; color: var(--faint); pointer-events: none; transform: translateY(-50%); }
+/* The native control renders inconsistently, cannot be styled, and is sized for
+   a mouse rather than the Deck's touch and trackpad input. */
+input[type="search"]::-webkit-search-cancel-button { appearance: none; }
+.search-clear { position: absolute; top: 50%; right: 6px; display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--faint); cursor: pointer; transform: translateY(-50%); }
+.search-clear svg { width: 16px; height: 16px; }
+.search-clear:hover, .search-clear:focus-visible { color: var(--text); background: var(--raised); }
 .control { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 9px; background: var(--raised); color: var(--text); }
 input.control { padding: 0 14px 0 42px; }
 select.control { min-width: 176px; padding: 0 34px 0 12px; }

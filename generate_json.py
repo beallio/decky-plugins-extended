@@ -750,7 +750,14 @@ def build_storefront_metadata(
                 catalog_names_by_key.get(key, set()),
                 key=lambda name: (name.casefold(), name),
             ),
-            "provenance": "official" if key in official_catalog_names else "extended",
+            # A name in the official catalog says nothing about where the
+            # versions came from: most entries here are in the store AND carry
+            # builds this catalog adds, which is the whole point of it.
+            "provenance": (
+                ("both" if versions else "official")
+                if key in official_catalog_names
+                else "extended"
+            ),
             "versions": versions,
         }
         source_urls = sorted(details["source_urls"])

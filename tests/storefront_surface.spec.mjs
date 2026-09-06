@@ -533,6 +533,24 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
   await expect(detailButton).toBeFocused();
 });
 
+test("the search box can be cleared and the clear control follows its content", async ({ page }) => {
+  await loadStorefront(page, "?query=alpha");
+  const clear = page.locator("#search-clear");
+  // A shared link arrives already filtered, so the control has to be there.
+  await expect(page.locator("#search")).toHaveValue("alpha");
+  await expect(clear).toBeVisible();
+
+  await clear.click();
+  await expect(page.locator("#search")).toHaveValue("");
+  await expect(clear).toBeHidden();
+  await expect(page.locator("#search")).toBeFocused();
+  expect(new URL(page.url()).searchParams.get("query")).toBeNull();
+  await expect(page.locator("#plugin-grid [data-plugin-key]").first()).toBeVisible();
+
+  await page.locator("#search").fill("radio");
+  await expect(clear).toBeVisible();
+});
+
 test("dialog copy failures are announced inside the active dialog", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });

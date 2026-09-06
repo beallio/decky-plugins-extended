@@ -9,6 +9,7 @@ import {
   channelCounts,
   classifyPrimaryBadge,
   filterCatalog,
+  matchesCategory,
   normalizeAuditTag,
   normalizeCatalogEntry,
   normalizeVersionName,
@@ -590,4 +591,33 @@ test("a manual-review audit no longer hides the version comparison", () => {
     kind: "warning",
     label: "Audit block",
   });
+});
+
+test("a plugin the store carries and this catalog builds reads as both", () => {
+  const entry = plugin({ name: "Mixed Plugin" });
+  const metadata = (provenance) => ({
+    schema_version: 1,
+    plugins: { "mixed plugin": { name: "Mixed Plugin", provenance, versions: [] } },
+  });
+
+  const both = buildDetailViewModel(entry, metadata("both"), []);
+  assert.equal(both.provenance, "both");
+  assert.equal(both.provenanceLabel, "Official and extended");
+  assert.deepEqual(classifyPrimaryBadge(entry, both, "stable"), {
+    kind: "extended",
+    label: "Extended builds",
+  });
+
+  const extended = buildDetailViewModel(entry, metadata("extended"), []);
+  assert.equal(extended.provenanceLabel, "Extended catalog");
+  assert.deepEqual(classifyPrimaryBadge(entry, extended, "stable"), {
+    kind: "extended",
+    label: "Extended only",
+  });
+  assert.equal(buildDetailViewModel(entry, metadata("official"), []).provenanceLabel, "Official catalog");
+
+  // The chip reads "Extended only", so a mixed plugin stays out of it.
+  assert.equal(matchesCategory(entry, "extended", "both"), false);
+  assert.equal(matchesCategory(entry, "extended", "extended"), true);
+  assert.equal(matchesCategory(entry, "extended", "official"), false);
 });
