@@ -177,10 +177,9 @@ test("audit envelopes and producer-normalized tags retain exact current identiti
   assert.equal(normalizeVersionName("v1.2.3.4"), "1.2.3.4");
   assert.equal(detail.source, source);
   assert.equal(detail.audit, audit);
-  assert.deepEqual(classifyPrimaryBadge(entry, detail, "stable"), {
-    kind: "warning",
-    label: "Manual review",
-  });
+  // MANUAL_REVIEW no longer earns a badge; the detail pane still carries it.
+  assert.equal(classifyPrimaryBadge(entry, detail, "stable"), null);
+  assert.equal(detail.audit.classification, "MANUAL_REVIEW");
   assert.deepEqual(auditRecordsFrom({ records: [audit] }), [audit]);
   assert.deepEqual(auditRecordsFrom({ releases: [audit] }), [audit]);
   assert.deepEqual(auditRecordsFrom({ payload: { releases: [audit] } }), [audit]);
@@ -574,4 +573,21 @@ test("malformed catalog data is normalized defensively", () => {
 test("only the latest channel request may update the rendered state", () => {
   assert.equal(shouldAcceptChannelResponse(4, 4), true);
   assert.equal(shouldAcceptChannelResponse(5, 4), false);
+});
+
+test("a manual-review audit no longer hides the version comparison", () => {
+  const entry = plugin({
+    description: "Official store has 1.0.0; this store has 2.0.0. A useful utility.",
+  });
+  const detail = buildDetailViewModel(entry, { schema_version: 1, plugins: {} }, []);
+  detail.audit = { classification: "MANUAL_REVIEW" };
+  assert.deepEqual(classifyPrimaryBadge(entry, detail, "stable"), {
+    kind: "newer",
+    label: "Newer than official",
+  });
+  detail.audit = { classification: "BLOCK" };
+  assert.deepEqual(classifyPrimaryBadge(entry, detail, "stable"), {
+    kind: "warning",
+    label: "Audit block",
+  });
 });

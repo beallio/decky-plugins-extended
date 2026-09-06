@@ -252,7 +252,11 @@ test("actual static assets load over HTTP and publish every direct artifact", as
   await loadStorefront(page);
   await expect(page.getByText("Alpha Tool", { exact: true })).toBeVisible();
   await expect(page.locator("#catalog-status-value")).toContainText("Operational");
-  await expect(page.locator("[data-plugin-key='alpha tool'] .badge")).toHaveText("Manual review");
+  // Alpha Tool audits MANUAL_REVIEW, which no longer badges, so the card shows
+  // the version comparison its description carries instead.
+  await expect(page.locator("[data-plugin-key='alpha tool'] .badge")).toHaveText(
+    "Newer than official",
+  );
   await expect(page.locator("[data-plugin-key='radio deck'] .badge")).toHaveText(
     "Large release",
   );

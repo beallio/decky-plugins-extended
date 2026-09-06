@@ -379,8 +379,13 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = [], channe
 
 export function classifyPrimaryBadge(plugin, detail, channel) {
   const classification = stringValue(detail?.audit?.classification).toUpperCase();
-  if (classification === "BLOCK" || classification === "MANUAL_REVIEW") {
-    return { kind: "warning", label: classification === "BLOCK" ? "Audit block" : "Manual review" };
+  // Only BLOCK earns the badge. MANUAL_REVIEW is advisory and never removes a
+  // plugin, and it lands on ~87% of audited releases because subprocess, root
+  // and systemctl are what a Steam Deck plugin does to work at all, so badging
+  // it separated nothing and outranked the labels that do. The detail pane
+  // still reports it verbatim under "Audit outcome".
+  if (classification === "BLOCK") {
+    return { kind: "warning", label: "Audit block" };
   }
   if (detail?.largePluginWarnings?.length) {
     return { kind: "warning", label: "Large release" };
