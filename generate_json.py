@@ -183,6 +183,24 @@ def resolve_tags(plugin_json, pkg):
     return sorted({tag for tag in tags if tag != "debug"})
 
 
+def merge_root_tag(entry, tags):
+    """Carry a declared root flag onto an entry that keeps the store's tags.
+
+    A merged entry inherits the official catalog's tags, so a plugin whose
+    plugin.json declares the flag would otherwise install with no warning:
+    PluginCard decides that from the tag alone. Append rather than replace --
+    the store's tags are curated, and two repositories can merge into one
+    entry, so replacing could drop what the earlier one contributed.
+    """
+    if not entry or "root" not in tags:
+        return False
+    existing = entry.get("tags") or []
+    if "root" in existing:
+        return False
+    entry["tags"] = [*existing, "root"]
+    return True
+
+
 def resolve_description(plugin_json, pkg, repo_info):
     """publish.description is the store-facing copy; package.json's description
     is aimed at developers and is sometimes not even in English."""
@@ -1340,6 +1358,7 @@ def main():
             if existing_testing:
                 print("  Found in testing plugins. Merging versions...")
                 merge_plugin_versions(existing_testing, testing_versions)
+                merge_root_tag(existing_testing, tags)
             else:
                 print("  Adding to testing plugins...")
                 max_testing_id += 1
@@ -1364,6 +1383,7 @@ def main():
                 if existing_stable:
                     print("  Found in stable plugins. Merging versions...")
                     merge_plugin_versions(existing_stable, stable_versions)
+                    merge_root_tag(existing_stable, tags)
                 else:
                     print("  Adding to stable plugins...")
                     max_stable_id += 1

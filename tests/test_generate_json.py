@@ -187,6 +187,22 @@ class GenerateJsonTests(unittest.TestCase):
             ["network", "root", "vpn"],
         )
 
+    def test_merge_root_tag_adds_to_a_merged_entry_without_replacing(self):
+        # A merged entry keeps the store's curated tags, so the flag has to be
+        # added on top of them rather than overwriting them.
+        entry = {"tags": ["utility", "network"]}
+        self.assertTrue(generate_json.merge_root_tag(entry, ["root", "vpn"]))
+        self.assertEqual(entry["tags"], ["utility", "network", "root"])
+
+        # Idempotent, so a second repository merging the same name cannot
+        # duplicate it, and an undeclared flag never adds one.
+        self.assertFalse(generate_json.merge_root_tag(entry, ["root"]))
+        self.assertEqual(entry["tags"], ["utility", "network", "root"])
+        plain = {"tags": ["utility"]}
+        self.assertFalse(generate_json.merge_root_tag(plain, ["utility"]))
+        self.assertEqual(plain["tags"], ["utility"])
+        self.assertFalse(generate_json.merge_root_tag(None, ["root"]))
+
     def test_resolve_tags_falls_back_to_keywords(self):
         self.assertEqual(
             generate_json.resolve_tags(
