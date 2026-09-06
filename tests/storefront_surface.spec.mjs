@@ -611,6 +611,44 @@ test("the audit page groups releases by plugin and floats a blocked one", async 
   expect(shell).not.toContain("owner/blocked");
 });
 
+test("the audit page filters by search, classification and rule, and restores from the URL", async ({ page }) => {
+  await page.goto(`${baseUrl}/audit.html`, { waitUntil: "domcontentloaded" });
+  const groups = page.locator(".plugin-group");
+  const results = page.locator("#audit-results");
+  await expect(groups).toHaveCount(3);
+  await expect(results).toBeHidden();
+
+  // Search narrows to one plugin and says so.
+  await page.locator("#audit-search").fill("manual");
+  await expect(groups).toHaveCount(1);
+  await expect(results).toHaveText("Showing 1 of 3 plugins");
+  expect(new URL(page.url()).searchParams.get("query")).toBe("manual");
+
+  // Clearing restores everything and drops the parameter.
+  await page.locator("#audit-search-clear").click();
+  await expect(groups).toHaveCount(3);
+  await expect(results).toBeHidden();
+  expect(new URL(page.url()).searchParams.get("query")).toBeNull();
+
+  // A rule filter keeps only the releases that trip it, not whole plugins.
+  await page.locator("#audit-rule").selectOption("SHELL_CURL_PIPE");
+  await expect(groups).toHaveCount(1);
+  await expect(groups.first().locator(".verdict")).toHaveCount(1);
+  await expect(groups.first().locator(".group-count")).toHaveText("1 release");
+
+  // A classification that matches nothing alongside it says so plainly.
+  await page.locator("#audit-classification").selectOption("BLOCK");
+  await expect(groups).toHaveCount(0);
+  await expect(page.locator("#audit-groups .empty")).toHaveText(
+    "No plugins match these filters.",
+  );
+
+  // Filters survive a reload through the URL.
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.locator("#audit-rule")).toHaveValue("SHELL_CURL_PIPE");
+  await expect(page.locator("#audit-classification")).toHaveValue("BLOCK");
+});
+
 test("dialog copy failures are announced inside the active dialog", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });

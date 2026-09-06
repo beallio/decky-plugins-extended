@@ -101,6 +101,42 @@ export function summarizeAudit(records) {
   return counts;
 }
 
+export function filterAuditRecords(records, filters = {}) {
+  const query = stringValue(filters.query).toLowerCase();
+  const classification = stringValue(filters.classification);
+  const rule = stringValue(filters.rule);
+  return (Array.isArray(records) ? records : []).filter((record) => {
+    if (!record || typeof record !== "object") return false;
+    if (classification && stringValue(record.classification) !== classification) {
+      return false;
+    }
+    if (rule) {
+      const ruleIds = Array.isArray(record.rule_ids) ? record.rule_ids : [];
+      if (!ruleIds.some((value) => stringValue(value) === rule)) return false;
+    }
+    // The repository slug is what a reader can see and link to, so search it
+    // rather than a name this page never receives.
+    return !query || repositorySlug(record.repository).includes(query);
+  });
+}
+
+export function auditFilterOptions(records) {
+  const classifications = new Set();
+  const rules = new Set();
+  for (const record of Array.isArray(records) ? records : []) {
+    const classification = stringValue(record?.classification);
+    if (classification) classifications.add(classification);
+    for (const value of Array.isArray(record?.rule_ids) ? record.rule_ids : []) {
+      const rule = stringValue(value);
+      if (rule) rules.add(rule);
+    }
+  }
+  return {
+    classifications: [...classifications].sort(),
+    rules: [...rules].sort(),
+  };
+}
+
 function renderSummary(target, records, groupCount) {
   const counts = summarizeAudit(records);
   target.replaceChildren();
@@ -206,16 +242,37 @@ function renderGroup(group) {
   return details;
 }
 
-export function renderAudit(payload, elements) {
+export function renderAudit(payload, elements, filters = {}) {
   const records = Array.isArray(payload?.releases) ? payload.releases : [];
-  const groups = groupAuditRecords(records);
+  const matched = filterAuditRecords(records, filters);
+  const groups = groupAuditRecords(matched);
+  const allGroups = groupAuditRecords(records);
   elements.enforcement.textContent = auditEnforcementCopy(payload?.enforcement_mode);
-  renderSummary(elements.summary, records, groups.length);
+  // The summary describes the whole published record, not the current view, so
+  // the filtered count gets its own line rather than rewriting the totals.
+  renderSummary(elements.summary, records, allGroups.length);
+
+  const filtered =
+    stringValue(filters.query) ||
+    stringValue(filters.classification) ||
+    stringValue(filters.rule);
+  if (elements.results) {
+    elements.results.hidden = !filtered;
+    elements.results.textContent = filtered
+      ? `Showing ${groups.length} of ${allGroups.length} plugins`
+      : "";
+  }
 
   elements.groups.replaceChildren();
   if (!groups.length) {
     elements.groups.append(
-      createElement("p", "empty", "No releases have been audited yet."),
+      createElement(
+        "p",
+        "empty",
+        filtered
+          ? "No plugins match these filters."
+          : "No releases have been audited yet.",
+      ),
     );
     return groups;
   }
@@ -225,15 +282,58 @@ export function renderAudit(payload, elements) {
   return groups;
 }
 
+function fillOptions(select, values) {
+  // Keep the leading "all" option and rebuild the rest from the record.
+  const all = select.options[0];
+  select.replaceChildren(all);
+  for (const value of values) {
+    select.append(new Option(value, value));
+  }
+}
+
 async function startAuditLog() {
   const elements = {
     enforcement: document.getElementById("enforcement"),
     summary: document.getElementById("summary"),
     groups: document.getElementById("audit-groups"),
     error: document.getElementById("audit-error"),
+    results: document.getElementById("audit-results"),
+    search: document.getElementById("audit-search"),
+    searchClear: document.getElementById("audit-search-clear"),
+    classification: document.getElementById("audit-classification"),
+    rule: document.getElementById("audit-rule"),
   };
   if (!elements.enforcement || !elements.summary || !elements.groups) {
     return;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const filters = {
+    query: stringValue(params.get("query")),
+    classification: stringValue(params.get("classification")),
+    rule: stringValue(params.get("rule")),
+  };
+
+  let payload = null;
+
+  function updateUrl() {
+    const next = new URLSearchParams();
+    for (const key of ["query", "classification", "rule"]) {
+      if (filters[key]) next.set(key, filters[key]);
+    }
+    const query = next.toString();
+    window.history.replaceState(
+      {},
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
+    );
+  }
+
+  function apply() {
+    if (elements.searchClear) {
+      elements.searchClear.hidden = !filters.query;
+    }
+    renderAudit(payload, elements, filters);
   }
 
   try {
@@ -243,12 +343,55 @@ async function startAuditLog() {
     if (!response.ok) {
       throw new Error(`Request failed with ${response.status}`);
     }
-    renderAudit(await response.json(), elements);
+    payload = await response.json();
   } catch {
     elements.summary.textContent = "";
     elements.enforcement.textContent = "The current policy could not be loaded.";
     if (elements.error) elements.error.hidden = false;
+    return;
   }
+
+  const options = auditFilterOptions(payload?.releases);
+  if (elements.classification) {
+    fillOptions(elements.classification, options.classifications);
+    elements.classification.value = filters.classification;
+    // A value carried in from the URL that the record does not contain would
+    // leave the select blank while still filtering; drop it instead.
+    filters.classification = elements.classification.value;
+    elements.classification.addEventListener("change", (event) => {
+      filters.classification = event.target.value;
+      updateUrl();
+      apply();
+    });
+  }
+  if (elements.rule) {
+    fillOptions(elements.rule, options.rules);
+    elements.rule.value = filters.rule;
+    filters.rule = elements.rule.value;
+    elements.rule.addEventListener("change", (event) => {
+      filters.rule = event.target.value;
+      updateUrl();
+      apply();
+    });
+  }
+  if (elements.search) {
+    elements.search.value = filters.query;
+    elements.search.addEventListener("input", (event) => {
+      filters.query = event.target.value;
+      updateUrl();
+      apply();
+    });
+  }
+  elements.searchClear?.addEventListener("click", () => {
+    elements.search.value = "";
+    filters.query = "";
+    updateUrl();
+    apply();
+    elements.search.focus();
+  });
+
+  updateUrl();
+  apply();
 }
 
 if (typeof document !== "undefined") {

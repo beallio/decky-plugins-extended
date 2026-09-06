@@ -27,6 +27,22 @@
 
         <h2>Audited releases</h2>
         <p class="summary" id="summary" aria-live="polite">Loading audited releases.</p>
+
+        <div class="audit-toolbar" role="search">
+            <label class="search-wrap" for="audit-search">
+                <span class="sr-only">Search plugins</span>
+                <input id="audit-search" type="search" placeholder="Search by plugin or repository" autocomplete="off">
+                <button class="search-clear" id="audit-search-clear" type="button" hidden>
+                    <span class="sr-only">Clear search</span>
+                    <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                </button>
+            </label>
+            <label class="sr-only" for="audit-classification">Filter by classification</label>
+            <select id="audit-classification"><option value="">All classifications</option></select>
+            <label class="sr-only" for="audit-rule">Filter by rule ID</label>
+            <select id="audit-rule"><option value="">All rule IDs</option></select>
+        </div>
+        <p class="results" id="audit-results" aria-live="polite" hidden></p>
         <noscript>
             <p class="empty">This page renders from <a href="audit.json">audit.json</a>, which needs JavaScript. That file is the same published record and can be read directly.</p>
         </noscript>
