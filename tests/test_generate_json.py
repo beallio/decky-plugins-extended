@@ -612,6 +612,73 @@ class GenerateJsonTests(unittest.TestCase):
             self.assertTrue((destination / "storefront.css").is_file())
             self.assertTrue((destination / "storefront.js").is_file())
 
+    def test_build_storefront_metadata_keeps_one_row_per_version_identity(self):
+        """A fork mirroring its upstream must not leave the version sourceless.
+
+        The storefront resolves a version to its source on name and hash, so a
+        second row differing only in repository makes the match ambiguous and
+        the version loses both its source link and its audit record.
+        """
+        stable = [{"name": "Mirrored Plugin", "visible": True}]
+
+        def contribution(repository, version_hash):
+            return {
+                "name": "Mirrored Plugin",
+                "version": {
+                    "name": "3.3.0",
+                    "hash": version_hash,
+                    "tag": "3.3.0",
+                    "repository": repository,
+                    "source_url": f"https://github.com/{repository}",
+                },
+            }
+
+        metadata = generate_json.build_storefront_metadata(
+            stable,
+            [],
+            set(),
+            # The hand-maintained list is read first, the store-backed one last.
+            [contribution("owner/fork", "d" * 64), contribution("owner/upstream", "d" * 64)],
+            "enforce",
+        )
+        versions = metadata["plugins"]["mirrored plugin"]["versions"]
+        self.assertEqual(len(versions), 1)
+        self.assertEqual(versions[0]["repository"], "owner/upstream")
+        # Both source links survive even though only one version row does.
+        self.assertEqual(
+            metadata["plugins"]["mirrored plugin"]["source_urls"],
+            ["https://github.com/owner/fork", "https://github.com/owner/upstream"],
+        )
+
+        # Different bytes are genuinely different versions: keep both rows so
+        # the hash still picks out exactly one.
+        differing = generate_json.build_storefront_metadata(
+            stable,
+            [],
+            set(),
+            [contribution("owner/fork", "e" * 64), contribution("owner/upstream", "f" * 64)],
+            "enforce",
+        )
+        self.assertEqual(len(differing["plugins"]["mirrored plugin"]["versions"]), 2)
+
+    def test_read_repo_urls_reads_the_store_backed_list_last(self):
+        # merge_plugin_versions lets the later write win, so this order is what
+        # makes the store's own source decide a conflicting version's artifact.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workdir = Path(temp_dir)
+            (workdir / "additional.txt").write_text(
+                "https://github.com/owner/fork\n", encoding="utf-8"
+            )
+            (workdir / "store.txt").write_text(
+                "https://github.com/owner/upstream\n", encoding="utf-8"
+            )
+            self.assertEqual(
+                generate_json.read_repo_urls(
+                    str(workdir / "additional.txt"), str(workdir / "store.txt")
+                ),
+                ["https://github.com/owner/fork", "https://github.com/owner/upstream"],
+            )
+
     def test_build_storefront_metadata_keeps_per_version_provenance(self):
         stable = [
             {"name": "Official Plugin", "visible": True},

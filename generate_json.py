@@ -518,6 +518,12 @@ def read_repo_urls(path=PLUGIN_LIST_FILE, discovered=DISCOVERED_PLUGIN_LIST_FILE
     hand-maintained file. Lines are returned verbatim rather than canonicalized:
     main() canonicalizes inside its per-repository try block so one malformed
     line is reported as that repository's failure instead of aborting the run.
+
+    The order matters. Two repositories can resolve to one plugin name and
+    publish different bytes under one version name -- a fork and its upstream
+    both tagging 'nightly'. merge_plugin_versions() lets the later write win,
+    so reading the store-backed list second means the store's own source
+    decides the artifact rather than whichever list happened to come first.
     """
     urls = _read_url_lines(path)
     if discovered and os.path.exists(discovered):
@@ -648,17 +654,18 @@ def build_storefront_metadata(
         if not all(record.values()):
             continue
         details["source_urls"].add(record["source_url"])
-        identity = tuple(
-            record[field]
-            for field in ("name", "hash", "tag", "repository", "source_url")
-        )
-        if identity not in {
-            tuple(
-                item[field]
-                for field in ("name", "hash", "tag", "repository", "source_url")
-            )
-            for item in details["versions"]
-        }:
+        # Key on name and hash alone. Two repositories can publish identical
+        # bytes for one version -- a fork mirroring its upstream -- and the
+        # storefront matches a version to its source on exactly those two
+        # fields, so a second row differing only in repository leaves that
+        # version with no resolvable source and no audit record. Last write
+        # wins, and read_repo_urls() reads the store-backed list last.
+        identity = (record["name"], record["hash"])
+        for index, item in enumerate(details["versions"]):
+            if (item["name"], item["hash"]) == identity:
+                details["versions"][index] = record
+                break
+        else:
             details["versions"].append(record)
 
     catalog_keys = set(catalog_names_by_key)
