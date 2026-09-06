@@ -142,3 +142,16 @@ input[type="search"]::-webkit-search-cancel-button { appearance: none; }
 .search-clear svg { width: 16px; height: 16px; }
 .search-clear:hover, .search-clear:focus-visible { color: #f7f7f7; background: #303030; }
 .results { margin: 0 0 1rem; color: #c9c9c9; }
+.show-all {
+    min-height: 40px;
+    margin: 0.25rem 0 0.5rem;
+    padding: 0 0.9rem;
+    background: #191919;
+    color: #00ffff;
+    border: 1px solid #555;
+    border-radius: 0.35rem;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 700;
+}
+.show-all:hover, .show-all:focus-visible { border-color: #00ffff; background: #202020; }

@@ -152,6 +152,8 @@ const storefrontMetadata = {
 const auditRecords = [
   {
     repository: "https://github.com/owner/alpha",
+    plugin_name: "Alpha Tool",
+    asset_id: "9",
     tag: "v2.0.0",
     identity_status: "CURRENT",
     outcome: "APPLIED",
@@ -546,7 +548,7 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
   const auditBox = page.locator(".detail-box").filter({ hasText: "Audit outcome" });
   await expect(auditBox.getByRole("link", { name: "Open audit log" })).toHaveAttribute(
     "href",
-    "audit.html#plugin-owner-alpha",
+    "audit.html#plugin-alpha-tool",
   );
   const hashBox = page.locator(".detail-box").filter({ hasText: "Latest hash" });
   await expect(hashBox.getByRole("button", { name: "Copy latest SHA-256" })).toBeVisible();
@@ -595,28 +597,33 @@ test("the audit page groups releases by plugin and floats a blocked one", async 
   // Blocked first, expanded, never behind a click.
   const first = groups.first();
   await expect(first.locator(".group-name")).toHaveText("Blocked Plugin");
-  await expect(first.locator(".group-repository")).toHaveText(
-    "https://github.com/owner/blocked",
-  );
+  await expect(first.locator(".group-repository")).toHaveText("owner/blocked");
   await expect(first).toHaveAttribute("open", "");
   await expect(page.locator("#enforcement")).toContainText("are excluded from the catalogs");
   await expect(page.locator("#summary")).toContainText("across 3 plugins");
 
   // Everything else stays collapsed until asked for.
-  const manual = page.locator("#plugin-owner-manual");
+  const manual = page.locator("#plugin-manual-plugin");
   await expect(manual).not.toHaveAttribute("open", "");
   await expect(manual.locator(".group-count")).toHaveText("2 releases");
   await expect(manual.locator(".group-name")).toHaveText("Manual Plugin");
-  await expect(manual.locator(".group-repository")).toHaveText(
-    "https://github.com/owner/manual",
-  );
+  await expect(manual.locator(".group-repository")).toHaveText("owner/manual");
   await manual.locator("summary").click();
-  await expect(manual.locator(".verdict")).toHaveCount(2);
 
-  // Newest first by asset id, and only that one is marked.
+  // Only the newest release is rendered up front; the rest are behind a click.
+  await expect(manual.locator(".verdict")).toHaveCount(1);
   await expect(manual.locator(".verdict .newest")).toHaveCount(1);
   await expect(manual.locator(".verdict").first()).toContainText("Newest audited release");
   await expect(manual.locator(".verdict").first()).toContainText("v2.0.0@2");
+  await manual.getByRole("button", { name: "Show all 2 releases" }).click();
+  await expect(manual.locator(".verdict")).toHaveCount(2);
+  await expect(manual.getByRole("button", { name: /Show all/ })).toHaveCount(0);
+
+  // A single-repository plugin does not repeat its repository on every card,
+  // and a verified release does not spell out CURRENT - APPLIED.
+  await expect(manual.getByText("Repository", { exact: true })).toHaveCount(0);
+  await expect(manual.getByText("Identity", { exact: true })).toHaveCount(0);
+  await expect(manual.getByText("Stored hash", { exact: true })).toHaveCount(0);
 
   // A verdict that predates the current policy still shows what was stored.
   await expect(manual.locator(".policy-disagreement")).toContainText("Stored verdict: BLOCK");
@@ -651,8 +658,8 @@ test("the audit page filters by search, classification and rule, and restores fr
   // A rule filter keeps only the releases that trip it, not whole plugins.
   await page.locator("#audit-rule").selectOption("SHELL_CURL_PIPE");
   await expect(groups).toHaveCount(1);
-  await expect(groups.first().locator(".verdict")).toHaveCount(1);
   await expect(groups.first().locator(".group-count")).toHaveText("1 release");
+  await expect(groups.first().getByRole("button", { name: /Show all/ })).toHaveCount(0);
 
   // A classification that matches nothing alongside it says so plainly.
   await page.locator("#audit-classification").selectOption("BLOCK");
@@ -671,16 +678,16 @@ test("a plugin's audit link lands on that plugin's section of the log", async ({
   await loadStorefront(page);
   await page.getByRole("button", { name: "View Alpha Tool details" }).click();
   const auditLink = page.getByRole("link", { name: "Open audit log" });
-  await expect(auditLink).toHaveAttribute("href", "audit.html#plugin-owner-alpha");
+  await expect(auditLink).toHaveAttribute("href", "audit.html#plugin-alpha-tool");
 
   await auditLink.click();
-  await expect(page).toHaveURL(/audit(\.html)?#plugin-owner-alpha$/);
+  await expect(page).toHaveURL(/audit(\.html)?#plugin-alpha-tool$/);
 
   // The linked plugin is expanded on arrival, and it is the only one.
-  const target = page.locator("#plugin-owner-alpha");
+  const target = page.locator("#plugin-alpha-tool");
   await expect(target).toHaveAttribute("open", "");
   await expect(target.locator(".verdict")).toHaveCount(1);
-  await expect(page.locator("#plugin-owner-manual")).not.toHaveAttribute("open", "");
+  await expect(page.locator("#plugin-manual-plugin")).not.toHaveAttribute("open", "");
 });
 
 test("dialog copy failures are announced inside the active dialog", async ({ page }) => {

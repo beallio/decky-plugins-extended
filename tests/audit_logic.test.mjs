@@ -51,7 +51,7 @@ test("records group by plugin with blocked plugins first", () => {
     }),
   ]);
 
-  assert.deepEqual(groups.map((group) => group.slug), [
+  assert.deepEqual(groups.map((group) => group.key), [
     "example/blocked",
     "example/manual",
   ]);
@@ -111,7 +111,7 @@ test("releases order newest first by asset id, not by version string", () => {
   assert.equal(mixed.records[0].asset_id, "5");
 });
 
-test("a group takes the plugin name from its records and keeps the slug", () => {
+test("a group takes the plugin name from its records and keeps every repository", () => {
   const [named] = groupAuditRecords([
     record("https://github.com/owner/plugin", "v1@1", "PASS", {
       plugin_name: "Nice Plugin",
@@ -119,13 +119,54 @@ test("a group takes the plugin name from its records and keeps the slug", () => 
     record("https://github.com/owner/plugin", "v2@2", "PASS"),
   ]);
   assert.equal(named.name, "Nice Plugin");
-  assert.equal(named.repository, "https://github.com/owner/plugin");
+  assert.deepEqual(named.repositories, ["owner/plugin"]);
 
-  // A record with no name leaves the group unnamed rather than guessing.
+  // A record with no name falls back to the repository as its identity.
   const [unnamed] = groupAuditRecords([
     record("https://github.com/owner/other", "v1@1", "PASS"),
   ]);
   assert.equal(unnamed.name, "");
+  assert.equal(unnamed.key, "owner/other");
+  // Still addressable, just by repository -- the catalog links by name, so an
+  // unnamed group is simply not linked to rather than linked to wrongly.
+  assert.equal(unnamed.id, groupId("https://github.com/owner/other"));
+});
+
+test("one plugin with two repositories is one group, not two", () => {
+  // A fork and its upstream, and an old URL left behind by a rename, both
+  // produced two rows with the same name when groups were keyed by repository.
+  const groups = groupAuditRecords([
+    record("https://github.com/beallio/sdh-playtime-beallio-remix", "v3@3", "PASS", {
+      plugin_name: "PlayTime",
+      asset_id: "3",
+    }),
+    record("https://github.com/0u73r-h34v3n/sdh-playtime", "v1@1", "PASS", {
+      plugin_name: "PlayTime",
+      asset_id: "1",
+    }),
+    record("https://github.com/danielcopper/decky-romm-sync", "v1@1", "PASS", {
+      plugin_name: "Tender",
+      asset_id: "1",
+    }),
+    record("https://github.com/danielcopper/romm-tender", "v2@2", "PASS", {
+      plugin_name: "Tender",
+      asset_id: "2",
+    }),
+  ]);
+
+  assert.equal(groups.length, 2);
+  // Sorted by the displayed name, not by a slug the reader never sees.
+  assert.deepEqual(groups.map((group) => group.name), ["PlayTime", "Tender"]);
+  const [playtime] = groups;
+  assert.equal(playtime.records.length, 2);
+  assert.deepEqual(playtime.repositories, [
+    "0u73r-h34v3n/sdh-playtime",
+    "beallio/sdh-playtime-beallio-remix",
+  ]);
+  // The anchor follows the plugin, so the catalog can link to it by name.
+  assert.equal(playtime.id, groupId("PlayTime"));
+  // Newest across both repositories, not within one of them.
+  assert.equal(playtime.records[0].asset_id, "3");
 });
 
 test("grouping ignores records with no repository and tolerates junk", () => {
@@ -196,7 +237,7 @@ test("classification and rule filters narrow to matching releases, not whole plu
   assert.equal(manual.length, 2);
   // alpha keeps only its MANUAL_REVIEW release, not its PASS one.
   assert.deepEqual(
-    groupAuditRecords(manual).map((group) => [group.slug, group.records.length]),
+    groupAuditRecords(manual).map((group) => [group.key, group.records.length]),
     [["other/beta", 1], ["owner/alpha", 1]],
   );
 
@@ -246,4 +287,9 @@ test("the catalog builds the same fragment the audit page answers to", () => {
   ]) {
     assert.equal(auditGroupId(repository), groupId(repository), repository);
   }
+  // It carries a plugin name now, since that is what a group is keyed on.
+  for (const name of ["PlayTime", "HLTB for Deck", "Decky-Framegen", "steam-achievements"]) {
+    assert.equal(auditGroupId(name), groupId(name), name);
+  }
+  assert.equal(auditGroupId("HLTB for Deck"), "plugin-hltb-for-deck");
 });

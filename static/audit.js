@@ -56,22 +56,32 @@ export function groupAuditRecords(records) {
   for (const record of Array.isArray(records) ? records : []) {
     if (!record || typeof record !== "object") continue;
     const slug = repositorySlug(record.repository);
-    if (!slug) continue;
-    if (!groups.has(slug)) {
-      groups.set(slug, {
-        slug,
-        id: groupId(record.repository),
-        repository: stringValue(record.repository),
-        name: "",
+    const name = stringValue(record.plugin_name);
+    if (!slug && !name) continue;
+    // Group by plugin, not by repository. One plugin can have two: a fork and
+    // its upstream, or an old URL left behind by a rename. Keyed by repository
+    // those showed up as two plugins with the same name.
+    const key = name.toLowerCase() || slug;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        id: groupId(name || record.repository),
+        name,
+        repositories: [],
         records: [],
       });
     }
-    const group = groups.get(slug);
-    group.name = group.name || stringValue(record.plugin_name);
+    const group = groups.get(key);
+    group.name = group.name || name;
+    if (slug && !group.repositories.includes(slug)) {
+      group.repositories.push(slug);
+    }
     group.records.push(record);
   }
 
   for (const group of groups.values()) {
+    group.repositories.sort();
+    group.repository = group.repositories[0] || "";
     // BLOCK is the only tier that can remove a release, so a group holding one
     // is a blocked plugin however many other releases passed.
     group.blocked = group.records.some(
@@ -94,11 +104,16 @@ export function groupAuditRecords(records) {
     });
   }
 
-  // Same ordering rule the generator used: blocked first, then alphabetical.
+  // Blocked first, then by what the row actually displays. Sorting on the slug
+  // while showing the name made the list look unsorted.
   return [...groups.values()].sort(
     (left, right) =>
       Number(right.blocked) - Number(left.blocked) ||
-      left.slug.localeCompare(right.slug),
+      (left.name || left.repository).localeCompare(
+        right.name || right.repository,
+        undefined,
+        { sensitivity: "base" },
+      ),
   );
 }
 
@@ -171,7 +186,7 @@ function renderSummary(target, records, groupCount) {
   target.append(document.createTextNode(` · across ${groupCount} plugins`));
 }
 
-function renderRecord(record) {
+function renderRecord(record, showRepository) {
   const classification = stringValue(record.classification);
   const stored = stringValue(record.stored_classification);
   const article = createElement("article", "verdict");
@@ -201,16 +216,31 @@ function renderRecord(record) {
   }
 
   const list = createElement("dl");
-  const rows = [
-    ["Release", stringValue(record.release)],
-    ["Tag / asset", `${stringValue(record.tag)} / ${stringValue(record.asset_id)}`],
-    [
-      "Identity",
-      `${stringValue(record.identity_status)} — ${stringValue(record.outcome)}`,
-    ],
-    ["Current hash", stringValue(record.current_artifact_sha256) || "Not verified"],
-    ["Stored hash", stringValue(record.stored_artifact_sha256) || "Not recorded"],
-  ];
+  const currentHash = stringValue(record.current_artifact_sha256);
+  const storedHash = stringValue(record.stored_artifact_sha256);
+  const identity = stringValue(record.identity_status);
+  const outcome = stringValue(record.outcome);
+  const rows = [];
+  // Only when the plugin has more than one source, which is the case the
+  // repository actually distinguishes.
+  if (showRepository) {
+    rows.push(["Repository", stringValue(record.repository)]);
+  }
+  rows.push(["Release", stringValue(record.release)]);
+  rows.push([
+    "Tag / asset",
+    `${stringValue(record.tag)} / ${stringValue(record.asset_id)}`,
+  ]);
+  // A verified release reads CURRENT - APPLIED, which is almost all of them.
+  // Showing it everywhere buried the ones that did not verify.
+  if (identity !== "CURRENT" || outcome !== "APPLIED") {
+    rows.push(["Identity", `${identity} — ${outcome}`]);
+  }
+  rows.push(["Current hash", currentHash || "Not verified"]);
+  // The stored hash only says something when it disagrees with what was found.
+  if (storedHash && storedHash !== currentHash) {
+    rows.push(["Stored hash", storedHash]);
+  }
   for (const [label, value] of rows) {
     list.append(createElement("dt", "", label));
     list.append(createElement("dd", "", value));
@@ -239,10 +269,17 @@ function renderGroup(group) {
   details.id = group.id;
   const summary = createElement("summary");
   const heading = createElement("span", "group-heading");
-  // The name is what a reader recognises; the slug is what identifies it.
   heading.append(createElement("span", "group-name", group.name || group.repository));
-  if (group.name) {
-    heading.append(createElement("span", "group-repository", group.repository));
+  if (group.repositories.length === 1 && group.name) {
+    heading.append(createElement("span", "group-repository", group.repositories[0]));
+  } else if (group.repositories.length > 1) {
+    heading.append(
+      createElement(
+        "span",
+        "group-repository",
+        `${group.repositories.length} repositories`,
+      ),
+    );
   }
   summary.append(heading);
   summary.append(
@@ -262,8 +299,29 @@ function renderGroup(group) {
   details.append(summary);
 
   const body = createElement("div", "group-body");
-  for (const record of group.records) {
-    body.append(renderRecord(record));
+  const showRepository = group.repositories.length > 1;
+  const [newest, ...older] = group.records;
+  if (newest) body.append(renderRecord(newest, showRepository));
+  if (older.length) {
+    // Render the rest only if asked. Rule sets vary between releases so they
+    // cannot be summarised away, but they are rarely what a reader came for.
+    const more = createElement(
+      "button",
+      "show-all",
+      `Show all ${group.records.length} releases`,
+    );
+    more.type = "button";
+    more.addEventListener(
+      "click",
+      () => {
+        for (const record of older) {
+          body.append(renderRecord(record, showRepository));
+        }
+        more.remove();
+      },
+      { once: true },
+    );
+    body.append(more);
   }
   details.append(body);
   // A blocked plugin is the one thing nobody should have to click to find.

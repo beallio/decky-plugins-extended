@@ -381,9 +381,11 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = [], channe
 
 // Must stay identical to groupId()/repositorySlug() in static/audit.js. The
 // two are cross-checked in tests/audit_logic.test.mjs so a change to one
-// cannot silently break the link into the other.
-export function auditGroupId(repository) {
-  const slug = stringValue(repository)
+// cannot silently break the link into the other. It takes a plugin name now,
+// because the audit page groups by plugin: one plugin can have a fork and an
+// upstream repository, and keying on either would miss half its releases.
+export function auditGroupId(value) {
+  const slug = stringValue(value)
     .replace(/^https?:\/\/(www\.)?github\.com\//i, "")
     .replace(/\.git$/i, "")
     .replace(/\/+$/, "")
@@ -1032,7 +1034,7 @@ function startStorefront() {
       auditLink = createElement("a", "detail-box-action", "Open audit log");
       auditLink.dataset.detailFocus = "open-audit";
       // Land on this plugin's section rather than the top of the log.
-      auditLink.href = `audit.html#${auditGroupId(detail.audit.repository)}`;
+      auditLink.href = `audit.html#${auditGroupId(plugin.name)}`;
     }
     const hashBox = detailBox("Latest hash", detail.latest?.hash || "", copyHash);
     hashBox.classList.add("detail-hash-box");
