@@ -368,14 +368,29 @@ def refresh_plugin_updated(plugin) -> None:
             plugin["updated"] = value
 
 
-def merge_plugin_versions(existing_plugin, new_versions):
+def merge_plugin_versions(existing_plugin, new_versions, contributed=None):
+    """Merge one repository's releases into a catalog entry.
+
+    `contributed` collects the version names earlier repositories wrote into
+    this same entry during this run. An equal hash on one of those means two
+    repositories resolved to one plugin name and mirrored each other's bytes,
+    so the later one takes the artifact: read_repo_urls() reads the
+    store-backed list last and its source should own it. An equal hash on any
+    other version is left alone, which keeps the catalog deferring to the
+    official store's file and keeps an unchanged release's created date.
+    """
+    if contributed is None:
+        contributed = set()
     existing_versions = {v["name"]: v for v in existing_plugin.get("versions", [])}
 
     for nv in new_versions:
+        existing = existing_versions.get(nv["name"])
         # Update if it doesn't exist or if the hash has changed
-        if nv["name"] not in existing_versions or existing_versions[nv["name"]].get(
-            "hash"
-        ) != nv.get("hash"):
+        if (
+            existing is None
+            or existing.get("hash") != nv.get("hash")
+            or nv["name"] in contributed
+        ):
             if nv["name"] in existing_versions:
                 idx = existing_plugin["versions"].index(existing_versions[nv["name"]])
                 # Preserve existing fields we don't strictly overwrite
@@ -389,6 +404,7 @@ def merge_plugin_versions(existing_plugin, new_versions):
             else:
                 existing_plugin.setdefault("versions", []).append(nv)
             existing_versions[nv["name"]] = nv
+        contributed.add(nv["name"])
 
     sort_versions(existing_plugin["versions"])
 
@@ -1129,6 +1145,10 @@ def main():
 
     errors = []
     custom_plugin_names = set()
+    # Version names each entry received this run, keyed by channel and plugin
+    # name, so a second repository resolving to one name can be told apart from
+    # the official store's own rows.
+    contributed_versions = {}
     current_identity_records = []
     storefront_contributions = [
         {"name": name, "source_url": source_url}
@@ -1364,7 +1384,13 @@ def main():
             # --- TESTING PLUGINS ---
             if existing_testing:
                 print("  Found in testing plugins. Merging versions...")
-                merge_plugin_versions(existing_testing, testing_versions)
+                merge_plugin_versions(
+                    existing_testing,
+                    testing_versions,
+                    contributed_versions.setdefault(
+                        ("testing", plugin_name.casefold()), set()
+                    ),
+                )
                 merge_root_tag(existing_testing, tags)
             else:
                 print("  Adding to testing plugins...")
@@ -1389,7 +1415,13 @@ def main():
             if stable_versions:
                 if existing_stable:
                     print("  Found in stable plugins. Merging versions...")
-                    merge_plugin_versions(existing_stable, stable_versions)
+                    merge_plugin_versions(
+                        existing_stable,
+                        stable_versions,
+                        contributed_versions.setdefault(
+                            ("stable", plugin_name.casefold()), set()
+                        ),
+                    )
                     merge_root_tag(existing_stable, tags)
                 else:
                     print("  Adding to stable plugins...")

@@ -612,6 +612,57 @@ class GenerateJsonTests(unittest.TestCase):
             self.assertTrue((destination / "storefront.css").is_file())
             self.assertTrue((destination / "storefront.js").is_file())
 
+    def test_merge_plugin_versions_defers_to_the_store_file_but_not_to_a_fork(self):
+        """Equal hashes resolve differently depending on who holds the version.
+
+        A version the official store publishes carries no artifact of its own
+        and the catalog serves the store's file for it, so it is left alone. A
+        version this run already built belongs to another tracked repository,
+        and read_repo_urls() reads the store-backed list last so its source
+        should own the artifact.
+        """
+        mirrored = {
+            "name": "1.0.0",
+            "hash": "a" * 64,
+            "artifact": "https://github.com/owner/upstream/releases/x.zip",
+            "created": "2026-01-01T00:00:00Z",
+        }
+
+        store_entry = {
+            "versions": [
+                {"name": "1.0.0", "hash": "a" * 64, "created": "2026-01-01T00:00:00Z"}
+            ]
+        }
+        generate_json.merge_plugin_versions(store_entry, [dict(mirrored)])
+        self.assertNotIn("artifact", store_entry["versions"][0])
+
+        run_entry = {
+            "versions": [
+                {
+                    "name": "1.0.0",
+                    "hash": "a" * 64,
+                    "artifact": "https://github.com/owner/fork/releases/x.zip",
+                    "created": "2026-01-01T00:00:00Z",
+                }
+            ]
+        }
+        # The fork wrote 1.0.0 into this entry earlier in the same run.
+        generate_json.merge_plugin_versions(
+            run_entry, [dict(mirrored)], {"1.0.0"}
+        )
+        self.assertEqual(run_entry["versions"][0]["artifact"], mirrored["artifact"])
+
+        # Bytes that actually differ still replace the store's row, unchanged.
+        changed = {
+            "versions": [
+                {"name": "1.0.0", "hash": "a" * 64, "created": "2026-01-01T00:00:00Z"}
+            ]
+        }
+        generate_json.merge_plugin_versions(
+            changed, [dict(mirrored, hash="b" * 64)]
+        )
+        self.assertEqual(changed["versions"][0]["hash"], "b" * 64)
+
     def test_build_storefront_metadata_keeps_one_row_per_version_identity(self):
         """A fork mirroring its upstream must not leave the version sourceless.
 
