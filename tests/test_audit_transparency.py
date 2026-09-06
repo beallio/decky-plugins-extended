@@ -1,6 +1,8 @@
 import copy
 import json
 import os
+import re
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,6 +27,11 @@ BASE_CATALOG = [
 
 def _run_minimal_generator(tmp_path, policy_mode="report-only"):
     (tmp_path / "additional_plugins.txt").write_text("", encoding="utf-8")
+    # The audit page is a static asset now, so the run needs the real static/
+    # tree to publish the same files production does.
+    shutil.copytree(
+        Path(generate_json.__file__).parent / "static", tmp_path / "static"
+    )
 
     with (
         patch.object(
@@ -41,17 +48,16 @@ def _run_minimal_generator(tmp_path, policy_mode="report-only"):
         generate_json.main()
 
 
-def test_empty_verdict_store_writes_valid_html_and_json(tmp_path):
+def test_empty_verdict_store_writes_valid_json_and_no_page(tmp_path):
     destination = tmp_path / "public"
 
     generate_json.write_audit_outputs({}, "report-only", destination)
 
-    html = (destination / "audit.html").read_text(encoding="utf-8")
     payload = json.loads((destination / "audit.json").read_text(encoding="utf-8"))
-    assert html.startswith("<!DOCTYPE html>")
-    assert html.endswith("</html>\n")
-    assert "No releases have been audited yet." in html
     assert payload == {"enforcement_mode": "report-only", "releases": []}
+    # The page is a static shell copied from static/; the generator publishes
+    # only the record it renders from.
+    assert not (destination / "audit.html").exists()
 
 
 def test_public_audit_whitelists_fields_and_never_leaks_evidence(tmp_path):
@@ -75,7 +81,6 @@ def test_public_audit_whitelists_fields_and_never_leaks_evidence(tmp_path):
 
     generate_json.write_audit_outputs(verdicts, "report-only", tmp_path)
 
-    html = (tmp_path / "audit.html").read_text(encoding="utf-8")
     raw_json = (tmp_path / "audit.json").read_text(encoding="utf-8")
     payload = json.loads(raw_json)
     release = payload["releases"][0]
@@ -106,8 +111,26 @@ def test_public_audit_whitelists_fields_and_never_leaks_evidence(tmp_path):
     assert release["stored_artifact_sha256"] == "f" * 64
     assert release["identity_status"] == "UNKNOWN"
     for forbidden in (secret, file_contents):
-        assert forbidden not in html
         assert forbidden not in raw_json
+
+
+def test_the_published_page_is_a_shell_that_carries_no_records():
+    """The shell must stay empty of audit data.
+
+    Records used to be baked into the page, so the evidence guarantee had to be
+    asserted twice. It now lives only in audit.json. This fails if a future
+    change starts rendering records into the HTML again, where the whitelist
+    above would no longer be the single place that governs what is published.
+    """
+    shell = (
+        Path(generate_json.__file__).parent / "static/audit.html"
+    ).read_text(encoding="utf-8")
+
+    assert "audit.json" in shell
+    assert 'class="verdict"' not in shell
+    assert "Effective classification:" not in shell
+    assert not re.search(r"\b[0-9a-f]{64}\b", shell)
+    assert not re.search(r"https://github\.com/[\w.-]+/[\w.-]+", shell)
 
 
 def test_current_stale_and_unknown_identity_are_public_and_unambiguous(tmp_path):
@@ -161,10 +184,9 @@ def test_current_stale_and_unknown_identity_are_public_and_unambiguous(tmp_path)
     assert by_status["STALE_HASH"]["outcome"] == "FAIL_OPEN"
     assert by_status["UNKNOWN"]["stored_artifact_sha256"] is None
 
-    html = (tmp_path / "audit.html").read_text(encoding="utf-8")
-    assert "STALE_HASH — FAIL_OPEN" in html
-    assert "UNKNOWN — FAIL_OPEN" in html
-    assert "v1.2.3 / 42" in html
+    assert by_status["UNKNOWN"]["outcome"] == "FAIL_OPEN"
+    assert by_status["STALE_HASH"]["tag"] == "v1.2.3"
+    assert by_status["STALE_HASH"]["asset_id"] == "42"
 
 
 def test_block_releases_are_rendered_before_every_other_tier(tmp_path):
@@ -194,30 +216,25 @@ def test_block_releases_are_rendered_before_every_other_tier(tmp_path):
     generate_json.write_audit_outputs(verdicts, "report-only", tmp_path)
 
     payload = json.loads((tmp_path / "audit.json").read_text(encoding="utf-8"))
-    html = (tmp_path / "audit.html").read_text(encoding="utf-8")
     assert [release["classification"] for release in payload["releases"]] == [
         "BLOCK",
         "MANUAL_REVIEW",
         "PASS",
     ]
-    assert html.index("https://github.com/example/block") < html.index(
-        "https://github.com/example/manual"
-    )
 
 
-def test_enforcement_copy_reflects_policy_mode(tmp_path):
+def test_enforcement_mode_is_published_for_the_page_to_render(tmp_path):
+    # auditEnforcementCopy() in static/audit.js turns this into the wording;
+    # tests/storefront_logic.test.mjs covers that mapping.
     report_only = tmp_path / "report-only"
     enforced = tmp_path / "enforced"
 
     generate_json.write_audit_outputs({}, "report-only", report_only)
     generate_json.write_audit_outputs({}, "enforce", enforced)
 
-    report_only_html = (report_only / "audit.html").read_text(encoding="utf-8")
-    enforced_html = (enforced / "audit.html").read_text(encoding="utf-8")
-    assert "No releases are currently excluded" in report_only_html
-    assert "Releases with a BLOCK verdict are excluded" not in report_only_html
-    assert "Releases with a BLOCK verdict are excluded" in enforced_html
-    assert "No releases are currently excluded" not in enforced_html
+    for destination, expected in ((report_only, "report-only"), (enforced, "enforce")):
+        payload = json.loads((destination / "audit.json").read_text(encoding="utf-8"))
+        assert payload["enforcement_mode"] == expected
 
 
 def test_missing_verdict_store_does_not_break_catalog_generation(tmp_path):
@@ -239,9 +256,7 @@ def test_generator_uses_policy_mode_for_published_audit(tmp_path):
     _run_minimal_generator(tmp_path, policy_mode="enforce")
 
     payload = json.loads((tmp_path / "public/audit.json").read_text(encoding="utf-8"))
-    html = (tmp_path / "public/audit.html").read_text(encoding="utf-8")
     assert payload["enforcement_mode"] == "enforce"
-    assert "Releases with a BLOCK verdict are excluded" in html
 
 
 def test_landing_page_links_to_audit_page():

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plugin Audit Log — Decky Extended Plugins</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="audit.css">
+</head>
+<body>
+    <main>
+        <p><a href="index.html">&larr; Decky Extended Plugins</a></p>
+        <h1>Plugin Audit Log</h1>
+        <p class="intro">This page publishes each release's effective classification under the current policy and keeps any older stored verdict visible when the two disagree. It lists rule IDs only; private evidence and file contents are never published.</p>
+
+        <h2>What the tiers mean</h2>
+        <section class="tier-explanation" aria-label="Audit tier explanations">
+            <p><strong>BLOCK</strong> means a deterministic structural fact such as a malware signature, archive traversal, a setuid bit, or a zip bomb, with no innocent explanation. It is the only tier that can remove a release.</p>
+            <p><strong>MANUAL_REVIEW</strong> means a human should look; it does not mean the plugin is dangerous. Most Decky plugins trip these rules because SteamOS has a read-only root and useful plugins often need sudo, mount, or systemctl.</p>
+            <p><strong>PASS_WITH_WARNINGS</strong> means nothing needed review, but the scanner recorded rules worth knowing about before installing.</p>
+            <p><strong>AUDIT_ERROR</strong> means the release could not be audited — usually the artifact could not be fetched or read. It is not a finding about the plugin, and it is not a pass.</p>
+            <p><strong>Passing does not prove a plugin is safe.</strong> An automated audit can miss harmful behavior.</p>
+        </section>
+
+        <h2>Current policy</h2>
+        <p class="enforcement" id="enforcement">Loading the current policy.</p>
+
+        <h2>Audited releases</h2>
+        <p class="summary" id="summary" aria-live="polite">Loading audited releases.</p>
+        <noscript>
+            <p class="empty">This page renders from <a href="audit.json">audit.json</a>, which needs JavaScript. That file is the same published record and can be read directly.</p>
+        </noscript>
+        <div id="audit-groups"></div>
+        <p class="empty" id="audit-error" hidden>The audit log could not be loaded. The published record is available at <a href="audit.json">audit.json</a>.</p>
+    </main>
+    <script type="module" src="audit.js"></script>
+</body>
+</html>

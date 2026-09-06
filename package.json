@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "_comment:test:storefront": "chrome-headless-shell needs atk/at-spi/libX* that are not installed system-wide. .playwright-runtime/root holds them extracted from RPMs, so no sudo is needed; playwright install-deps cannot help on Fedora anyway.",
-    "test:storefront": "LD_LIBRARY_PATH=\"$PWD/.playwright-runtime/root/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\" PLAYWRIGHT_BROWSERS_PATH=\"${PLAYWRIGHT_BROWSERS_PATH:-/tmp/.playwright-browsers}\" sh -c 'node --test tests/storefront_logic.test.mjs && playwright test tests/storefront_surface.spec.mjs'"
+    "test:storefront": "LD_LIBRARY_PATH=\"$PWD/.playwright-runtime/root/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\" PLAYWRIGHT_BROWSERS_PATH=\"${PLAYWRIGHT_BROWSERS_PATH:-/tmp/.playwright-browsers}\" sh -c 'node --test tests/storefront_logic.test.mjs tests/audit_logic.test.mjs && playwright test tests/storefront_surface.spec.mjs'"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1"

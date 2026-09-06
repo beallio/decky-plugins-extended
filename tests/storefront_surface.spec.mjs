@@ -158,6 +158,36 @@ const auditRecords = [
     current_artifact_sha256: HASH_A,
     classification: "MANUAL_REVIEW",
   },
+  {
+    repository: "https://github.com/owner/blocked",
+    release: "v1.0.0@1",
+    tag: "v1.0.0",
+    identity_status: "CURRENT",
+    outcome: "APPLIED",
+    current_artifact_sha256: HASH_B,
+    classification: "BLOCK",
+    rule_ids: ["ARCHIVE_TRAVERSAL"],
+  },
+  {
+    repository: "https://github.com/owner/manual",
+    release: "v1.0.0@1",
+    tag: "v1.0.0",
+    identity_status: "CURRENT",
+    outcome: "APPLIED",
+    current_artifact_sha256: HASH_C,
+    classification: "MANUAL_REVIEW",
+  },
+  {
+    repository: "https://github.com/owner/manual",
+    release: "v2.0.0@2",
+    tag: "v2.0.0",
+    identity_status: "CURRENT",
+    outcome: "APPLIED",
+    current_artifact_sha256: HASH_D,
+    classification: "MANUAL_REVIEW",
+    stored_classification: "BLOCK",
+    rule_ids: ["SHELL_CURL_PIPE"],
+  },
 ];
 const auditPayload = { enforcement_mode: "enforce", releases: auditRecords };
 
@@ -549,6 +579,36 @@ test("the search box can be cleared and the clear control follows its content", 
 
   await page.locator("#search").fill("radio");
   await expect(clear).toBeVisible();
+});
+
+test("the audit page groups releases by plugin and floats a blocked one", async ({ page }) => {
+  await page.goto(`${baseUrl}/audit.html`, { waitUntil: "domcontentloaded" });
+  const groups = page.locator(".plugin-group");
+  await expect(groups).toHaveCount(3);
+
+  // Blocked first, expanded, never behind a click.
+  const first = groups.first();
+  await expect(first.locator(".group-name")).toHaveText("https://github.com/owner/blocked");
+  await expect(first).toHaveAttribute("open", "");
+  await expect(page.locator("#enforcement")).toContainText("are excluded from the catalogs");
+  await expect(page.locator("#summary")).toContainText("across 3 plugins");
+
+  // Everything else stays collapsed until asked for.
+  const manual = page.locator("#plugin-owner-manual");
+  await expect(manual).not.toHaveAttribute("open", "");
+  await expect(manual.locator(".group-count")).toHaveText("2 releases");
+  await manual.locator("summary").click();
+  await expect(manual.locator(".verdict")).toHaveCount(2);
+
+  // A verdict that predates the current policy still shows what was stored.
+  await expect(manual.locator(".policy-disagreement")).toContainText("Stored verdict: BLOCK");
+  await expect(manual.locator(".policy-disagreement")).toContainText("predates the current policy");
+  await expect(manual.locator("code").first()).toHaveText("SHELL_CURL_PIPE");
+
+  // The served page is a shell: no record text reaches the HTML itself.
+  const shell = await (await fetch(`${baseUrl}/audit.html`)).text();
+  expect(shell).not.toContain("Effective classification:");
+  expect(shell).not.toContain("owner/blocked");
 });
 
 test("dialog copy failures are announced inside the active dialog", async ({ page }) => {
