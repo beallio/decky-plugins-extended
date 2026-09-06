@@ -379,6 +379,18 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = [], channe
   };
 }
 
+// Must stay identical to groupId()/repositorySlug() in static/audit.js. The
+// two are cross-checked in tests/audit_logic.test.mjs so a change to one
+// cannot silently break the link into the other.
+export function auditGroupId(repository) {
+  const slug = stringValue(repository)
+    .replace(/^https?:\/\/(www\.)?github\.com\//i, "")
+    .replace(/\.git$/i, "")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+  return `plugin-${slug.replace(/[^a-z0-9]+/g, "-")}`;
+}
+
 export function classifyPrimaryBadge(plugin, detail, channel) {
   const classification = stringValue(detail?.audit?.classification).toUpperCase();
   // Only BLOCK earns the badge. MANUAL_REVIEW is advisory and never removes a
@@ -1019,7 +1031,8 @@ function startStorefront() {
     if (detail.audit) {
       auditLink = createElement("a", "detail-box-action", "Open audit log");
       auditLink.dataset.detailFocus = "open-audit";
-      auditLink.href = "audit.html";
+      // Land on this plugin's section rather than the top of the log.
+      auditLink.href = `audit.html#${auditGroupId(detail.audit.repository)}`;
     }
     const hashBox = detailBox("Latest hash", detail.latest?.hash || "", copyHash);
     hashBox.classList.add("detail-hash-box");

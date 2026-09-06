@@ -540,7 +540,7 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
   const auditBox = page.locator(".detail-box").filter({ hasText: "Audit outcome" });
   await expect(auditBox.getByRole("link", { name: "Open audit log" })).toHaveAttribute(
     "href",
-    "audit.html",
+    "audit.html#plugin-owner-alpha",
   );
   const hashBox = page.locator(".detail-box").filter({ hasText: "Latest hash" });
   await expect(hashBox.getByRole("button", { name: "Copy latest SHA-256" })).toBeVisible();
@@ -647,6 +647,22 @@ test("the audit page filters by search, classification and rule, and restores fr
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.locator("#audit-rule")).toHaveValue("SHELL_CURL_PIPE");
   await expect(page.locator("#audit-classification")).toHaveValue("BLOCK");
+});
+
+test("a plugin's audit link lands on that plugin's section of the log", async ({ page }) => {
+  await loadStorefront(page);
+  await page.getByRole("button", { name: "View Alpha Tool details" }).click();
+  const auditLink = page.getByRole("link", { name: "Open audit log" });
+  await expect(auditLink).toHaveAttribute("href", "audit.html#plugin-owner-alpha");
+
+  await auditLink.click();
+  await expect(page).toHaveURL(/audit(\.html)?#plugin-owner-alpha$/);
+
+  // The linked plugin is expanded on arrival, and it is the only one.
+  const target = page.locator("#plugin-owner-alpha");
+  await expect(target).toHaveAttribute("open", "");
+  await expect(target.locator(".verdict")).toHaveCount(1);
+  await expect(page.locator("#plugin-owner-manual")).not.toHaveAttribute("open", "");
 });
 
 test("dialog copy failures are announced inside the active dialog", async ({ page }) => {

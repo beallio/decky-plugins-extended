@@ -10,6 +10,7 @@ import {
   repositorySlug,
   summarizeAudit,
 } from "../static/audit.js";
+import { auditGroupId } from "../static/storefront.js";
 
 function record(repository, release, classification, extra = {}) {
   return { repository, release, classification, ...extra };
@@ -144,4 +145,21 @@ test("filter options come from the record, sorted and deduplicated", () => {
   });
   assert.deepEqual(auditFilterOptions([]), { classifications: [], rules: [] });
   assert.deepEqual(auditFilterOptions(undefined), { classifications: [], rules: [] });
+});
+
+test("the catalog builds the same fragment the audit page answers to", () => {
+  // storefront.js duplicates this transform so the catalog page does not have
+  // to fetch audit.js. If they ever disagree, every "Open audit log" link
+  // lands on the top of the page instead of the plugin, silently.
+  for (const repository of [
+    "https://github.com/owner/plugin",
+    "https://github.com/Owner/Plugin.git",
+    "https://www.github.com/owner/plugin/",
+    "owner/plugin",
+    "https://github.com/0u73r-h34v3n/sdh-playtime",
+    "https://github.com/beallio/SDH-PlayTime-beallio-remix",
+    "",
+  ]) {
+    assert.equal(auditGroupId(repository), groupId(repository), repository);
+  }
 });

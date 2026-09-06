@@ -282,6 +282,18 @@ export function renderAudit(payload, elements, filters = {}) {
   return groups;
 }
 
+function focusFragmentGroup() {
+  const id = decodeURIComponent(window.location.hash.replace(/^#/, ""));
+  if (!id) return null;
+  const group = document.getElementById(id);
+  // A filter carried in the URL can hide the target; say nothing rather than
+  // scrolling somewhere arbitrary.
+  if (!group) return null;
+  group.open = true;
+  group.scrollIntoView({ block: "start" });
+  return group;
+}
+
 function fillOptions(select, values) {
   // Keep the leading "all" option and rebuild the rest from the record.
   const all = select.options[0];
@@ -392,6 +404,9 @@ async function startAuditLog() {
 
   updateUrl();
   apply();
+  focusFragmentGroup();
+  // A link from a plugin card can arrive while the page is already open.
+  window.addEventListener("hashchange", focusFragmentGroup);
 }
 
 if (typeof document !== "undefined") {
