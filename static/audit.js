@@ -45,6 +45,12 @@ export function groupId(repository) {
   return `plugin-${repositorySlug(repository).replace(/[^a-z0-9]+/g, "-")}`;
 }
 
+function assetOrder(assetId) {
+  // Published as a string, so compare it as a number.
+  const value = Number.parseInt(stringValue(assetId), 10);
+  return Number.isFinite(value) ? value : -1;
+}
+
 export function groupAuditRecords(records) {
   const groups = new Map();
   for (const record of Array.isArray(records) ? records : []) {
@@ -56,10 +62,13 @@ export function groupAuditRecords(records) {
         slug,
         id: groupId(record.repository),
         repository: stringValue(record.repository),
+        name: "",
         records: [],
       });
     }
-    groups.get(slug).records.push(record);
+    const group = groups.get(slug);
+    group.name = group.name || stringValue(record.plugin_name);
+    group.records.push(record);
   }
 
   for (const group of groups.values()) {
@@ -73,11 +82,16 @@ export function groupAuditRecords(records) {
       : [...new Set(group.records.map((record) => stringValue(record.classification)))]
           .sort()
           .join(", ");
-    group.records.sort((left, right) =>
-      stringValue(left.release).toLowerCase().localeCompare(
-        stringValue(right.release).toLowerCase(),
-      ),
+    // Newest first, by GitHub asset id. Those are monotonic, so they order
+    // releases chronologically without parsing a version -- which matters for
+    // repositories whose tags differ only by a git hash. Comparing the release
+    // string instead put v2.0.10 before v2.0.2.
+    group.records.sort(
+      (left, right) => assetOrder(right.asset_id) - assetOrder(left.asset_id),
     );
+    group.records.forEach((record, index) => {
+      record.newestAudited = index === 0;
+    });
   }
 
   // Same ordering rule the generator used: blocked first, then alphabetical.
@@ -114,9 +128,12 @@ export function filterAuditRecords(records, filters = {}) {
       const ruleIds = Array.isArray(record.rule_ids) ? record.rule_ids : [];
       if (!ruleIds.some((value) => stringValue(value) === rule)) return false;
     }
-    // The repository slug is what a reader can see and link to, so search it
-    // rather than a name this page never receives.
-    return !query || repositorySlug(record.repository).includes(query);
+    if (!query) return true;
+    // Match either half of what the row shows.
+    return (
+      repositorySlug(record.repository).includes(query) ||
+      stringValue(record.plugin_name).toLowerCase().includes(query)
+    );
   });
 }
 
@@ -158,6 +175,12 @@ function renderRecord(record) {
   const classification = stringValue(record.classification);
   const stored = stringValue(record.stored_classification);
   const article = createElement("article", "verdict");
+  if (record.newestAudited) {
+    // "Newest audited", not "latest": a blocked release is audited but kept
+    // out of the catalogs, and versions the official store publishes are
+    // deferred and never audited here at all.
+    article.append(createElement("p", "newest", "Newest audited release"));
+  }
   article.append(
     createElement(
       "div",
@@ -215,7 +238,13 @@ function renderGroup(group) {
   const details = createElement("details", `plugin-group${group.blocked ? " block" : ""}`);
   details.id = group.id;
   const summary = createElement("summary");
-  summary.append(createElement("span", "group-name", group.repository));
+  const heading = createElement("span", "group-heading");
+  // The name is what a reader recognises; the slug is what identifies it.
+  heading.append(createElement("span", "group-name", group.name || group.repository));
+  if (group.name) {
+    heading.append(createElement("span", "group-repository", group.repository));
+  }
+  summary.append(heading);
   summary.append(
     createElement(
       "span",

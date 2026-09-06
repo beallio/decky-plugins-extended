@@ -44,7 +44,20 @@ a { color: #00ffff; }
 }
 .plugin-group > summary:hover { background: #202020; }
 .plugin-group[open] > summary { border-bottom: 1px solid #333; }
+.group-heading { display: flex; flex-direction: column; min-width: 0; }
 .group-name { font-weight: 700; overflow-wrap: anywhere; }
+.group-repository { color: #bdbdbd; font-size: 0.85rem; overflow-wrap: anywhere; }
+.newest {
+    display: inline-block;
+    margin: 0 0 0.6rem;
+    padding: 0.15rem 0.5rem;
+    background: #12312c;
+    border: 1px solid #2f7d6d;
+    border-radius: 0.25rem;
+    color: #7ff0d8;
+    font-size: 0.8rem;
+    font-weight: 700;
+}
 .group-count { color: #bdbdbd; font-size: 0.9rem; }
 .group-body { padding: 0 1.25rem 1rem; }
 

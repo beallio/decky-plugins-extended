@@ -160,6 +160,8 @@ const auditRecords = [
   },
   {
     repository: "https://github.com/owner/blocked",
+    plugin_name: "Blocked Plugin",
+    asset_id: "1",
     release: "v1.0.0@1",
     tag: "v1.0.0",
     identity_status: "CURRENT",
@@ -170,6 +172,8 @@ const auditRecords = [
   },
   {
     repository: "https://github.com/owner/manual",
+    plugin_name: "Manual Plugin",
+    asset_id: "216560670",
     release: "v1.0.0@1",
     tag: "v1.0.0",
     identity_status: "CURRENT",
@@ -179,6 +183,8 @@ const auditRecords = [
   },
   {
     repository: "https://github.com/owner/manual",
+    plugin_name: "Manual Plugin",
+    asset_id: "545769966",
     release: "v2.0.0@2",
     tag: "v2.0.0",
     identity_status: "CURRENT",
@@ -588,7 +594,10 @@ test("the audit page groups releases by plugin and floats a blocked one", async 
 
   // Blocked first, expanded, never behind a click.
   const first = groups.first();
-  await expect(first.locator(".group-name")).toHaveText("https://github.com/owner/blocked");
+  await expect(first.locator(".group-name")).toHaveText("Blocked Plugin");
+  await expect(first.locator(".group-repository")).toHaveText(
+    "https://github.com/owner/blocked",
+  );
   await expect(first).toHaveAttribute("open", "");
   await expect(page.locator("#enforcement")).toContainText("are excluded from the catalogs");
   await expect(page.locator("#summary")).toContainText("across 3 plugins");
@@ -597,8 +606,17 @@ test("the audit page groups releases by plugin and floats a blocked one", async 
   const manual = page.locator("#plugin-owner-manual");
   await expect(manual).not.toHaveAttribute("open", "");
   await expect(manual.locator(".group-count")).toHaveText("2 releases");
+  await expect(manual.locator(".group-name")).toHaveText("Manual Plugin");
+  await expect(manual.locator(".group-repository")).toHaveText(
+    "https://github.com/owner/manual",
+  );
   await manual.locator("summary").click();
   await expect(manual.locator(".verdict")).toHaveCount(2);
+
+  // Newest first by asset id, and only that one is marked.
+  await expect(manual.locator(".verdict .newest")).toHaveCount(1);
+  await expect(manual.locator(".verdict").first()).toContainText("Newest audited release");
+  await expect(manual.locator(".verdict").first()).toContainText("v2.0.0@2");
 
   // A verdict that predates the current policy still shows what was stored.
   await expect(manual.locator(".policy-disagreement")).toContainText("Stored verdict: BLOCK");

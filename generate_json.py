@@ -793,8 +793,45 @@ def write_storefront_metadata(path, metadata):
         metadata_file.write("\n")
 
 
+def _backfill_names_by_artifact(records):
+    """Name records left over from a repository rename, by artifact identity.
+
+    A repository that was renamed keeps its old URL in the verdict store, so
+    the caller's map -- keyed on the repositories currently tracked -- cannot
+    name it. The same bytes under the current name can. GitHub does redirect a
+    renamed repository, but its own documentation says that breaks the moment
+    the old name is reused, and it would then resolve to an unrelated project
+    silently; a SHA-256 cannot be repointed that way.
+
+    Only an unambiguous match is used. A hash claimed by two names would mean
+    two plugins shipping identical bytes, and guessing between them is worse
+    than leaving the record unnamed.
+    """
+    hash_fields = ("current_artifact_sha256", "stored_artifact_sha256")
+    claimed = {}
+    for record in records:
+        name = record.get("plugin_name")
+        if not name:
+            continue
+        for field in hash_fields:
+            digest = record.get(field)
+            if digest:
+                claimed.setdefault(digest, set()).add(name)
+
+    for record in records:
+        if record.get("plugin_name"):
+            continue
+        candidates = set()
+        for field in hash_fields:
+            digest = record.get(field)
+            if digest:
+                candidates |= claimed.get(digest, set())
+        if len(candidates) == 1:
+            record["plugin_name"] = candidates.pop()
+
+
 def _public_audit_records(
-    verdicts, blockable_rules=None, current_identity_records=None
+    verdicts, blockable_rules=None, current_identity_records=None, plugin_names=None
 ):
     """Return only the verdict fields that are safe and useful to publish."""
     records = []
@@ -871,6 +908,23 @@ def _public_audit_records(
             }
         )
 
+    # The audit stores verdicts by repository, so the plugin name has to be
+    # supplied by the caller. Stamp it once here rather than at each of the
+    # places a record can be built. It is already public in plugins.json; the
+    # audit page shows it so a reader does not have to recognise a slug.
+    names = {
+        _repository_slug(repository) or str(repository).casefold(): str(name)
+        for repository, name in (plugin_names or {}).items()
+        if repository and name
+    }
+    for record in records:
+        slug = _repository_slug(record["repository"])
+        record["plugin_name"] = names.get(slug) or names.get(
+            record["repository"].casefold(), ""
+        )
+
+    _backfill_names_by_artifact(records)
+
     # BLOCK is the only tier that can remove a release, so it must always be
     # visually first. Other tiers are labels, not a severity score.
     records.sort(
@@ -891,10 +945,13 @@ def write_audit_outputs(
     *,
     blockable_rules=None,
     current_identity_records=None,
+    plugin_names=None,
 ):
     """Publish human- and machine-readable audit records without evidence."""
     os.makedirs(destination, exist_ok=True)
-    records = _public_audit_records(verdicts, blockable_rules, current_identity_records)
+    records = _public_audit_records(
+        verdicts, blockable_rules, current_identity_records, plugin_names
+    )
     payload = {
         "enforcement_mode": str(enforcement_mode),
         "releases": records,
@@ -1361,6 +1418,11 @@ def main():
         enforcement_mode,
         blockable_rules=blockable_rules,
         current_identity_records=current_identity_records,
+        plugin_names={
+            contribution["repository"]: contribution["name"]
+            for contribution in storefront_contributions
+            if contribution.get("repository") and contribution.get("name")
+        },
     )
 
     print("Successfully generated JSON files in the 'public' directory.")

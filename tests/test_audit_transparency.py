@@ -79,7 +79,12 @@ def test_public_audit_whitelists_fields_and_never_leaks_evidence(tmp_path):
         }
     }
 
-    generate_json.write_audit_outputs(verdicts, "report-only", tmp_path)
+    generate_json.write_audit_outputs(
+        verdicts,
+        "report-only",
+        tmp_path,
+        plugin_names={"example/plugin": "Example Plugin"},
+    )
 
     raw_json = (tmp_path / "audit.json").read_text(encoding="utf-8")
     payload = json.loads(raw_json)
@@ -88,6 +93,7 @@ def test_public_audit_whitelists_fields_and_never_leaks_evidence(tmp_path):
     assert set(payload) == {"enforcement_mode", "releases"}
     assert set(release) == {
         "repository",
+        "plugin_name",
         "release",
         "tag",
         "asset_id",
@@ -108,10 +114,93 @@ def test_public_audit_whitelists_fields_and_never_leaks_evidence(tmp_path):
     ]
     assert '"evidence"' not in raw_json
     assert '"file_contents"' not in raw_json
+    # The name is supplied by the caller; the audit store is keyed by
+    # repository and never sees it.
+    assert release["plugin_name"] == "Example Plugin"
     assert release["stored_artifact_sha256"] == "f" * 64
     assert release["identity_status"] == "UNKNOWN"
     for forbidden in (secret, file_contents):
         assert forbidden not in raw_json
+
+
+def test_a_record_with_no_supplied_name_publishes_an_empty_one(tmp_path):
+    verdicts = {
+        "https://github.com/example/plugin": {
+            "v1.0.0@1": {"classification": "PASS", "artifact_sha256": "a" * 64}
+        }
+    }
+
+    generate_json.write_audit_outputs(verdicts, "report-only", tmp_path)
+
+    payload = json.loads((tmp_path / "audit.json").read_text(encoding="utf-8"))
+    # Never fall back to the slug: the page shows the repository already, and a
+    # slug dressed as a name would be a guess.
+    assert payload["releases"][0]["plugin_name"] == ""
+
+
+def test_a_renamed_repository_is_named_from_its_artifact(tmp_path):
+    """A rename leaves the old URL in the verdict store; the bytes still match.
+
+    GitHub redirects a renamed repository, but that redirect breaks when the
+    old name is reused and would then resolve somewhere unrelated. The
+    artifact hash cannot be repointed that way.
+    """
+    shared = "c" * 64
+    verdicts = {
+        # The old URL, as the verdict store recorded it before the rename.
+        "https://github.com/owner/old-name": {
+            "v1.0.0@1": {"classification": "PASS", "artifact_sha256": shared}
+        },
+        "https://github.com/owner/new-name": {
+            "v1.0.0@2": {"classification": "PASS", "artifact_sha256": shared}
+        },
+        # Same repository, bytes nothing else shares: stays unnamed.
+        "https://github.com/owner/gone": {
+            "v1.0.0@3": {"classification": "PASS", "artifact_sha256": "d" * 64}
+        },
+    }
+
+    generate_json.write_audit_outputs(
+        verdicts,
+        "report-only",
+        tmp_path,
+        plugin_names={"owner/new-name": "Renamed Plugin"},
+    )
+
+    payload = json.loads((tmp_path / "audit.json").read_text(encoding="utf-8"))
+    by_repository = {r["repository"]: r for r in payload["releases"]}
+    assert by_repository["https://github.com/owner/old-name"]["plugin_name"] == (
+        "Renamed Plugin"
+    )
+    assert by_repository["https://github.com/owner/gone"]["plugin_name"] == ""
+
+
+def test_a_hash_two_plugins_share_names_neither(tmp_path):
+    # Guessing between two names is worse than leaving the record unnamed.
+    shared = "e" * 64
+    verdicts = {
+        "https://github.com/owner/unknown": {
+            "v1.0.0@1": {"classification": "PASS", "artifact_sha256": shared}
+        },
+        "https://github.com/owner/first": {
+            "v1.0.0@2": {"classification": "PASS", "artifact_sha256": shared}
+        },
+        "https://github.com/owner/second": {
+            "v1.0.0@3": {"classification": "PASS", "artifact_sha256": shared}
+        },
+    }
+
+    generate_json.write_audit_outputs(
+        verdicts,
+        "report-only",
+        tmp_path,
+        plugin_names={"owner/first": "First", "owner/second": "Second"},
+    )
+
+    payload = json.loads((tmp_path / "audit.json").read_text(encoding="utf-8"))
+    by_repository = {r["repository"]: r for r in payload["releases"]}
+    assert by_repository["https://github.com/owner/unknown"]["plugin_name"] == ""
+    assert by_repository["https://github.com/owner/first"]["plugin_name"] == "First"
 
 
 def test_the_published_page_is_a_shell_that_carries_no_records():

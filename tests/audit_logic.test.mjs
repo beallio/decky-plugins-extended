@@ -37,10 +37,18 @@ test("repository slugs and fragment ids survive the URL forms in the record", ()
 
 test("records group by plugin with blocked plugins first", () => {
   const groups = groupAuditRecords([
-    record("https://github.com/example/manual", "v2.0.0@2", "MANUAL_REVIEW"),
-    record("https://github.com/example/manual", "v1.0.0@1", "PASS"),
-    record("https://github.com/example/blocked", "v1.0.0@1", "PASS"),
-    record("https://github.com/example/blocked", "v2.0.0@2", "BLOCK"),
+    record("https://github.com/example/manual", "v2.0.0@2", "MANUAL_REVIEW", {
+      asset_id: "2",
+    }),
+    record("https://github.com/example/manual", "v1.0.0@1", "PASS", {
+      asset_id: "1",
+    }),
+    record("https://github.com/example/blocked", "v1.0.0@1", "PASS", {
+      asset_id: "1",
+    }),
+    record("https://github.com/example/blocked", "v2.0.0@2", "BLOCK", {
+      asset_id: "2",
+    }),
   ]);
 
   assert.deepEqual(groups.map((group) => group.slug), [
@@ -53,9 +61,71 @@ test("records group by plugin with blocked plugins first", () => {
   assert.equal(groups[1].blocked, false);
   assert.equal(groups[1].classification, "MANUAL_REVIEW, PASS");
   assert.deepEqual(groups[1].records.map((entry) => entry.release), [
-    "v1.0.0@1",
     "v2.0.0@2",
+    "v1.0.0@1",
   ]);
+});
+
+test("releases order newest first by asset id, not by version string", () => {
+  // Asset ids are monotonic, so they order releases chronologically without
+  // parsing a version. Comparing release strings put v2.0.10 before v2.0.2.
+  const [group] = groupAuditRecords([
+    record("https://github.com/morwy/hltb", "v2.0.2@216560670", "PASS", {
+      asset_id: "216560670",
+    }),
+    record("https://github.com/morwy/hltb", "v2.0.10@545769966", "PASS", {
+      asset_id: "545769966",
+    }),
+    record("https://github.com/morwy/hltb", "v2.0.3@216795668", "PASS", {
+      asset_id: "216795668",
+    }),
+  ]);
+  assert.deepEqual(group.records.map((entry) => entry.tag ?? entry.release), [
+    "v2.0.10@545769966",
+    "v2.0.3@216795668",
+    "v2.0.2@216560670",
+  ]);
+  // Exactly one release is marked, and it is the newest.
+  assert.deepEqual(group.records.map((entry) => entry.newestAudited === true), [
+    true,
+    false,
+    false,
+  ]);
+
+  // Tags that differ only by a git hash still order, where a version cannot.
+  const [dev] = groupAuditRecords([
+    record("https://github.com/a/b", "v0.3.0-dev.gaaa@442903821", "PASS", {
+      asset_id: "442903821",
+    }),
+    record("https://github.com/a/b", "v0.3.0-dev.gbbb@447779786", "PASS", {
+      asset_id: "447779786",
+    }),
+  ]);
+  assert.equal(dev.records[0].asset_id, "447779786");
+
+  // A missing or unparseable asset id must not throw or win.
+  const [mixed] = groupAuditRecords([
+    record("https://github.com/a/c", "v1@1", "PASS", { asset_id: "5" }),
+    record("https://github.com/a/c", "v2@2", "PASS"),
+  ]);
+  assert.equal(mixed.records[0].asset_id, "5");
+});
+
+test("a group takes the plugin name from its records and keeps the slug", () => {
+  const [named] = groupAuditRecords([
+    record("https://github.com/owner/plugin", "v1@1", "PASS", {
+      plugin_name: "Nice Plugin",
+    }),
+    record("https://github.com/owner/plugin", "v2@2", "PASS"),
+  ]);
+  assert.equal(named.name, "Nice Plugin");
+  assert.equal(named.repository, "https://github.com/owner/plugin");
+
+  // A record with no name leaves the group unnamed rather than guessing.
+  const [unnamed] = groupAuditRecords([
+    record("https://github.com/owner/other", "v1@1", "PASS"),
+  ]);
+  assert.equal(unnamed.name, "");
 });
 
 test("grouping ignores records with no repository and tolerates junk", () => {
@@ -95,6 +165,20 @@ const FILTER_RECORDS = [
   }),
   record("https://github.com/other/gamma", "v1.0.0@1", "AUDIT_ERROR"),
 ];
+
+test("search matches the plugin name as well as the repository slug", () => {
+  const named = [
+    record("https://github.com/owner/alpha", "v1@1", "PASS", {
+      plugin_name: "Alpha Tool",
+    }),
+    record("https://github.com/other/beta", "v1@1", "PASS", {
+      plugin_name: "Beta Thing",
+    }),
+  ];
+  assert.equal(filterAuditRecords(named, { query: "alpha tool" }).length, 1);
+  assert.equal(filterAuditRecords(named, { query: "BETA" }).length, 1);
+  assert.equal(filterAuditRecords(named, { query: "other/" }).length, 1);
+});
 
 test("search matches the repository slug a reader can see and link to", () => {
   const bySlug = filterAuditRecords(FILTER_RECORDS, { query: "owner/" });
