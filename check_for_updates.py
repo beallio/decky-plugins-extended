@@ -268,8 +268,11 @@ def check_custom_repos(
             raise
         except Exception as e:
             # An unreachable repo is not evidence of a change, and the build
-            # itself tolerates these, so never rebuild on one.
-            print(f"  skipped {owner}/{repo}: {e}")
+            # itself tolerates these, so never rebuild on one. Name the loop
+            # variable, not owner/repo: those are bound inside the try, so a
+            # parse failure would report the previous repository or raise
+            # NameError on the first one.
+            print(f"  skipped {url}: {e}")
             continue
 
         if versions and (versions[0]["name"], versions[0]["hash"]) not in live.get(

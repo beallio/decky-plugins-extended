@@ -1446,3 +1446,18 @@ def test_update_check_does_not_skip_artifact_download_failure(monkeypatch):
 
     with pytest.raises(generate_json.ArtifactDownloadError):
         check_for_updates.check_custom_repos({}, {}, BLOCKABLE_RULES)
+
+
+def test_check_custom_repos_reports_the_url_when_parsing_fails(monkeypatch, capsys):
+    """owner/repo are bound inside the try, so the handler must not name them."""
+    monkeypatch.setattr(generate_json, "read_repo_urls", lambda: [REPOSITORY])
+
+    def _unparseable(*_args, **_kwargs):
+        raise ValueError("not a repository URL")
+
+    monkeypatch.setattr(
+        generate_json, "canonicalize_github_repository_url", _unparseable
+    )
+
+    assert check_for_updates.check_custom_repos({}, {}, BLOCKABLE_RULES) == []
+    assert REPOSITORY in capsys.readouterr().out
