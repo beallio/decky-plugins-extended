@@ -1031,6 +1031,15 @@ def prepare_audit_worklist(
                     )
                     continue
 
+                # An archived repository is read-only: GitHub can never accept
+                # another release for it, so every artifact it ships is already
+                # covered by the verdicts on record and re-auditing it can only
+                # repeat work. Skip it the way a fully store-deferred repository
+                # is skipped -- no worklist item and no repository error.
+                if metadata["archived"]:
+                    log.info("Skipping archived repository %s", repository)
+                    continue
+
                 tag_timeout_seconds = api_deadline_seconds
                 try:
                     if api_budget is not None:

@@ -72,6 +72,19 @@ eligibility as the generator. It does not hash versions supplied by the official
 store, and it does not fail on oversized releases that the generator cannot
 publish.
 
+## Archived repositories
+
+The worklist producer also skips a repository GitHub reports as archived, and
+records no repository error for it. An archived repository is read-only, so it
+can never publish another release: every artifact it ships is already covered
+by the verdicts on record, and re-auditing it each run can only repeat work
+that cannot change. Skipping it leaves those published verdicts untouched,
+because a verdict delta only adds.
+
+Archival is a repository lifecycle fact, not a defect in an artifact, so it is
+never an audit error. If a caller audits an archived release directly, the
+audit runs to completion and records the classification its findings earn.
+
 ## Add a plugin the official store does not carry
 
 Add the plugin repository URL to `additional_plugins.txt`, one URL per line:

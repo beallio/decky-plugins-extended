@@ -273,6 +273,72 @@ def test_worklist_excludes_declared_oversized_releases_without_repository_error(
     assert "repository_errors" not in oversized
 
 
+def test_worklist_skips_archived_repositories_without_repository_error(tmp_path):
+    archived = "https://github.com/owner/archived"
+    active = "https://github.com/owner/active"
+
+    def release_fetcher(owner: str, repo: str) -> list[dict]:
+        repository = f"https://github.com/{owner}/{repo}"
+        return [
+            _with_digest(
+                _with_asset_urls(
+                    _release("v1", 1, 10, repository_url=repository),
+                    repository,
+                ),
+                "a" * 64,
+            ),
+        ]
+
+    def metadata_fetcher(owner: str, repo: str) -> dict:
+        return _release_metadata(owner, repo, archived=repo == "archived")
+
+    output = tmp_path / "worklist.json"
+    worklist.prepare_audit_worklist(
+        output,
+        source_revision=SOURCE_REVISION,
+        selection_mode="all",
+        repository_urls=[archived, active],
+        shard_count=14,
+        release_fetcher=release_fetcher,
+        metadata_fetcher=metadata_fetcher,
+        tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
+    )
+
+    payload = worklist.load_worklist_document(output)["payload"]
+    assert [item["repository"] for item in payload["items"]] == [active]
+    assert "repository_errors" not in payload
+
+
+def test_worklist_skips_every_archived_repository_without_failing_the_run(tmp_path):
+    archived = "https://github.com/owner/archived"
+
+    output = tmp_path / "worklist.json"
+    worklist.prepare_audit_worklist(
+        output,
+        source_revision=SOURCE_REVISION,
+        selection_mode="all",
+        repository_urls=[archived],
+        shard_count=14,
+        release_fetcher=lambda *_args: [
+            _with_digest(
+                _with_asset_urls(
+                    _release("v1", 1, 10, repository_url=archived),
+                    archived,
+                ),
+                "a" * 64,
+            ),
+        ],
+        metadata_fetcher=lambda *_args: _release_metadata(
+            "owner", "archived", archived=True
+        ),
+        tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
+    )
+
+    payload = worklist.load_worklist_document(output)["payload"]
+    assert payload["items"] == []
+    assert "repository_errors" not in payload
+
+
 def test_worklist_load_rejects_tampered_fingerprint(tmp_path):
     output = tmp_path / "worklist.json"
     fp, _ = worklist.prepare_audit_worklist(
@@ -2169,6 +2235,25 @@ def test_worklist_audits_every_eligible_release_in_deterministic_order():
         ("https://github.com/owner/a", 1, 10),
         ("https://github.com/owner/b", 2, 20),
     ]
+
+
+def test_build_audit_worklist_skips_archived_repositories():
+    releases = {
+        "owner/archived": [_release("v1", 1, 10, "2026-01-01T00:00:00Z")],
+        "owner/active": [_release("v2", 2, 20, "2026-02-01T00:00:00Z")],
+    }
+
+    worklist, errors = ap.build_audit_worklist(
+        ["https://github.com/owner/archived", "https://github.com/owner/active"],
+        release_fetcher=lambda owner, repo: releases[f"{owner}/{repo}"],
+        metadata_fetcher=lambda owner, repo: {
+            "full_name": f"{owner}/{repo}",
+            "archived": repo == "archived",
+        },
+    )
+
+    assert errors == []
+    assert [item.repository for item in worklist] == ["https://github.com/owner/active"]
 
 
 def test_fourteen_shards_are_deterministic_disjoint_and_union_identical():
