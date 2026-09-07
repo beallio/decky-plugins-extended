@@ -8,6 +8,14 @@ function stringValue(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function createRepositoryLink(slug, text) {
+  const link = createElement("a", "repo-link", text || slug);
+  link.href = `https://github.com/${slug}`;
+  link.rel = "noopener";
+  link.target = "_blank";
+  return link;
+}
+
 function createElement(name, className, text) {
   const element = document.createElement(name);
   if (className) {
@@ -221,11 +229,6 @@ function renderRecord(record, showRepository) {
   const identity = stringValue(record.identity_status);
   const outcome = stringValue(record.outcome);
   const rows = [];
-  // Only when the plugin has more than one source, which is the case the
-  // repository actually distinguishes.
-  if (showRepository) {
-    rows.push(["Repository", stringValue(record.repository)]);
-  }
   rows.push(["Release", stringValue(record.release)]);
   rows.push([
     "Tag / asset",
@@ -240,6 +243,15 @@ function renderRecord(record, showRepository) {
   // The stored hash only says something when it disagrees with what was found.
   if (storedHash && storedHash !== currentHash) {
     rows.push(["Stored hash", storedHash]);
+  }
+  // Only when the plugin has more than one source, which is the case the
+  // repository actually distinguishes.
+  if (showRepository) {
+    const slug = repositorySlug(record.repository);
+    list.append(createElement("dt", "", "Repository"));
+    const cell = createElement("dd");
+    cell.append(slug ? createRepositoryLink(slug) : document.createTextNode(""));
+    list.append(cell);
   }
   for (const [label, value] of rows) {
     list.append(createElement("dt", "", label));
@@ -270,17 +282,18 @@ function renderGroup(group) {
   const summary = createElement("summary");
   const heading = createElement("span", "group-heading");
   heading.append(createElement("span", "group-name", group.name || group.repository));
-  if (group.repositories.length === 1 && group.name) {
-    heading.append(createElement("span", "group-repository", group.repositories[0]));
-  } else if (group.repositories.length > 1) {
-    heading.append(
-      createElement(
-        "span",
-        "group-repository",
-        `${group.repositories.length} repositories`,
-      ),
-    );
+  if (group.repositories.length && group.name) {
+    const line = createElement("span", "group-repository");
+    group.repositories.forEach((slug, index) => {
+      if (index > 0) line.append(document.createTextNode(" · "));
+      line.append(createRepositoryLink(slug));
+    });
+    heading.append(line);
   }
+  // A repository link inside the summary would otherwise toggle the group.
+  heading.addEventListener("click", (event) => {
+    if (event.target.closest("a")) event.stopPropagation();
+  });
   summary.append(heading);
   summary.append(
     createElement(

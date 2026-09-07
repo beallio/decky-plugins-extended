@@ -621,3 +621,32 @@ test("a plugin the store carries and this catalog builds reads as both", () => {
   assert.equal(matchesCategory(entry, "extended", "extended"), true);
   assert.equal(matchesCategory(entry, "extended", "official"), false);
 });
+
+test("the audit link stays available when the plugin is in the log but this release is not", () => {
+  const entry = plugin({ name: "Logged Plugin", versions: [{ name: "9.9.9", hash: "f".repeat(64) }] });
+  const records = [
+    // A different release of the same plugin: no exact match for 9.9.9.
+    {
+      repository: "https://github.com/owner/logged",
+      plugin_name: "Logged Plugin",
+      tag: "v1.0.0",
+      identity_status: "CURRENT",
+      outcome: "APPLIED",
+      current_artifact_sha256: "a".repeat(64),
+      classification: "MANUAL_REVIEW",
+    },
+  ];
+
+  const detail = buildDetailViewModel(entry, { schema_version: 1, plugins: {} }, records);
+  // The outcome stays honest; only the way in survives.
+  assert.equal(detail.audit, null);
+  assert.equal(detail.inAuditLog, true);
+
+  // A plugin the log has never seen offers no link.
+  const absent = buildDetailViewModel(
+    plugin({ name: "Unlogged Plugin" }),
+    { schema_version: 1, plugins: {} },
+    records,
+  );
+  assert.equal(absent.inAuditLog, false);
+});

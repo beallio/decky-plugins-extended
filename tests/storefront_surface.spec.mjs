@@ -597,7 +597,10 @@ test("the audit page groups releases by plugin and floats a blocked one", async 
   // Blocked first, expanded, never behind a click.
   const first = groups.first();
   await expect(first.locator(".group-name")).toHaveText("Blocked Plugin");
-  await expect(first.locator(".group-repository")).toHaveText("owner/blocked");
+  await expect(first.locator(".group-repository .repo-link")).toHaveAttribute(
+    "href",
+    "https://github.com/owner/blocked",
+  );
   await expect(first).toHaveAttribute("open", "");
   await expect(page.locator("#enforcement")).toContainText("are excluded from the catalogs");
   await expect(page.locator("#summary")).toContainText("across 3 plugins");
@@ -607,7 +610,10 @@ test("the audit page groups releases by plugin and floats a blocked one", async 
   await expect(manual).not.toHaveAttribute("open", "");
   await expect(manual.locator(".group-count")).toHaveText("2 releases");
   await expect(manual.locator(".group-name")).toHaveText("Manual Plugin");
-  await expect(manual.locator(".group-repository")).toHaveText("owner/manual");
+  // The repository is a link, and clicking it must not toggle the group.
+  const repoLink = manual.locator(".group-repository .repo-link");
+  await expect(repoLink).toHaveAttribute("href", "https://github.com/owner/manual");
+  await expect(repoLink).toHaveText("owner/manual");
   await manual.locator("summary").click();
 
   // Only the newest release is rendered up front; the rest are behind a click.

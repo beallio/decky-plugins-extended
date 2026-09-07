@@ -47,6 +47,9 @@ a { color: #00ffff; }
 .group-heading { display: flex; flex-direction: column; min-width: 0; }
 .group-name { font-weight: 700; overflow-wrap: anywhere; }
 .group-repository { color: #bdbdbd; font-size: 0.85rem; overflow-wrap: anywhere; }
+.repo-link { color: #bdbdbd; text-decoration: underline; text-underline-offset: 2px; }
+.repo-link:hover, .repo-link:focus-visible { color: #00ffff; }
+dd .repo-link { color: #00ffff; }
 .newest {
     display: inline-block;
     margin: 0 0 0.6rem;

@@ -353,6 +353,18 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = [], channe
   const repositorySourceUrl =
     repositorySourceUrls.length === 1 ? repositorySourceUrls[0] : "";
   const audit = source && latest ? findMatchingAuditRecord(source, latest, auditRecords) : null;
+  // The exact artifact may not match a record while the plugin is still in the
+  // log -- an older release, or one the official store publishes. The outcome
+  // stays honest either way; only the way in should not disappear.
+  const auditedPluginName = stringValue(plugin?.name);
+  const inAuditLog =
+    Boolean(audit) ||
+    (Boolean(auditedPluginName) &&
+      (Array.isArray(auditRecords) ? auditRecords : []).some(
+        (record) =>
+          stringValue(record?.plugin_name).toLowerCase() ===
+          auditedPluginName.toLowerCase(),
+      ));
   const largePluginWarnings = largePluginWarningsFor(plugin, metadata, channel);
   const provenance = provenanceForPlugin(plugin, metadata);
   return {
@@ -371,6 +383,7 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = [], channe
         ? "Unknown"
         : "Unavailable",
     audit,
+    inAuditLog,
     largePluginWarnings,
     officialNote:
       plugin?.officialVersion && plugin?.storeVersion
@@ -1030,7 +1043,7 @@ function startStorefront() {
     }
 
     let auditLink = null;
-    if (detail.audit) {
+    if (detail.inAuditLog) {
       auditLink = createElement("a", "detail-box-action", "Open audit log");
       auditLink.dataset.detailFocus = "open-audit";
       // Land on this plugin's section rather than the top of the log.
