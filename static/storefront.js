@@ -503,6 +503,9 @@ function startStorefront() {
     setupBackdrop: document.getElementById("setup-backdrop"),
     setupDialog: document.getElementById("setup-dialog"),
     detailBackdrop: document.getElementById("detail-backdrop"),
+    zoomBackdrop: document.getElementById("zoom-backdrop"),
+    zoomImage: document.getElementById("zoom-image"),
+    zoomClose: document.getElementById("zoom-close"),
     detailDialog: document.getElementById("detail-dialog"),
     detailName: document.getElementById("detail-name"),
     detailMeta: document.getElementById("detail-meta"),
@@ -544,6 +547,7 @@ function startStorefront() {
     lastFocused: new Map(),
     detailPluginName: "",
     previousOverflow: "",
+    zoomTrigger: null,
   };
   elements.search.value = state.query;
   syncSearchClear();
@@ -794,6 +798,29 @@ function startStorefront() {
     return [...dialog.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')];
   }
 
+  function zoomIsOpen() {
+    return Boolean(elements.zoomBackdrop && !elements.zoomBackdrop.hidden);
+  }
+
+  function openZoom(source, label) {
+    if (!elements.zoomBackdrop || !elements.zoomImage) return;
+    state.zoomTrigger = document.activeElement;
+    elements.zoomImage.src = source;
+    elements.zoomImage.alt = label;
+    elements.zoomBackdrop.hidden = false;
+    window.requestAnimationFrame(() => elements.zoomClose?.focus());
+  }
+
+  function closeZoom() {
+    if (!zoomIsOpen()) return;
+    elements.zoomBackdrop.hidden = true;
+    // Release the decoded image rather than holding it behind a hidden layer.
+    elements.zoomImage.removeAttribute("src");
+    const trigger = state.zoomTrigger;
+    if (trigger?.isConnected) trigger.focus();
+    state.zoomTrigger = null;
+  }
+
   function openDialog(name, trigger) {
     const backdrop = name === "setup" ? elements.setupBackdrop : elements.detailBackdrop;
     const dialog = name === "setup" ? elements.setupDialog : elements.detailDialog;
@@ -973,17 +1000,31 @@ function startStorefront() {
 
     const hero = createElement("div", "detail-hero");
 
-    const detailArt = createElement("div", "detail-art");
+    // The card crops the image to a fixed height, so it doubles as the way to
+    // see the whole thing. A div would not be reachable by keyboard.
+    const detailArt = createElement(plugin.imageUrl ? "button" : "div", "detail-art");
     if (plugin.imageUrl) {
+      detailArt.type = "button";
+      detailArt.setAttribute("aria-label", `Expand the ${plugin.name} image`);
       const image = document.createElement("img");
       image.loading = "lazy";
       image.alt = "";
       image.src = plugin.imageUrl;
+      const hint = createElement("span", "zoom-hint");
+      hint.innerHTML =
+        '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M20 20l-4.3-4.3M11 8.5v5M8.5 11h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
       image.addEventListener("error", () => {
         image.remove();
+        hint.remove();
+        // Nothing left to expand, so stop advertising that there is.
+        detailArt.disabled = true;
+        detailArt.removeAttribute("aria-label");
         if (!detailArt.querySelector(".monogram")) addMonogram(detailArt, plugin.name);
       });
-      detailArt.append(image);
+      detailArt.addEventListener("click", () =>
+        openZoom(plugin.imageUrl, `${plugin.name} store image`),
+      );
+      detailArt.append(image, hint);
     } else {
       addMonogram(detailArt, plugin.name);
     }
@@ -1176,6 +1217,11 @@ function startStorefront() {
   document.querySelectorAll("[data-close]").forEach((button) => {
     button.addEventListener("click", () => closeDialog(button.dataset.close));
   });
+  elements.zoomClose?.addEventListener("click", closeZoom);
+  elements.zoomBackdrop?.addEventListener("click", (event) => {
+    // Clicking the image itself should not dismiss it.
+    if (event.target === elements.zoomBackdrop) closeZoom();
+  });
   [elements.setupBackdrop, elements.detailBackdrop].forEach((backdrop) => {
     backdrop.addEventListener("click", (event) => {
       if (event.target !== backdrop) return;
@@ -1183,6 +1229,17 @@ function startStorefront() {
     });
   });
   document.addEventListener("keydown", (event) => {
+    // The zoom sits above the detail dialog, so it takes Escape and Tab first.
+    if (zoomIsOpen()) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeZoom();
+      } else if (event.key === "Tab") {
+        event.preventDefault();
+        elements.zoomClose?.focus();
+      }
+      return;
+    }
     const openName = !elements.setupBackdrop.hidden ? "setup" : !elements.detailBackdrop.hidden ? "detail" : "";
     if (!openName) return;
     if (event.key === "Escape") {

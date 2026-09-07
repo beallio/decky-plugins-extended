@@ -696,6 +696,51 @@ test("a plugin's audit link lands on that plugin's section of the log", async ({
   await expect(page.locator("#plugin-manual-plugin")).not.toHaveAttribute("open", "");
 });
 
+test("the detail image expands to its full size and returns focus", async ({ page }) => {
+  await loadStorefront(page);
+  await page.getByRole("button", { name: "View Radio Deck details" }).click();
+
+  // The card crops the image, so the art is a button and says it is one.
+  const art = page.locator("button.detail-art");
+  await expect(art).toHaveAttribute("aria-label", "Expand the Radio Deck image");
+  await expect(art.locator(".zoom-hint")).toBeVisible();
+
+  const backdrop = page.locator("#zoom-backdrop");
+  await expect(backdrop).toBeHidden();
+  await art.click();
+  await expect(backdrop).toBeVisible();
+
+  // The whole image, not the cropped card version.
+  const zoom = page.locator("#zoom-image");
+  await expect(zoom).toHaveAttribute("alt", "Radio Deck store image");
+  await expect(zoom).toHaveCSS("object-fit", "contain");
+  await expect(page.locator("#zoom-close")).toBeFocused();
+
+  // Clicking the image keeps it open; the backdrop dismisses it.
+  await zoom.click();
+  await expect(backdrop).toBeVisible();
+  await backdrop.click({ position: { x: 5, y: 5 } });
+  await expect(backdrop).toBeHidden();
+  await expect(art).toBeFocused();
+
+  // Escape closes the zoom, and leaves the detail dialog underneath open.
+  await art.click();
+  await expect(backdrop).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(backdrop).toBeHidden();
+  await expect(page.locator("#detail-backdrop")).toBeVisible();
+});
+
+test("a plugin with no usable image offers nothing to expand", async ({ page }) => {
+  await loadStorefront(page);
+  // Alpha Tool's image 404s, so the art falls back to a monogram.
+  await page.getByRole("button", { name: "View Alpha Tool details" }).click();
+  const art = page.locator(".detail-art");
+  await expect(art.locator(".monogram")).toBeVisible();
+  await expect(art.locator(".zoom-hint")).toHaveCount(0);
+  await expect(page.locator("button.detail-art:not([disabled])")).toHaveCount(0);
+});
+
 test("dialog copy failures are announced inside the active dialog", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });

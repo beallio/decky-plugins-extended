@@ -176,6 +176,53 @@ select.control { min-width: 176px; padding: 0 34px 0 12px; }
 .detail-hero { display: grid; gap: 12px; }
 .detail-art { display: grid; width: 100%; height: 240px; place-items: center; overflow: hidden; border-radius: 14px; background: linear-gradient(135deg, var(--cyan-wash), rgb(232 74 216 / 18%)); color: var(--cyan); font-size: 36px; font-weight: 900; }
 .detail-art img { width: 100%; height: 100%; object-fit: cover; }
+/* The card crops to a fixed height, so the full image needs a way out. */
+button.detail-art { position: relative; padding: 0; border: 0; font: inherit; cursor: zoom-in; }
+button.detail-art:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+button.detail-art[disabled] { cursor: default; }
+.zoom-hint {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgb(9 14 24 / 78%);
+  color: #fff;
+  pointer-events: none;
+}
+.zoom-hint svg { width: 18px; height: 18px; }
+button.detail-art:hover .zoom-hint, button.detail-art:focus-visible .zoom-hint { background: var(--cyan); color: #071019; }
+.zoom-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(4 8 14 / 92%);
+}
+.zoom-backdrop img { max-width: min(100%, 1200px); max-height: 88vh; object-fit: contain; border-radius: 12px; }
+.zoom-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--raised);
+  color: var(--text);
+  cursor: pointer;
+}
+.zoom-close svg { width: 20px; height: 20px; }
+.zoom-close:hover, .zoom-close:focus-visible { border-color: var(--cyan); color: var(--cyan); }
 .detail-meta { margin: 0; color: var(--soft); }
 .detail-description { margin: 16px 0; color: var(--soft); }
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
