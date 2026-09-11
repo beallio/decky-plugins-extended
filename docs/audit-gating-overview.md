@@ -1,8 +1,8 @@
 # Audit gating — design overview
 
-> **This is not an executable plan.** It is the shared rationale behind seven sub-plans in
-> `docs/plans/`. Each sub-plan carries its own orchestration contract, branch, and markers.
-> Nothing here is run directly.
+> **This is not an executable plan.** It preserves the rationale and rollout history
+> behind audit gating. Historical sub-plan copies have been removed; this overview
+> does not require them or their orchestration records.
 
 ## Current implementation state (2026-08-22)
 
@@ -99,10 +99,10 @@ for ClamAV, Trivy, or exact Semgrep `1.132.0` setup failures.
   hosted-runner quota behavior, concurrency, and external scanner-mirror
   resilience remain deferred.
 
-## Sub-plans, in execution order
+## Historical rollout order
 
-Each finalizes into `dev` before the next begins, so later sub-plans branch from a base that
-already contains the earlier ones.
+The sub-plans finalized into `dev` in order, so later work branched from a base
+containing the earlier changes. The table records that rollout, not a current workflow.
 
 | # | Slug | What it lands | Depends on |
 |---|------|---------------|-----------|
@@ -207,8 +207,10 @@ These were settled by the repo owner. Do not revisit them mid-implementation.
 
 ## Appendix — the original single-plan task and verification text
 
-Retained for traceability. The authoritative, per-sub-plan versions live in `docs/plans/`;
-where they differ, the sub-plan wins.
+Retained as historical design rationale, not executable instructions or an authoritative
+contract. The old per-sub-plan versions are no longer retained. For current behavior,
+use the implementation, `security-policy.yml`, and substantive security tests; the
+[Developer guide](../Developer.md) documents current operation and verification.
 
 ## Implementation Tasks
 
@@ -413,9 +415,9 @@ committing. Four are from a single author (`Rayekkk`) and two belong to the fork
 
 ## Verification
 
-Follow `~/.claude/skills/orchestration-plan-author/references/verification-standards.md`.
-Failure cases run before the negative control. Record actual command output and pass/fail
-tallies — not "confirmed working".
+The original verification strategy required failure cases before the negative control,
+with actual command output and pass/fail tallies rather than "confirmed working".
+For current verification commands, see the [Developer guide](../Developer.md).
 
 Run everything with `set -o pipefail`. Several steps below grep command output; without it a
 failing producer is masked by a succeeding `grep` (VS-07).

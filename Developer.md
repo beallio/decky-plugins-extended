@@ -3,8 +3,14 @@
 [Back to the user guide](README.md)
 
 The generator fetches, hashes, and merges custom GitHub releases into the
-upstream Deckbrew stable and testing catalogs. This is a minimal repository;
-do not create or store planning artifacts in a `docs/` directory.
+upstream Deckbrew stable and testing catalogs.
+
+Use the shared orchestration workflow for new work: `scripts/orchestration/new-plan SLUG`
+returns a private plan path; edit that returned path, then run
+`scripts/orchestration/validate-plan SLUG`. Submit review text through
+`scripts/orchestration/submit-review` on stdin, binding it to the captured run, round,
+plan version, and implementation head. Do not commit plans, reviews, or session logs.
+The retained audit evidence and design rationale are not templates for new process records.
 
 ## The two plugin lists
 
