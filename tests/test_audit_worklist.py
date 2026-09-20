@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import select
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -3607,6 +3608,77 @@ def test_worker_mode_manifest_checkpoint_failure_is_run_global(monkeypatch, tmp_
         output_dir / "progress-shard-0.json", fingerprint
     )
     assert len(progress) == 1
+
+
+def test_worker_checkpoint_cache_round_trip_resumes_only_committed_release(
+    monkeypatch, tmp_path
+):
+    worklist_path, fingerprint = _write_worker_worklist(tmp_path)
+    document = json.loads(worklist_path.read_text(encoding="utf-8"))
+    completed_item = copy.deepcopy(document["payload"]["items"][0])
+    completed_item.update(
+        release_id=2,
+        tag_name="v2",
+        published_at="2026-02-01T00:00:00Z",
+        created_at="2026-02-01T00:00:00Z",
+        asset_id=20,
+        asset_name="plugin-v2.zip",
+        asset_url="https://github.com/owner/repo/releases/download/v2/plugin-v2.zip",
+        resolved_source_commit_sha="c" * 40,
+    )
+    remaining_item = document["payload"]["items"][0]
+    document["payload"]["items"] = [completed_item, remaining_item]
+    fingerprint = worklist.compute_worklist_fingerprint(document["payload"])
+    document["fingerprint"] = fingerprint
+    worklist_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _configure_release_progress_worker(monkeypatch)
+    monkeypatch.setattr(ap, "_scanner_runtime_identities", lambda *_args: {})
+    monkeypatch.setattr(
+        ap, "compute_audit_context_hash", lambda *_args, **_kwargs: "current-context"
+    )
+    interrupted_calls = []
+
+    def interrupt_after_first(repository, release, **kwargs):
+        interrupted_calls.append(release["id"])
+        if release["id"] == completed_item["release_id"]:
+            return _release_progress_report(repository, release, **kwargs)
+        raise KeyboardInterrupt("simulate audit-step timeout before checkpoint")
+
+    monkeypatch.setattr(ap, "audit_release", interrupt_after_first)
+    interrupted_reports = tmp_path / "interrupted" / "security-reports"
+    with pytest.raises(KeyboardInterrupt):
+        ap.main(_worker_cli(worklist_path, fingerprint, interrupted_reports))
+
+    assert interrupted_calls == [2, 1]
+    interrupted_manifest = ap._load_shard_manifest(
+        interrupted_reports / "shard-manifest.json"
+    )
+    assert interrupted_manifest["report_identities"] == [
+        worklist.worklist_identity(completed_item)
+    ]
+
+    restored_reports = tmp_path / "restored" / "security-reports"
+    shutil.copytree(interrupted_reports, restored_reports)
+    resumed_calls = []
+
+    def resume_remaining(repository, release, **kwargs):
+        resumed_calls.append(release["id"])
+        return _release_progress_report(repository, release, **kwargs)
+
+    monkeypatch.setattr(ap, "audit_release", resume_remaining)
+    assert ap.main(_worker_cli(worklist_path, fingerprint, restored_reports)) == 0
+
+    assert resumed_calls == [1]
+    manifest = ap._load_shard_manifest(restored_reports / "shard-manifest.json")
+    expected_identities = [
+        worklist.worklist_identity(completed_item),
+        worklist.worklist_identity(remaining_item),
+    ]
+    assert manifest["assigned_identities"] == expected_identities
+    assert manifest["report_identities"] == expected_identities
+    report = json.loads((restored_reports / "security-report.json").read_text())
+    assert [item["release_id"] for item in report["reports"]] == ["v2@20", "v1@10"]
 
 
 @pytest.mark.parametrize(

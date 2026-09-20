@@ -4,7 +4,7 @@
 > behind audit gating. Historical sub-plan copies have been removed; this overview
 > does not require them or their orchestration records.
 
-## Current implementation state (2026-08-22)
+## Current implementation state (2026-09-19)
 
 The historical design and appendix below describe the incremental rollout at
 the time those sub-plans landed. The current authoritative behavior is:
@@ -24,8 +24,9 @@ the time those sub-plans landed. The current authoritative behavior is:
   completed release at or above 300 seconds gets an advisory slow-release
   warning. This improves attribution of a stall but does not prevent a stall:
   an unmatched start identifies the in-flight or abruptly terminated release,
-  while a warning can only be emitted after completion. A job killed by its
-  step timeout can still lose its archived log and skip artifact publication.
+  while a warning can only be emitted after completion. A timed-out audit step
+  emits no publishable output, but its last complete checkpoint can be restored
+  by a later scheduled worker.
 - If upstream metadata no longer proves that a configured repository URL has
   the same identity, or that repository's tags or releases cannot be resolved,
   or it has no catalog-eligible release, preparation records a visible
@@ -44,8 +45,16 @@ the time those sub-plans landed. The current authoritative behavior is:
   run-global integrity failures use exit 1 and publish nothing.
 - Digestless assets are bounded-streamed to validate current bytes even on a
   warm run. Cache identity includes Semgrep rules and scanner/database
-  identities; scheduled runs bypass report-cache hits when ClamAV or Trivy
-  database freshness cannot be established.
+  identities. Trivy contributes only a positive database `Version` and a
+  non-empty `UpdatedAt`, not volatile `DownloadedAt` data; scheduled runs bypass
+  report-cache hits when ClamAV or Trivy database freshness cannot be established.
+- Scheduled workers prefetch the Trivy database after scanner setup, with a
+  five-minute fail-closed step, then run the audit for up to 60 minutes inside a
+  90-minute job. Their split cache restores and saves both `.audit-cache` and
+  atomic `security-reports` checkpoints by policy hash and shard, using a unique
+  save key for each run attempt. Restored partial data remains unpublishable:
+  the normal `publishable` gate and all manifest, identity, digest, size,
+  fingerprint, and fourteen-shard exact-coverage checks remain required.
 - Repository URLs and the complete tracked verdict schema are validated
   strictly. Release/source streams use the policy's 64 MiB/256 MiB limits,
   10/60-second connect/read timeouts, and 1 MiB chunks.
