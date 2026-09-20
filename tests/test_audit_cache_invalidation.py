@@ -123,6 +123,14 @@ class TestAuditCacheInvalidation(unittest.TestCase):
             "scalar": json.dumps("not-an-object"),
             "missing-database": json.dumps({"Version": "0.66.0"}),
             "missing-freshness-fields": json.dumps({"VulnerabilityDB": {"Version": 2}}),
+            "downloaded-at-only": json.dumps(
+                {
+                    "VulnerabilityDB": {
+                        "Version": 2,
+                        "DownloadedAt": "2026-08-08T12:00:00Z",
+                    }
+                }
+            ),
             "wrong-version-type": json.dumps(
                 {
                     "VulnerabilityDB": {
@@ -162,6 +170,47 @@ class TestAuditCacheInvalidation(unittest.TestCase):
                 self.assertFalse(
                     ap._scanner_database_freshness_available(policy, identities)
                 )
+
+    def test_trivy_context_uses_only_stable_database_metadata(self):
+        def identity(version, updated_at, downloaded_at):
+            return ap._trivy_database_identity(
+                {
+                    "VulnerabilityDB": {
+                        "Version": version,
+                        "UpdatedAt": updated_at,
+                        "DownloadedAt": downloaded_at,
+                        "Unrecognised": "ignored",
+                    }
+                }
+            )
+
+        original = identity(2, "2026-08-08T12:00:00Z", "2026-08-08T12:01:00Z")
+        downloaded_at_changed = identity(
+            2, "2026-08-08T12:00:00Z", "2026-08-09T12:01:00Z"
+        )
+        version_changed = identity(3, "2026-08-08T12:00:00Z", "2026-08-08T12:01:00Z")
+        updated_at_changed = identity(2, "2026-08-09T12:00:00Z", "2026-08-08T12:01:00Z")
+
+        self.assertEqual(
+            original,
+            {"Version": 2, "UpdatedAt": "2026-08-08T12:00:00Z"},
+        )
+        self.assertEqual(original, downloaded_at_changed)
+
+        def context(database):
+            return ap.compute_audit_context_hash(
+                {},
+                [],
+                scanner_identities={
+                    "clamav": {"enabled": False},
+                    "trivy": {"enabled": True, "database": database},
+                    "semgrep": {"enabled": False},
+                },
+            )
+
+        self.assertEqual(context(original), context(downloaded_at_changed))
+        self.assertNotEqual(context(original), context(version_changed))
+        self.assertNotEqual(context(original), context(updated_at_changed))
 
     def test_valid_trivy_identity_authorizes_scheduled_cache_hit(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

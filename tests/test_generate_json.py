@@ -647,9 +647,7 @@ class GenerateJsonTests(unittest.TestCase):
             ]
         }
         # The fork wrote 1.0.0 into this entry earlier in the same run.
-        generate_json.merge_plugin_versions(
-            run_entry, [dict(mirrored)], {"1.0.0"}
-        )
+        generate_json.merge_plugin_versions(run_entry, [dict(mirrored)], {"1.0.0"})
         self.assertEqual(run_entry["versions"][0]["artifact"], mirrored["artifact"])
 
         # Bytes that actually differ still replace the store's row, unchanged.
@@ -658,9 +656,7 @@ class GenerateJsonTests(unittest.TestCase):
                 {"name": "1.0.0", "hash": "a" * 64, "created": "2026-01-01T00:00:00Z"}
             ]
         }
-        generate_json.merge_plugin_versions(
-            changed, [dict(mirrored, hash="b" * 64)]
-        )
+        generate_json.merge_plugin_versions(changed, [dict(mirrored, hash="b" * 64)])
         self.assertEqual(changed["versions"][0]["hash"], "b" * 64)
 
     def test_build_storefront_metadata_keeps_one_row_per_version_identity(self):
@@ -689,7 +685,10 @@ class GenerateJsonTests(unittest.TestCase):
             [],
             set(),
             # The hand-maintained list is read first, the store-backed one last.
-            [contribution("owner/fork", "d" * 64), contribution("owner/upstream", "d" * 64)],
+            [
+                contribution("owner/fork", "d" * 64),
+                contribution("owner/upstream", "d" * 64),
+            ],
             "enforce",
         )
         versions = metadata["plugins"]["mirrored plugin"]["versions"]
@@ -707,7 +706,10 @@ class GenerateJsonTests(unittest.TestCase):
             stable,
             [],
             set(),
-            [contribution("owner/fork", "e" * 64), contribution("owner/upstream", "f" * 64)],
+            [
+                contribution("owner/fork", "e" * 64),
+                contribution("owner/upstream", "f" * 64),
+            ],
             "enforce",
         )
         self.assertEqual(len(differing["plugins"]["mirrored plugin"]["versions"]), 2)
@@ -797,9 +799,7 @@ class GenerateJsonTests(unittest.TestCase):
         # In the store's catalog and carrying builds from here, so it is both.
         self.assertEqual(metadata["plugins"]["official plugin"]["provenance"], "both")
         # In the store's catalog with nothing contributed here stays official.
-        self.assertEqual(
-            metadata["plugins"]["extended two"]["provenance"], "extended"
-        )
+        self.assertEqual(metadata["plugins"]["extended two"]["provenance"], "extended")
         self.assertEqual(metadata["plugins"]["extended one"]["provenance"], "extended")
         self.assertEqual(
             metadata["plugins"]["extended two"]["source_urls"],

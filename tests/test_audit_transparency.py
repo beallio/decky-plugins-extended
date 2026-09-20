@@ -29,9 +29,7 @@ def _run_minimal_generator(tmp_path, policy_mode="report-only"):
     (tmp_path / "additional_plugins.txt").write_text("", encoding="utf-8")
     # The audit page is a static asset now, so the run needs the real static/
     # tree to publish the same files production does.
-    shutil.copytree(
-        Path(generate_json.__file__).parent / "static", tmp_path / "static"
-    )
+    shutil.copytree(Path(generate_json.__file__).parent / "static", tmp_path / "static")
 
     with (
         patch.object(
@@ -211,9 +209,9 @@ def test_the_published_page_is_a_shell_that_carries_no_records():
     change starts rendering records into the HTML again, where the whitelist
     above would no longer be the single place that governs what is published.
     """
-    shell = (
-        Path(generate_json.__file__).parent / "static/audit.html"
-    ).read_text(encoding="utf-8")
+    shell = (Path(generate_json.__file__).parent / "static/audit.html").read_text(
+        encoding="utf-8"
+    )
 
     assert "audit.json" in shell
     assert 'class="verdict"' not in shell

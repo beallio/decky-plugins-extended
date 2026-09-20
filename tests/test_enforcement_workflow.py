@@ -39,13 +39,17 @@ def _run_block(workflow: Path, step_name: str) -> str:
 
 def _step_if(workflow: Path, step_name: str) -> str:
     """Return the exact `if` expression attached to one workflow step."""
-    text = workflow.read_text(encoding="utf-8")
-    step = text.split(f"      - name: {step_name}\n", maxsplit=1)[1]
-    step = step.split("\n      - name:", maxsplit=1)[0]
-    for line in step.splitlines():
+    for line in _step_text(workflow, step_name).splitlines():
         if line.startswith("        if: "):
             return line.removeprefix("        if: ")
     raise AssertionError(f"workflow step has no if condition: {step_name}")
+
+
+def _step_text(workflow: Path, step_name: str) -> str:
+    """Return the complete YAML text for one named workflow step."""
+    text = workflow.read_text(encoding="utf-8")
+    step = text.split(f"      - name: {step_name}\n", maxsplit=1)[1]
+    return step.split("\n      - name:", maxsplit=1)[0]
 
 
 def _bash(script: str, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess:
@@ -71,6 +75,31 @@ def _stub_uv(tmp_path: Path, exit_code: int) -> Path:
     )
     stub.chmod(0o755)
     return bin_dir
+
+
+def _run_trivy_prefetch(
+    tmp_path: Path, exit_code: int
+) -> tuple[subprocess.CompletedProcess, str]:
+    bin_dir = tmp_path / "trivy-bin"
+    bin_dir.mkdir()
+    arguments = tmp_path / "trivy-arguments"
+    trivy = bin_dir / "trivy"
+    trivy.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" > "$TRIVY_ARGUMENTS"\n'
+        f"exit {exit_code}\n",
+        encoding="utf-8",
+    )
+    trivy.chmod(0o755)
+    result = _bash(
+        _run_block(SCHEDULED, "Prefetch Trivy vulnerability database"),
+        tmp_path,
+        {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "TRIVY_ARGUMENTS": str(arguments),
+        },
+    )
+    return result, arguments.read_text(encoding="utf-8")
 
 
 def _run_audit_step(
@@ -213,6 +242,21 @@ def _run_executable_empty_shards(tmp_path: Path) -> list[Path]:
         (shard / "audit-exit.txt").write_text("0\n", encoding="utf-8")
         shard_paths.append(shard)
     return shard_paths
+
+
+def test_scheduled_trivy_prefetch_uses_exact_database_download_command(tmp_path):
+    result, arguments = _run_trivy_prefetch(tmp_path, 0)
+
+    assert result.returncode == 0, result.stderr
+    assert arguments == "image --download-db-only\n"
+
+
+def test_scheduled_trivy_prefetch_fails_closed_on_command_failure(tmp_path):
+    result, arguments = _run_trivy_prefetch(tmp_path, 37)
+
+    assert result.returncode == 1
+    assert arguments == "image --download-db-only\n"
+    assert "::error::Trivy vulnerability database prefetch failed" in result.stdout
 
 
 @pytest.mark.parametrize("audit_exit", [0, 2, 3, 4])
@@ -363,7 +407,7 @@ def test_workflow_aggregation_enforces_coverage_and_merges_shard_deltas(tmp_path
         (
             SCHEDULED,
             "Save audit cache",
-            "always() && steps.audit.outputs.publishable == 'true'",
+            "always() && !cancelled()",
         ),
         (
             SCHEDULED,
@@ -398,6 +442,22 @@ def test_publication_steps_require_executed_publishable_output(
     actual = _step_if(workflow, step_name)
 
     assert actual == condition
+
+
+def test_scheduled_checkpoint_cache_is_failure_safe_and_run_attempt_unique():
+    cache_key = _run_block(SCHEDULED, "Compute audit cache key")
+    restore_step = _step_text(SCHEDULED, "Restore audit cache")
+    save_step = _step_text(SCHEDULED, "Save audit cache")
+
+    assert (
+        "save_key=audit-cache-v2-${POLICY_HASH}-shard-${SHARD_INDEX}-of-14-"
+        "${{ github.run_id }}-${{ github.run_attempt }}"
+    ) in cache_key
+    assert cache_key.count("restore_key=") == 1
+    for step in (restore_step, save_step):
+        assert "path: |\n            .audit-cache\n            security-reports" in step
+    assert _step_if(SCHEDULED, "Save audit cache") == "always() && !cancelled()"
+    assert "steps.audit.outputs.publishable" not in save_step
 
 
 @pytest.mark.parametrize("workflow", [PULL_REQUEST, SCHEDULED])

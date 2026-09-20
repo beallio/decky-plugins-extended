@@ -122,6 +122,47 @@ class WorkflowSecurityTests(unittest.TestCase):
             self.assertIn(scanner_input, cache_key_command)
         self.assertNotIn("security-verdicts.json", cache_key_command)
 
+    def test_scheduled_worker_prefetches_and_preserves_resumable_checkpoint(self):
+        scheduled_workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
+        pull_request_workflow = (WORKFLOWS / "plugin-security-audit.yml").read_text()
+        scheduled_job = self._job_body(scheduled_workflow, "scheduled-audit")
+        prefetch = scheduled_job.split(
+            "      - name: Prefetch Trivy vulnerability database\n", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        audit = scheduled_job.split(
+            "      - name: Run audit on all configured repositories\n", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        restore = scheduled_job.split(
+            "      - name: Restore audit cache\n", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        checkpoint_save = scheduled_job.split(
+            "      - name: Save audit cache\n", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+
+        self.assertIn("\n    timeout-minutes: 90\n", scheduled_job)
+        self.assertIn("trivy image --download-db-only", prefetch)
+        self.assertIn("timeout-minutes: 5", prefetch)
+        self.assertNotIn("continue-on-error", prefetch)
+        self.assertIn("::error::Trivy vulnerability database prefetch failed", prefetch)
+        self.assertIn("timeout-minutes: 60", audit)
+        self.assertLess(
+            scheduled_job.index("name: Install required security scanners"),
+            scheduled_job.index("name: Prefetch Trivy vulnerability database"),
+        )
+        self.assertLess(
+            scheduled_job.index("name: Prefetch Trivy vulnerability database"),
+            scheduled_job.index("name: Run audit on all configured repositories"),
+        )
+        for cache_step in (restore, checkpoint_save):
+            self.assertIn(
+                "path: |\n            .audit-cache\n            security-reports",
+                cache_step,
+            )
+        self.assertIn("if: always() && !cancelled()", checkpoint_save)
+        self.assertIn("${{ github.run_attempt }}", scheduled_job)
+        self.assertNotIn("download-db-only", pull_request_workflow)
+        self.assertNotIn("timeout-minutes: 90", pull_request_workflow)
+
     def test_scheduled_audit_uses_central_verdict_delta_merge_cli(self):
         workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
 

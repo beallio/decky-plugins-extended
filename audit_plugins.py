@@ -3224,18 +3224,13 @@ def _trivy_database_identity(version_payload: Any) -> Optional[dict[str, Any]]:
     ):
         return None
 
-    freshness_values = []
-    for freshness_field in ("UpdatedAt", "DownloadedAt"):
-        if freshness_field not in vulnerability_database:
-            continue
-        value = vulnerability_database[freshness_field]
-        if not isinstance(value, str) or not value.strip():
-            return None
-        freshness_values.append(value)
-
-    if not freshness_values:
+    updated_at = vulnerability_database.get("UpdatedAt")
+    if not isinstance(updated_at, str) or not updated_at.strip():
         return None
-    return dict(vulnerability_database)
+    # DownloadedAt describes local cache state, not vulnerability database
+    # content. Keep the audit context stable when the same database is
+    # restored or prefetched at a different time.
+    return {"Version": database_version, "UpdatedAt": updated_at.strip()}
 
 
 def _scanner_runtime_identities(policy: dict[str, Any]) -> dict[str, dict[str, Any]]:

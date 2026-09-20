@@ -452,7 +452,9 @@ current bytes before reusing extraction/scanner results; a catalog's old hash is
 never reused merely because its version and URL match. Cache identity includes
 the artifact, release/asset, resolved source commit, policy, allowlist, vendored
 Semgrep rules, scanner executables/versions, and available ClamAV/Trivy database
-freshness. Scheduled runs bypass report-cache hits when database freshness
+freshness. Trivy database identity is normalized to its positive `Version` and
+non-empty `UpdatedAt`; volatile local `DownloadedAt` metadata cannot change the
+context hash. Scheduled runs bypass report-cache hits when database freshness
 cannot be established.
 
 Verdict lookup reports `CURRENT` for an exact release-key/hash match,
@@ -520,9 +522,9 @@ including its identity, position, classification, and elapsed time. A completed
 release taking at least 300 seconds also produces an advisory slow-release
 warning. This improves attribution of a stall but does not prevent a stall: an
 unmatched start identifies the release still in flight or abruptly terminated,
-whereas the advisory warning is emitted only after processing completes. A job
-killed by its step timeout can still lose its archived log and skip artifact
-publication.
+whereas the advisory warning is emitted only after processing completes. A timed-out
+audit step emits no publishable output, so it cannot upload incomplete evidence. Its
+last fully committed checkpoint can still be saved for the next scheduled worker.
 
 If upstream repository metadata no longer identifies the URL configured in
 `additional_plugins.txt`, or that repository's tags or releases cannot be
@@ -542,6 +544,15 @@ policy, allowlist, Semgrep rules, implementation, dependency inputs, and the
 shared scanner bootstrap; runtime database freshness decides whether
 report-cache reuse is safe. The workflows never modify the allowlist or
 automatically approve a finding.
+
+Scheduled workers prefetch the Trivy vulnerability database after scanner setup and
+before the audit. The prefetch has a five-minute fail-closed limit, the audit step
+has 60 minutes, and the worker job has 90 minutes so a completed checkpoint can be
+saved after an audit failure or timeout. The scheduled cache restores and saves both
+`.audit-cache` and `security-reports`, keyed by policy hash and shard with an
+immutable run-attempt save key. Restore does not make partial evidence publishable:
+the upload gate still requires `publishable == true`, and the worker manifest,
+identity, size, digest, fingerprint, and aggregate exact-coverage checks still apply.
 
 The producer has an eight-minute monotonic GitHub API budget inside its
 ten-minute job. Connect/read attempts, pagination, retries, and rate-limit
