@@ -3,8 +3,14 @@
 [Back to the user guide](README.md)
 
 The generator fetches, hashes, and merges custom GitHub releases into the
-upstream Deckbrew stable and testing catalogs. This is a minimal repository;
-do not create or store planning artifacts in a `docs/` directory.
+upstream Deckbrew stable and testing catalogs.
+
+Use the shared orchestration workflow for new work: `scripts/orchestration/new-plan SLUG`
+returns a private plan path; edit that returned path, then run
+`scripts/orchestration/validate-plan SLUG`. Submit review text through
+`scripts/orchestration/submit-review` on stdin, binding it to the captured run, round,
+plan version, and implementation head. Do not commit plans, reviews, or session logs.
+The retained audit evidence and design rationale are not templates for new process records.
 
 ## The two plugin lists
 
@@ -30,7 +36,8 @@ the repository is on GitHub, is not archived, is absent from
 `additional_plugins.txt`, has a `plugin.json` name that matches a published
 store plugin, and publishes at least one non-draft, non-prerelease single-zip
 release the official store does not already carry. Every rejection is printed
-with its reason, and `--check` exits 1 when either generated file is stale.
+with its reason, and `--check` exits 1 when any of its three generated files is
+stale.
 
 ## Versions the official store already publishes
 
@@ -66,6 +73,24 @@ for the same version hashes differently, so an unsuppressed upstream check
 would report the official identity as missing on every run and trigger a
 rebuild loop.
 
+The update check applies the same store-version deferrals and oversized-release
+eligibility as the generator. It does not hash versions supplied by the official
+store, and it does not fail on oversized releases that the generator cannot
+publish.
+
+## Archived repositories
+
+The worklist producer also skips a repository GitHub reports as archived, and
+records no repository error for it. An archived repository is read-only, so it
+can never publish another release: every artifact it ships is already covered
+by the verdicts on record, and re-auditing it each run can only repeat work
+that cannot change. Skipping it leaves those published verdicts untouched,
+because a verdict delta only adds.
+
+Archival is a repository lifecycle fact, not a defect in an artifact, so it is
+never an audit error. If a caller audits an archived release directly, the
+audit runs to completion and records the classification its findings earn.
+
 ## Add a plugin the official store does not carry
 
 Add the plugin repository URL to `additional_plugins.txt`, one URL per line:
@@ -92,6 +117,12 @@ the official store; `package.json` `keywords` and `description` are only the
 fallback. A plugin that declares `"flags": ["root"]` also gets a `root` tag,
 because that is how the store card decides to show its "runs as root" warning.
 
+Authors come from `package.json`: string values are kept as supplied, and npm
+author objects use their `name` field. Template-style names are displayed by
+design and are not filtered. A missing author key or missing object name falls
+back to the repository owner.
+Merged official entries keep their existing author metadata.
+
 Store card images come from `plugin.json`'s `publish.image`, the same field the
 official store ingests. Cards are 320x200 and cropped with `object-fit: cover`,
 so a wide banner works better than a tall icon. A repository that has no image,
@@ -107,9 +138,25 @@ else. Tags with no version in them at all (`nightly`, `dev-build`) are passed
 through unchanged; keep those as GitHub prereleases so they stay out of the
 stable catalog.
 
+Two through four numeric components are preserved. For example, `v0.7.6.5`
+becomes `0.7.6.5`, not `0.7.6`. The fourth component is a numeric revision:
+`0.7.6.10 > 0.7.6.9`, and an omitted revision has the same precedence as zero.
+A revision prerelease ranks below its corresponding release but above the
+previous revision. Five-component tags are not reduced to shorter identities.
+Catalog rows, source metadata, and audit matching all keep the fourth component;
+audit matching still requires the exact case-sensitive tag and artifact hash.
+
 Stable releases are included in both catalogs. GitHub prereleases are included
 only in the testing catalog. Releases with zero or multiple `.zip` assets are
 skipped.
+
+Every catalog entry's `updated` value is the latest valid publication timestamp
+among its retained versions, calculated separately for Stable and Testing after
+release filtering. UTC ordering selects the original timestamp string; equal
+times keep the first encountered string. Existing entries without valid version
+dates keep their upstream `updated` value. New entries without valid version
+dates use JSON null, not repository activity. Repository creation dates are
+unchanged.
 
 ## Landing page
 
@@ -142,6 +189,12 @@ POSTs its increment after an install. Counts are *added* to whatever the entry
 already carries, so plugins merged with an upstream entry keep Deckbrew's totals
 and gain the installs made through this store. Without the binding everything
 still works; custom entries just stay at zero.
+
+On the website, main cards show **installs**: top-level `downloads + updates`.
+This is also the value used by the **Total installs** sort option. Related cards
+remain ranked and labeled by downloads only. Detail totals and version-history
+columns show downloads and updates separately. A local static server does not
+run the D1 middleware, so local card totals use only the generated JSON values.
 
 Setup:
 
@@ -196,19 +249,34 @@ committed — `public/` is gitignored and holds only local build output. The
 build reads a `GITHUB_TOKEN` configured as an environment variable in the
 Cloudflare Pages dashboard, and the same deploy publishes `functions/`.
 
-The GitHub Actions workflow has two jobs, neither of which publishes anything.
+The GitHub Actions workflow has two jobs.
+
+Both jobs first run `store_discovery.py`, which regenerates `store_plugins.txt`,
+`store_versions.json` and `store_sources.json` from the live official database.
+The official store publishes releases on its own schedule, so the committed
+discovery outputs go stale on their own; regenerating means neither job builds
+or polls an incomplete repository list. `store_discovery.py --check` reports
+staleness without writing and is the form to use locally or in a pre-commit
+hook.
 
 `build` runs when generator inputs change and on manual dispatch. It generates
 both catalogs with `uv` and validates their plugin IDs, names, version lists and
 SHA-256 hashes, so a bad `additional_plugins.txt` entry surfaces as a failed
-check instead of a failed Cloudflare build.
+check instead of a failed Cloudflare build. It publishes nothing, and it
+discards its refreshed discovery outputs.
 
-`refresh` runs every 6 hours and on manual dispatch. Because Cloudflare only
-rebuilds on push, the catalog would otherwise stay frozen at whatever upstream
-looked like at the last deploy. `check_for_updates.py` compares the live catalog
-against the upstream catalog and the latest release of every configured
-repository, and only when something is missing does the job POST the Cloudflare
-deploy hook. The check asks whether a version is *absent* from the live entry
+`refresh` runs every 6 hours and on manual dispatch. It is the single writer of
+the discovery outputs: when they moved, it commits and pushes them, which is
+also what keeps the committed data current. A push made with `GITHUB_TOKEN`
+raises no workflow event, so this cannot loop back into the workflow, but
+Cloudflare does rebuild on it — the job therefore skips the deploy hook on any
+run where it pushed.
+
+Because Cloudflare only rebuilds on push, the catalog would otherwise stay
+frozen at whatever upstream looked like at the last deploy. `check_for_updates.py`
+compares the live catalog against the upstream catalog and the latest release of
+every configured repository, and only when something is missing does the job
+POST the Cloudflare deploy hook. The check asks whether a version is *absent* from the live entry
 rather than whether the newest versions match, because merging GitHub releases
 into upstream entries regularly leaves this catalog ahead of Deckbrew's.
 
@@ -384,7 +452,9 @@ current bytes before reusing extraction/scanner results; a catalog's old hash is
 never reused merely because its version and URL match. Cache identity includes
 the artifact, release/asset, resolved source commit, policy, allowlist, vendored
 Semgrep rules, scanner executables/versions, and available ClamAV/Trivy database
-freshness. Scheduled runs bypass report-cache hits when database freshness
+freshness. Trivy database identity is normalized to its positive `Version` and
+non-empty `UpdatedAt`; volatile local `DownloadedAt` metadata cannot change the
+context hash. Scheduled runs bypass report-cache hits when database freshness
 cannot be established.
 
 Verdict lookup reports `CURRENT` for an exact release-key/hash match,
@@ -452,9 +522,9 @@ including its identity, position, classification, and elapsed time. A completed
 release taking at least 300 seconds also produces an advisory slow-release
 warning. This improves attribution of a stall but does not prevent a stall: an
 unmatched start identifies the release still in flight or abruptly terminated,
-whereas the advisory warning is emitted only after processing completes. A job
-killed by its step timeout can still lose its archived log and skip artifact
-publication.
+whereas the advisory warning is emitted only after processing completes. A timed-out
+audit step emits no publishable output, so it cannot upload incomplete evidence. Its
+last fully committed checkpoint can still be saved for the next scheduled worker.
 
 If upstream repository metadata no longer identifies the URL configured in
 `additional_plugins.txt`, or that repository's tags or releases cannot be
@@ -474,6 +544,15 @@ policy, allowlist, Semgrep rules, implementation, dependency inputs, and the
 shared scanner bootstrap; runtime database freshness decides whether
 report-cache reuse is safe. The workflows never modify the allowlist or
 automatically approve a finding.
+
+Scheduled workers prefetch the Trivy vulnerability database after scanner setup and
+before the audit. The prefetch has a five-minute fail-closed limit, the audit step
+has 60 minutes, and the worker job has 90 minutes so a completed checkpoint can be
+saved after an audit failure or timeout. The scheduled cache restores and saves both
+`.audit-cache` and `security-reports`, keyed by policy hash and shard with an
+immutable run-attempt save key. Restore does not make partial evidence publishable:
+the upload gate still requires `publishable == true`, and the worker manifest,
+identity, size, digest, fingerprint, and aggregate exact-coverage checks still apply.
 
 The producer has an eight-minute monotonic GitHub API budget inside its
 ten-minute job. Connect/read attempts, pagination, retries, and rate-limit

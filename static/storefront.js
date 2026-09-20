@@ -25,11 +25,8 @@ function numberValue(value) {
 
 export function normalizeVersionName(value) {
   const text = stringValue(value);
-  // Keep this aligned with plugin_release_utils.normalize_version(). Decky's
-  // producer extracts a two- or three-component version from a tag, including
-  // a prerelease or build suffix. It deliberately does not consume a fourth
-  // numeric component such as the trailing .4 in v1.2.3.4.
-  const match = text.match(/\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/);
+  // Keep numeric components and suffixes aligned with the producer normalizer.
+  const match = text.match(/(?<!\d)(?<!\d\.)\d+\.\d+(?:\.\d+){0,2}(?:[-+][0-9A-Za-z.-]+)?(?!\d|\.\d)/);
   return (match?.[0] || text.replace(/^v+/, "")).toLowerCase();
 }
 
@@ -38,7 +35,7 @@ export function normalizeAuditTag(value) {
   // Keep this aligned with the producer's normalize_version(). Audit records
   // identify a Git tag, so its case is part of the identity even when version
   // display and search may be case-insensitive.
-  const match = text.match(/\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/);
+  const match = text.match(/(?<!\d)(?<!\d\.)\d+\.\d+(?:\.\d+){0,2}(?:[-+][0-9A-Za-z.-]+)?(?!\d|\.\d)/);
   return match?.[0] || text.replace(/^v+/, "");
 }
 
@@ -143,7 +140,8 @@ function metadataPluginFor(plugin, metadata) {
 
 function provenanceForPlugin(plugin, metadata) {
   const provenance = stringValue(metadataPluginFor(plugin, metadata)?.provenance);
-  return provenance === "official" || provenance === "extended" ? provenance : "";
+  // "both" is a plugin the official store carries that this store also builds.
+  return ["official", "extended", "both"].includes(provenance) ? provenance : "";
 }
 
 export function matchesCategory(plugin, category, provenance = "") {
@@ -154,6 +152,8 @@ export function matchesCategory(plugin, category, provenance = "") {
     return Boolean(plugin.officialVersion && plugin.storeVersion);
   }
   if (category === "extended") {
+    // The chip reads "Extended only", so it stays exclusive: a mixed plugin is
+    // in the official catalog too and was never matched here.
     return provenance === "extended";
   }
   const normalizedTags = new Set(
@@ -353,6 +353,18 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = [], channe
   const repositorySourceUrl =
     repositorySourceUrls.length === 1 ? repositorySourceUrls[0] : "";
   const audit = source && latest ? findMatchingAuditRecord(source, latest, auditRecords) : null;
+  // The exact artifact may not match a record while the plugin is still in the
+  // log -- an older release, or one the official store publishes. The outcome
+  // stays honest either way; only the way in should not disappear.
+  const auditedPluginName = stringValue(plugin?.name);
+  const inAuditLog =
+    Boolean(audit) ||
+    (Boolean(auditedPluginName) &&
+      (Array.isArray(auditRecords) ? auditRecords : []).some(
+        (record) =>
+          stringValue(record?.plugin_name).toLowerCase() ===
+          auditedPluginName.toLowerCase(),
+      ));
   const largePluginWarnings = largePluginWarningsFor(plugin, metadata, channel);
   const provenance = provenanceForPlugin(plugin, metadata);
   return {
@@ -365,13 +377,13 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = [], channe
     versionHistory,
     provenance,
     provenanceLabel: provenance
-      ? provenance === "official"
-        ? "Official catalog"
-        : "Extended catalog"
+      ? { official: "Official catalog", extended: "Extended catalog" }[provenance] ||
+        "Official and extended"
       : metadata?.schema_version === 1 && !metadataPlugin
         ? "Unknown"
         : "Unavailable",
     audit,
+    inAuditLog,
     largePluginWarnings,
     officialNote:
       plugin?.officialVersion && plugin?.storeVersion
@@ -380,10 +392,29 @@ export function buildDetailViewModel(plugin, metadata, auditRecords = [], channe
   };
 }
 
+// Must stay identical to groupId()/repositorySlug() in static/audit.js. The
+// two are cross-checked in tests/audit_logic.test.mjs so a change to one
+// cannot silently break the link into the other. It takes a plugin name now,
+// because the audit page groups by plugin: one plugin can have a fork and an
+// upstream repository, and keying on either would miss half its releases.
+export function auditGroupId(value) {
+  const slug = stringValue(value)
+    .replace(/^https?:\/\/(www\.)?github\.com\//i, "")
+    .replace(/\.git$/i, "")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+  return `plugin-${slug.replace(/[^a-z0-9]+/g, "-")}`;
+}
+
 export function classifyPrimaryBadge(plugin, detail, channel) {
   const classification = stringValue(detail?.audit?.classification).toUpperCase();
-  if (classification === "BLOCK" || classification === "MANUAL_REVIEW") {
-    return { kind: "warning", label: classification === "BLOCK" ? "Audit block" : "Manual review" };
+  // Only BLOCK earns the badge. MANUAL_REVIEW is advisory and never removes a
+  // plugin, and it lands on ~87% of audited releases because subprocess, root
+  // and systemctl are what a Steam Deck plugin does to work at all, so badging
+  // it separated nothing and outranked the labels that do. The detail pane
+  // still reports it verbatim under "Audit outcome".
+  if (classification === "BLOCK") {
+    return { kind: "warning", label: "Audit block" };
   }
   if (detail?.largePluginWarnings?.length) {
     return { kind: "warning", label: "Large release" };
@@ -396,6 +427,9 @@ export function classifyPrimaryBadge(plugin, detail, channel) {
   }
   if (detail?.provenance === "extended") {
     return { kind: "extended", label: "Extended only" };
+  }
+  if (detail?.provenance === "both") {
+    return { kind: "extended", label: "Extended builds" };
   }
   return null;
 }
@@ -445,6 +479,7 @@ function startStorefront() {
     channelButtons: [...document.querySelectorAll("[data-channel]")],
     categoryButtons: [...document.querySelectorAll("[data-category]")],
     search: document.getElementById("search"),
+    searchClear: document.getElementById("search-clear"),
     sort: document.getElementById("sort"),
     sortDirection: document.getElementById("sort-direction"),
     grid: document.getElementById("plugin-grid"),
@@ -468,10 +503,23 @@ function startStorefront() {
     setupBackdrop: document.getElementById("setup-backdrop"),
     setupDialog: document.getElementById("setup-dialog"),
     detailBackdrop: document.getElementById("detail-backdrop"),
+    zoomBackdrop: document.getElementById("zoom-backdrop"),
+    zoomImage: document.getElementById("zoom-image"),
+    zoomClose: document.getElementById("zoom-close"),
     detailDialog: document.getElementById("detail-dialog"),
     detailName: document.getElementById("detail-name"),
+    detailMeta: document.getElementById("detail-meta"),
     detailContent: document.getElementById("detail-content"),
   };
+  function syncSearchClear() {
+    // The query round-trips through the URL, so a shared link can arrive
+    // already filtered; the button is the way back out.
+    // Optional: a cached index.html without the button must not break the page.
+    if (elements.searchClear) {
+      elements.searchClear.hidden = !elements.search.value;
+    }
+  }
+
   if (!elements.grid || !elements.search || !elements.sort || !elements.sortDirection) {
     return;
   }
@@ -499,8 +547,10 @@ function startStorefront() {
     lastFocused: new Map(),
     detailPluginName: "",
     previousOverflow: "",
+    zoomTrigger: null,
   };
   elements.search.value = state.query;
+  syncSearchClear();
   elements.sort.value = state.sort;
   elements.sortDirection.value = state.sortDirection;
 
@@ -622,12 +672,13 @@ function startStorefront() {
     const tags = createElement("div", "tag-list");
     plugin.tags.slice(0, 2).forEach((tag) => tags.append(createElement("span", "tag", tag)));
     const metrics = createElement("div", "card-metrics");
-    const downloads = createElement("span", "card-downloads");
-    downloads.append(
+    const installs = plugin.downloads + plugin.updates;
+    const installMetric = createElement("span", "card-installs");
+    installMetric.append(
       detailIcon("download"),
-      createElement("span", "", `${plugin.downloads.toLocaleString()} downloads`),
+      createElement("span", "", `${installs.toLocaleString()} ${installs === 1 ? "install" : "installs"}`),
     );
-    metrics.append(downloads);
+    metrics.append(installMetric);
     if (plugin.updated) {
       metrics.append(
         createElement("span", "updated", `Updated ${plugin.updated.slice(0, 10)}`),
@@ -747,6 +798,29 @@ function startStorefront() {
     return [...dialog.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')];
   }
 
+  function zoomIsOpen() {
+    return Boolean(elements.zoomBackdrop && !elements.zoomBackdrop.hidden);
+  }
+
+  function openZoom(source, label) {
+    if (!elements.zoomBackdrop || !elements.zoomImage) return;
+    state.zoomTrigger = document.activeElement;
+    elements.zoomImage.src = source;
+    elements.zoomImage.alt = label;
+    elements.zoomBackdrop.hidden = false;
+    window.requestAnimationFrame(() => elements.zoomClose?.focus());
+  }
+
+  function closeZoom() {
+    if (!zoomIsOpen()) return;
+    elements.zoomBackdrop.hidden = true;
+    // Release the decoded image rather than holding it behind a hidden layer.
+    elements.zoomImage.removeAttribute("src");
+    const trigger = state.zoomTrigger;
+    if (trigger?.isConnected) trigger.focus();
+    state.zoomTrigger = null;
+  }
+
   function openDialog(name, trigger) {
     const backdrop = name === "setup" ? elements.setupBackdrop : elements.detailBackdrop;
     const dialog = name === "setup" ? elements.setupDialog : elements.detailDialog;
@@ -754,6 +828,7 @@ function startStorefront() {
     state.previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     backdrop.hidden = false;
+    dialog.scrollTop = 0;
     window.requestAnimationFrame(() => (focusable(dialog)[0] || dialog).focus());
   }
 
@@ -918,23 +993,38 @@ function startStorefront() {
     elements.detailName.textContent = plugin.name;
     elements.detailContent.replaceChildren();
 
-    const hero = createElement("div", "detail-hero");
     const meta = [`by ${plugin.author}`];
     if (detail.latest?.name) meta.push(`Latest v${detail.latest.name}`);
     if (plugin.updated) meta.push(`Updated ${plugin.updated.slice(0, 10)}`);
-    hero.append(createElement("p", "detail-meta", meta.join(" · ")));
+    elements.detailMeta.textContent = meta.join(" · ");
 
-    const detailArt = createElement("div", "detail-art");
+    const hero = createElement("div", "detail-hero");
+
+    // The card crops the image to a fixed height, so it doubles as the way to
+    // see the whole thing. A div would not be reachable by keyboard.
+    const detailArt = createElement(plugin.imageUrl ? "button" : "div", "detail-art");
     if (plugin.imageUrl) {
+      detailArt.type = "button";
+      detailArt.setAttribute("aria-label", `Expand the ${plugin.name} image`);
       const image = document.createElement("img");
       image.loading = "lazy";
       image.alt = "";
       image.src = plugin.imageUrl;
+      const hint = createElement("span", "zoom-hint");
+      hint.innerHTML =
+        '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M20 20l-4.3-4.3M11 8.5v5M8.5 11h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
       image.addEventListener("error", () => {
         image.remove();
+        hint.remove();
+        // Nothing left to expand, so stop advertising that there is.
+        detailArt.disabled = true;
+        detailArt.removeAttribute("aria-label");
         if (!detailArt.querySelector(".monogram")) addMonogram(detailArt, plugin.name);
       });
-      detailArt.append(image);
+      detailArt.addEventListener("click", () =>
+        openZoom(plugin.imageUrl, `${plugin.name} store image`),
+      );
+      detailArt.append(image, hint);
     } else {
       addMonogram(detailArt, plugin.name);
     }
@@ -994,10 +1084,11 @@ function startStorefront() {
     }
 
     let auditLink = null;
-    if (detail.audit) {
+    if (detail.inAuditLog) {
       auditLink = createElement("a", "detail-box-action", "Open audit log");
       auditLink.dataset.detailFocus = "open-audit";
-      auditLink.href = "audit.html";
+      // Land on this plugin's section rather than the top of the log.
+      auditLink.href = `audit.html#${auditGroupId(plugin.name)}`;
     }
     const hashBox = detailBox("Latest hash", detail.latest?.hash || "", copyHash);
     hashBox.classList.add("detail-hash-box");
@@ -1085,8 +1176,17 @@ function startStorefront() {
   });
   elements.search.addEventListener("input", (event) => {
     state.query = event.target.value;
+    syncSearchClear();
     updateUrl();
     render();
+  });
+  elements.searchClear?.addEventListener("click", () => {
+    elements.search.value = "";
+    state.query = "";
+    syncSearchClear();
+    updateUrl();
+    render();
+    elements.search.focus();
   });
   elements.sort.addEventListener("change", (event) => {
     state.sort = event.target.value;
@@ -1117,6 +1217,11 @@ function startStorefront() {
   document.querySelectorAll("[data-close]").forEach((button) => {
     button.addEventListener("click", () => closeDialog(button.dataset.close));
   });
+  elements.zoomClose?.addEventListener("click", closeZoom);
+  elements.zoomBackdrop?.addEventListener("click", (event) => {
+    // Clicking the image itself should not dismiss it.
+    if (event.target === elements.zoomBackdrop) closeZoom();
+  });
   [elements.setupBackdrop, elements.detailBackdrop].forEach((backdrop) => {
     backdrop.addEventListener("click", (event) => {
       if (event.target !== backdrop) return;
@@ -1124,6 +1229,17 @@ function startStorefront() {
     });
   });
   document.addEventListener("keydown", (event) => {
+    // The zoom sits above the detail dialog, so it takes Escape and Tab first.
+    if (zoomIsOpen()) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeZoom();
+      } else if (event.key === "Tab") {
+        event.preventDefault();
+        elements.zoomClose?.focus();
+      }
+      return;
+    }
     const openName = !elements.setupBackdrop.hidden ? "setup" : !elements.detailBackdrop.hidden ? "detail" : "";
     if (!openName) return;
     if (event.key === "Escape") {

@@ -1,0 +1,160 @@
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body {
+    margin: 0;
+    background: #0d0d0d;
+    color: #f7f7f7;
+    font-family: system-ui, sans-serif;
+    line-height: 1.5;
+}
+main { width: min(100% - 2rem, 960px); margin: 0 auto; padding: 3rem 0; }
+h1 { color: #00ffff; margin-bottom: 0.5rem; }
+h2 { color: #ffff00; margin-top: 2.5rem; }
+a { color: #00ffff; }
+.intro, .enforcement {
+    padding: 1rem 1.25rem;
+    background: #191919;
+    border-left: 4px solid #00ffff;
+    border-radius: 0.35rem;
+}
+.enforcement { border-color: #ffff00; }
+.tier-explanation { display: grid; gap: 0.75rem; }
+.tier-explanation p { margin: 0; }
+
+.summary { margin: 1rem 0 1.5rem; color: #c9c9c9; }
+.summary .count { color: #f7f7f7; font-weight: 800; }
+.summary .count.block { color: #ff4d6d; }
+
+/* One row per plugin. The releases stay inside, one card each: per-release
+   hashes are the point of the audit, so they are disclosed, not summarised. */
+.plugin-group {
+    margin: 0.75rem 0;
+    background: #191919;
+    border: 2px solid #555;
+    border-radius: 0.5rem;
+}
+.plugin-group.block { border: 4px solid #ff4d6d; box-shadow: 0 0 18px rgb(255 77 109 / 45%); }
+.plugin-group > summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 0.75rem;
+    align-items: center;
+    padding: 0.9rem 1.25rem;
+    cursor: pointer;
+}
+.plugin-group > summary:hover { background: #202020; }
+.plugin-group[open] > summary { border-bottom: 1px solid #333; }
+.group-heading { display: flex; flex-direction: column; min-width: 0; }
+.group-name { font-weight: 700; overflow-wrap: anywhere; }
+.group-repository { color: #bdbdbd; font-size: 0.85rem; overflow-wrap: anywhere; }
+.repo-link { color: #bdbdbd; text-decoration: underline; text-underline-offset: 2px; }
+.repo-link:hover, .repo-link:focus-visible { color: #00ffff; }
+dd .repo-link { color: #00ffff; }
+.newest {
+    display: inline-block;
+    margin: 0 0 0.6rem;
+    padding: 0.15rem 0.5rem;
+    background: #12312c;
+    border: 1px solid #2f7d6d;
+    border-radius: 0.25rem;
+    color: #7ff0d8;
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+.group-count { color: #bdbdbd; font-size: 0.9rem; }
+.group-body { padding: 0 1.25rem 1rem; }
+
+.verdict { margin: 1rem 0; padding: 1.25rem; background: #141414; border: 1px solid #444; border-radius: 0.5rem; }
+.classification {
+    display: inline-block;
+    margin-bottom: 0.75rem;
+    padding: 0.25rem 0.55rem;
+    background: #333;
+    color: #fff;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+}
+.classification.block { background: #ff4d6d; color: #090909; }
+.policy-disagreement {
+    margin: 0 0 1rem;
+    padding: 0.75rem;
+    background: #302a16;
+    border-left: 4px solid #ffff00;
+}
+dl { display: grid; grid-template-columns: 8rem 1fr; gap: 0.4rem 1rem; margin: 0; }
+dt { font-weight: 700; color: #c9c9c9; }
+dd { margin: 0; overflow-wrap: anywhere; }
+code {
+    display: inline-block;
+    margin: 0 0.3rem 0.3rem 0;
+    padding: 0.15rem 0.35rem;
+    background: #303030;
+    color: #ffff00;
+    border-radius: 0.2rem;
+}
+.none-recorded, .empty { color: #bdbdbd; }
+.empty { padding: 2rem; text-align: center; border: 2px dashed #555; }
+@media (max-width: 600px) {
+    dl { grid-template-columns: 1fr; }
+    dt { margin-top: 0.45rem; }
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+.audit-toolbar { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 0 0 1rem; }
+.audit-toolbar .search-wrap { position: relative; flex: 1 1 18rem; }
+.audit-toolbar input, .audit-toolbar select {
+    width: 100%;
+    min-height: 44px;
+    padding: 0 0.75rem;
+    background: #191919;
+    color: #f7f7f7;
+    border: 1px solid #555;
+    border-radius: 0.35rem;
+    font: inherit;
+}
+.audit-toolbar select { flex: 0 1 14rem; }
+.audit-toolbar input { padding-right: 2.75rem; }
+.audit-toolbar input:focus-visible, .audit-toolbar select:focus-visible { outline: 2px solid #00ffff; }
+input[type="search"]::-webkit-search-cancel-button { appearance: none; }
+.search-clear {
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: #bdbdbd;
+    cursor: pointer;
+    transform: translateY(-50%);
+}
+.search-clear svg { width: 16px; height: 16px; }
+.search-clear:hover, .search-clear:focus-visible { color: #f7f7f7; background: #303030; }
+.results { margin: 0 0 1rem; color: #c9c9c9; }
+.show-all {
+    min-height: 40px;
+    margin: 0.25rem 0 0.5rem;
+    padding: 0 0.9rem;
+    background: #191919;
+    color: #00ffff;
+    border: 1px solid #555;
+    border-radius: 0.35rem;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 700;
+}
+.show-all:hover, .show-all:focus-visible { border-color: #00ffff; background: #202020; }

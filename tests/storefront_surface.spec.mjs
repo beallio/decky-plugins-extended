@@ -41,7 +41,7 @@ const stableCatalog = [
     visible: true,
     updated: "2026-08-30T00:00:00Z",
     downloads: 10,
-    updates: 2,
+    updates: 50,
   },
   {
     id: 2,
@@ -69,7 +69,7 @@ const testingCatalog = [
   {
     id: 3,
     name: "Testing Preview",
-    author: "Preview Author",
+    author: "You <you@you.tld>",
     description: "A prerelease utility.",
     tags: ["utility"],
     versions: [{ name: "3.0.0-beta.1", hash: HASH_C }],
@@ -152,11 +152,49 @@ const storefrontMetadata = {
 const auditRecords = [
   {
     repository: "https://github.com/owner/alpha",
+    plugin_name: "Alpha Tool",
+    asset_id: "9",
     tag: "v2.0.0",
     identity_status: "CURRENT",
     outcome: "APPLIED",
     current_artifact_sha256: HASH_A,
     classification: "MANUAL_REVIEW",
+  },
+  {
+    repository: "https://github.com/owner/blocked",
+    plugin_name: "Blocked Plugin",
+    asset_id: "1",
+    release: "v1.0.0@1",
+    tag: "v1.0.0",
+    identity_status: "CURRENT",
+    outcome: "APPLIED",
+    current_artifact_sha256: HASH_B,
+    classification: "BLOCK",
+    rule_ids: ["ARCHIVE_TRAVERSAL"],
+  },
+  {
+    repository: "https://github.com/owner/manual",
+    plugin_name: "Manual Plugin",
+    asset_id: "216560670",
+    release: "v1.0.0@1",
+    tag: "v1.0.0",
+    identity_status: "CURRENT",
+    outcome: "APPLIED",
+    current_artifact_sha256: HASH_C,
+    classification: "MANUAL_REVIEW",
+  },
+  {
+    repository: "https://github.com/owner/manual",
+    plugin_name: "Manual Plugin",
+    asset_id: "545769966",
+    release: "v2.0.0@2",
+    tag: "v2.0.0",
+    identity_status: "CURRENT",
+    outcome: "APPLIED",
+    current_artifact_sha256: HASH_D,
+    classification: "MANUAL_REVIEW",
+    stored_classification: "BLOCK",
+    rule_ids: ["SHELL_CURL_PIPE"],
   },
 ];
 const auditPayload = { enforcement_mode: "enforce", releases: auditRecords };
@@ -252,13 +290,18 @@ test("actual static assets load over HTTP and publish every direct artifact", as
   await loadStorefront(page);
   await expect(page.getByText("Alpha Tool", { exact: true })).toBeVisible();
   await expect(page.locator("#catalog-status-value")).toContainText("Operational");
-  await expect(page.locator("[data-plugin-key='alpha tool'] .badge")).toHaveText("Manual review");
+  // Alpha Tool audits MANUAL_REVIEW, which no longer badges, so the card shows
+  // the version comparison its description carries instead.
+  await expect(page.locator("[data-plugin-key='alpha tool'] .badge")).toHaveText(
+    "Newer than official",
+  );
   await expect(page.locator("[data-plugin-key='radio deck'] .badge")).toHaveText(
     "Large release",
   );
   const alphaCard = page.locator("[data-plugin-key='alpha tool']");
-  await expect(alphaCard.locator(".card-downloads")).toHaveText("10 downloads");
-  await expect(alphaCard.locator(".card-downloads [data-icon='download']")).toHaveCount(1);
+  await expect(alphaCard.locator(".card-installs")).toHaveText("60 installs");
+  await expect(alphaCard.locator(".card-installs [data-icon='download']")).toHaveCount(1);
+  await expect(page.locator("[data-plugin-key='radio deck'] .card-installs")).toHaveText("41 installs");
   await expect(page.locator(".install-panel a[href$='.json']")).toHaveCount(0);
   await expect(page.locator(".install-panel")).not.toContainText(".json");
   const responses = await page.evaluate(async () =>
@@ -267,6 +310,7 @@ test("actual static assets load over HTTP and publish every direct artifact", as
         "/index.html",
         "/storefront.css",
         "/storefront.js",
+        "/favicon.svg",
         "/plugins.json",
         "/testing_plugins.json",
         "/storefront.json",
@@ -279,7 +323,7 @@ test("actual static assets load over HTTP and publish every direct artifact", as
       }),
     ),
   );
-  assert.deepEqual(responses.map((entry) => entry.status), Array(7).fill(200));
+  assert.deepEqual(responses.map((entry) => entry.status), Array(8).fill(200));
 });
 
 test("large release warnings explain the skipped automated audit", async ({ page }) => {
@@ -324,6 +368,11 @@ test("a fast channel switch ignores a stale stable response", async ({ page }) =
   await page.waitForTimeout(260);
   await expect(page.getByText("Testing Preview", { exact: true })).toBeVisible();
   await expect(page.locator("#result-total")).toContainText("3 plugins");
+  const preview = page.locator("[data-plugin-key='testing preview']");
+  await expect(preview.locator(".author")).toHaveText("by You <you@you.tld>");
+  await preview.click();
+  await expect(page.locator(".detail-meta")).toContainText("by You <you@you.tld>");
+  await page.keyboard.press("Escape");
   stableDelay = 0;
 });
 
@@ -333,6 +382,7 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
     document.execCommand = () => true;
   });
   await loadStorefront(page, "?query=Alpha&category=newer&sort=name");
+  await expect(page.locator('link[rel~="icon"]')).toHaveAttribute("href", "favicon.svg");
   await expect(page.locator("#search")).toHaveValue("Alpha");
   await expect(page.locator("#sort")).toHaveValue("name");
   await expect(page.getByText("Alpha Tool", { exact: true })).toBeVisible();
@@ -351,6 +401,17 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
     "Alpha Tool",
     "Radio Deck",
   ]);
+  await page.locator("#sort").selectOption("installs");
+  await expect(page.locator(".plugin-card .card-title")).toHaveText([
+    "Alpha Tool",
+    "Radio Deck",
+  ]);
+  await page.locator("#sort-direction").selectOption("asc");
+  await expect(page.locator(".plugin-card .card-title")).toHaveText([
+    "Radio Deck",
+    "Alpha Tool",
+  ]);
+  await page.locator("#sort").selectOption("name");
 
   await page.locator("#search").fill("Radio");
   await page.getByRole("button", { name: "Media" }).click();
@@ -402,14 +463,10 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
     "Official store has 1.0.0; this store has 2.0.0.",
     { exact: true },
   );
-  await expect(officialNote).toBeVisible();
+  await expect(page.locator("#detail-dialog .modal-head .detail-meta")).toHaveCount(1);
   assert.equal(
     await detailMeta.evaluate((meta) =>
-      Boolean(
-        document
-          .querySelector("#detail-dialog .modal-head")
-          .compareDocumentPosition(meta) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ),
+      document.querySelector("#detail-dialog .modal-head").contains(meta),
     ),
     true,
   );
@@ -449,6 +506,12 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
   );
   const repositoryLink = page.getByRole("link", { name: "View repository" });
   await expect(repositoryLink).toHaveAttribute("href", "https://github.com/owner/alpha");
+  const repositoryGap = await repositoryLink.evaluate((link) => {
+    const actions = link.closest(".detail-primary-actions");
+    const grid = document.querySelector(".detail-grid");
+    return grid.getBoundingClientRect().top - actions.getBoundingClientRect().bottom;
+  });
+  assert.ok(repositoryGap >= 16);
   const versionHistory = page.getByRole("table", { name: "Version history" });
   assert.equal(
     await repositoryLink.evaluate(
@@ -461,7 +524,7 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
     true,
   );
   const totals = page.locator(".detail-totals");
-  await expect(totals.locator(".detail-total-value")).toHaveText(["10", "2"]);
+  await expect(totals.locator(".detail-total-value")).toHaveText(["10", "50"]);
   await expect(totals.locator("[data-icon='download']")).toHaveCount(1);
   await expect(totals.locator("[data-icon='updates']")).toHaveCount(1);
   await expect(versionHistory).toBeVisible();
@@ -485,7 +548,7 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
   const auditBox = page.locator(".detail-box").filter({ hasText: "Audit outcome" });
   await expect(auditBox.getByRole("link", { name: "Open audit log" })).toHaveAttribute(
     "href",
-    "audit.html",
+    "audit.html#plugin-alpha-tool",
   );
   const hashBox = page.locator(".detail-box").filter({ hasText: "Latest hash" });
   await expect(hashBox.getByRole("button", { name: "Copy latest SHA-256" })).toBeVisible();
@@ -495,9 +558,187 @@ test("search, categories, sorting, fallback image, URL state, copy, and dialogs 
   await page
     .locator("#detail-dialog")
     .screenshot({ path: join(SCREENSHOT_DIR, "storefront-detail-modal.png") });
+  await page.locator("#detail-dialog").evaluate((dialog) => {
+    dialog.scrollTop = dialog.scrollHeight;
+  });
+  await expect.poll(() => page.locator("#detail-dialog").evaluate((dialog) => dialog.scrollTop)).toBeGreaterThan(0);
   await page.keyboard.press("Escape");
   await expect(page.locator("#detail-backdrop")).toBeHidden();
   await expect(detailButton).toBeFocused();
+  await detailButton.click();
+  await expect.poll(() => page.locator("#detail-dialog").evaluate((dialog) => dialog.scrollTop)).toBe(0);
+  await page.keyboard.press("Escape");
+  await expect(detailButton).toBeFocused();
+});
+
+test("the search box can be cleared and the clear control follows its content", async ({ page }) => {
+  await loadStorefront(page, "?query=alpha");
+  const clear = page.locator("#search-clear");
+  // A shared link arrives already filtered, so the control has to be there.
+  await expect(page.locator("#search")).toHaveValue("alpha");
+  await expect(clear).toBeVisible();
+
+  await clear.click();
+  await expect(page.locator("#search")).toHaveValue("");
+  await expect(clear).toBeHidden();
+  await expect(page.locator("#search")).toBeFocused();
+  expect(new URL(page.url()).searchParams.get("query")).toBeNull();
+  await expect(page.locator("#plugin-grid [data-plugin-key]").first()).toBeVisible();
+
+  await page.locator("#search").fill("radio");
+  await expect(clear).toBeVisible();
+});
+
+test("the audit page groups releases by plugin and floats a blocked one", async ({ page }) => {
+  await page.goto(`${baseUrl}/audit.html`, { waitUntil: "domcontentloaded" });
+  const groups = page.locator(".plugin-group");
+  await expect(groups).toHaveCount(3);
+
+  // Blocked first, expanded, never behind a click.
+  const first = groups.first();
+  await expect(first.locator(".group-name")).toHaveText("Blocked Plugin");
+  await expect(first.locator(".group-repository .repo-link")).toHaveAttribute(
+    "href",
+    "https://github.com/owner/blocked",
+  );
+  await expect(first).toHaveAttribute("open", "");
+  await expect(page.locator("#enforcement")).toContainText("are excluded from the catalogs");
+  await expect(page.locator("#summary")).toContainText("across 3 plugins");
+
+  // Everything else stays collapsed until asked for.
+  const manual = page.locator("#plugin-manual-plugin");
+  await expect(manual).not.toHaveAttribute("open", "");
+  await expect(manual.locator(".group-count")).toHaveText("2 releases");
+  await expect(manual.locator(".group-name")).toHaveText("Manual Plugin");
+  // The repository is a link, and clicking it must not toggle the group.
+  const repoLink = manual.locator(".group-repository .repo-link");
+  await expect(repoLink).toHaveAttribute("href", "https://github.com/owner/manual");
+  await expect(repoLink).toHaveText("owner/manual");
+  await manual.locator("summary").click();
+
+  // Only the newest release is rendered up front; the rest are behind a click.
+  await expect(manual.locator(".verdict")).toHaveCount(1);
+  await expect(manual.locator(".verdict .newest")).toHaveCount(1);
+  await expect(manual.locator(".verdict").first()).toContainText("Newest audited release");
+  await expect(manual.locator(".verdict").first()).toContainText("v2.0.0@2");
+  await manual.getByRole("button", { name: "Show all 2 releases" }).click();
+  await expect(manual.locator(".verdict")).toHaveCount(2);
+  await expect(manual.getByRole("button", { name: /Show all/ })).toHaveCount(0);
+
+  // A single-repository plugin does not repeat its repository on every card,
+  // and a verified release does not spell out CURRENT - APPLIED.
+  await expect(manual.getByText("Repository", { exact: true })).toHaveCount(0);
+  await expect(manual.getByText("Identity", { exact: true })).toHaveCount(0);
+  await expect(manual.getByText("Stored hash", { exact: true })).toHaveCount(0);
+
+  // A verdict that predates the current policy still shows what was stored.
+  await expect(manual.locator(".policy-disagreement")).toContainText("Stored verdict: BLOCK");
+  await expect(manual.locator(".policy-disagreement")).toContainText("predates the current policy");
+  await expect(manual.locator("code").first()).toHaveText("SHELL_CURL_PIPE");
+
+  // The served page is a shell: no record text reaches the HTML itself.
+  const shell = await (await fetch(`${baseUrl}/audit.html`)).text();
+  expect(shell).not.toContain("Effective classification:");
+  expect(shell).not.toContain("owner/blocked");
+});
+
+test("the audit page filters by search, classification and rule, and restores from the URL", async ({ page }) => {
+  await page.goto(`${baseUrl}/audit.html`, { waitUntil: "domcontentloaded" });
+  const groups = page.locator(".plugin-group");
+  const results = page.locator("#audit-results");
+  await expect(groups).toHaveCount(3);
+  await expect(results).toBeHidden();
+
+  // Search narrows to one plugin and says so.
+  await page.locator("#audit-search").fill("manual");
+  await expect(groups).toHaveCount(1);
+  await expect(results).toHaveText("Showing 1 of 3 plugins");
+  expect(new URL(page.url()).searchParams.get("query")).toBe("manual");
+
+  // Clearing restores everything and drops the parameter.
+  await page.locator("#audit-search-clear").click();
+  await expect(groups).toHaveCount(3);
+  await expect(results).toBeHidden();
+  expect(new URL(page.url()).searchParams.get("query")).toBeNull();
+
+  // A rule filter keeps only the releases that trip it, not whole plugins.
+  await page.locator("#audit-rule").selectOption("SHELL_CURL_PIPE");
+  await expect(groups).toHaveCount(1);
+  await expect(groups.first().locator(".group-count")).toHaveText("1 release");
+  await expect(groups.first().getByRole("button", { name: /Show all/ })).toHaveCount(0);
+
+  // A classification that matches nothing alongside it says so plainly.
+  await page.locator("#audit-classification").selectOption("BLOCK");
+  await expect(groups).toHaveCount(0);
+  await expect(page.locator("#audit-groups .empty")).toHaveText(
+    "No plugins match these filters.",
+  );
+
+  // Filters survive a reload through the URL.
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.locator("#audit-rule")).toHaveValue("SHELL_CURL_PIPE");
+  await expect(page.locator("#audit-classification")).toHaveValue("BLOCK");
+});
+
+test("a plugin's audit link lands on that plugin's section of the log", async ({ page }) => {
+  await loadStorefront(page);
+  await page.getByRole("button", { name: "View Alpha Tool details" }).click();
+  const auditLink = page.getByRole("link", { name: "Open audit log" });
+  await expect(auditLink).toHaveAttribute("href", "audit.html#plugin-alpha-tool");
+
+  await auditLink.click();
+  await expect(page).toHaveURL(/audit(\.html)?#plugin-alpha-tool$/);
+
+  // The linked plugin is expanded on arrival, and it is the only one.
+  const target = page.locator("#plugin-alpha-tool");
+  await expect(target).toHaveAttribute("open", "");
+  await expect(target.locator(".verdict")).toHaveCount(1);
+  await expect(page.locator("#plugin-manual-plugin")).not.toHaveAttribute("open", "");
+});
+
+test("the detail image expands to its full size and returns focus", async ({ page }) => {
+  await loadStorefront(page);
+  await page.getByRole("button", { name: "View Radio Deck details" }).click();
+
+  // The card crops the image, so the art is a button and says it is one.
+  const art = page.locator("button.detail-art");
+  await expect(art).toHaveAttribute("aria-label", "Expand the Radio Deck image");
+  await expect(art.locator(".zoom-hint")).toBeVisible();
+
+  const backdrop = page.locator("#zoom-backdrop");
+  await expect(backdrop).toBeHidden();
+  await art.click();
+  await expect(backdrop).toBeVisible();
+
+  // The whole image, not the cropped card version.
+  const zoom = page.locator("#zoom-image");
+  await expect(zoom).toHaveAttribute("alt", "Radio Deck store image");
+  await expect(zoom).toHaveCSS("object-fit", "contain");
+  await expect(page.locator("#zoom-close")).toBeFocused();
+
+  // Clicking the image keeps it open; the backdrop dismisses it.
+  await zoom.click();
+  await expect(backdrop).toBeVisible();
+  await backdrop.click({ position: { x: 5, y: 5 } });
+  await expect(backdrop).toBeHidden();
+  await expect(art).toBeFocused();
+
+  // Escape closes the zoom, and leaves the detail dialog underneath open.
+  await art.click();
+  await expect(backdrop).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(backdrop).toBeHidden();
+  await expect(page.locator("#detail-backdrop")).toBeVisible();
+});
+
+test("a plugin with no usable image offers nothing to expand", async ({ page }) => {
+  await loadStorefront(page);
+  // Alpha Tool's image 404s, so the art falls back to a monogram.
+  await page.getByRole("button", { name: "View Alpha Tool details" }).click();
+  const art = page.locator(".detail-art");
+  await expect(art.locator(".monogram")).toBeVisible();
+  await expect(art.locator(".zoom-hint")).toHaveCount(0);
+  await expect(page.locator("button.detail-art:not([disabled])")).toHaveCount(0);
 });
 
 test("dialog copy failures are announced inside the active dialog", async ({ page }) => {
@@ -581,6 +822,7 @@ test("detail view ranks related plugins by shared tags and downloads", async ({ 
   await expect(
     related.getByRole("button", { name: "View Testing Preview details" }),
   ).toBeVisible();
+  await expect(related.locator(".related-plugin-downloads")).toHaveText("1 downloads");
   assert.equal(
     await related.evaluate(
       (section) =>

@@ -144,6 +144,26 @@ def test_audit_release_audits_the_exact_release_passed(monkeypatch, tmp_path):
     assert report.release_id == "v1.0.0@1"
 
 
+def test_archived_repository_still_earns_a_real_verdict(monkeypatch, tmp_path):
+    release = _release("v1.0.0", 1)
+    _configure_successful_audit(monkeypatch, _zip_bytes())
+    monkeypatch.setattr(ap, "get_repo_metadata", lambda *_args: {"archived": True})
+
+    report = ap.audit_release(
+        REPOSITORY,
+        release,
+        _policy(),
+        [],
+        cache_dir=str(tmp_path),
+        skip_cache=True,
+    )
+
+    assert report.final_classification != "AUDIT_ERROR"
+    assert report.completion_status == "completed"
+    assert not any("archived" in error for error in report.errors)
+    assert "v1.0.0@1" in ap.load_verdicts(str(tmp_path))[REPOSITORY]
+
+
 def test_audit_repository_selects_then_delegates(monkeypatch, tmp_path):
     older = _release("v1.0.0", 1)
     newer = _release("v2.0.0", 2)

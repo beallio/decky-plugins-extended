@@ -187,6 +187,22 @@ class GenerateJsonTests(unittest.TestCase):
             ["network", "root", "vpn"],
         )
 
+    def test_merge_root_tag_adds_to_a_merged_entry_without_replacing(self):
+        # A merged entry keeps the store's curated tags, so the flag has to be
+        # added on top of them rather than overwriting them.
+        entry = {"tags": ["utility", "network"]}
+        self.assertTrue(generate_json.merge_root_tag(entry, ["root", "vpn"]))
+        self.assertEqual(entry["tags"], ["utility", "network", "root"])
+
+        # Idempotent, so a second repository merging the same name cannot
+        # duplicate it, and an undeclared flag never adds one.
+        self.assertFalse(generate_json.merge_root_tag(entry, ["root"]))
+        self.assertEqual(entry["tags"], ["utility", "network", "root"])
+        plain = {"tags": ["utility"]}
+        self.assertFalse(generate_json.merge_root_tag(plain, ["utility"]))
+        self.assertEqual(plain["tags"], ["utility"])
+        self.assertFalse(generate_json.merge_root_tag(None, ["root"]))
+
     def test_resolve_tags_falls_back_to_keywords(self):
         self.assertEqual(
             generate_json.resolve_tags(
@@ -467,6 +483,12 @@ class GenerateJsonTests(unittest.TestCase):
         self.assertEqual(plugin["versions"][2]["downloads"], 10)
         self.assertEqual(plugin["versions"][2]["updates"], 4)
 
+        generate_json.merge_plugin_versions(
+            plugin,
+            [{"name": "4.0.0", "hash": "e" * 64, "created": "2025-12-01T00:00:00Z"}],
+        )
+        self.assertEqual(plugin["updated"], "2026-02-01T00:00:00Z")
+
         no_publication_date_plugin = {
             "updated": "2024-01-01T00:00:00Z",
             "versions": [{"name": "1.0.0", "hash": "e" * 64}],
@@ -482,6 +504,93 @@ class GenerateJsonTests(unittest.TestCase):
             ],
         )
         self.assertEqual(no_publication_date_plugin["updated"], "2024-01-01T00:00:00Z")
+
+    def test_refresh_plugin_updated_uses_utc_order_and_keeps_first_equal_string(self):
+        plugin = {
+            "updated": "repository activity",
+            "versions": [
+                {"created": "2026-02-01T01:00:00+02:00"},
+                {"created": "2026-01-31T16:00:00-08:00"},
+                {"created": "2026-02-01T00:00:00Z"},
+                {},
+                {"created": None},
+                {"created": 123},
+                {"created": "not-a-date"},
+            ],
+        }
+        generate_json.refresh_plugin_updated(plugin)
+        self.assertEqual(plugin["updated"], "2026-01-31T16:00:00-08:00")
+
+    def test_refresh_plugin_updated_preserves_no_valid_date_state(self):
+        for versions in (
+            None,
+            [],
+            [{}, {"created": None}, {"created": 4}, {"created": "bad"}],
+        ):
+            for original in ({}, {"updated": None}, {"updated": "upstream value"}):
+                with self.subTest(versions=versions, original=original):
+                    plugin = {**original, "versions": versions}
+                    generate_json.refresh_plugin_updated(plugin)
+                    self.assertEqual(plugin, {**original, "versions": versions})
+
+    def test_main_new_entry_without_publication_dates_has_null_updated(self):
+        for created in (None, "invalid"):
+            with (
+                self.subTest(created=created),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
+                workdir = Path(temp_dir)
+                (workdir / "additional_plugins.txt").write_text(
+                    "https://github.com/example/undated\n", encoding="utf-8"
+                )
+                version = {
+                    "name": "1.0.0",
+                    "hash": "a" * 64,
+                    "artifact": "https://example.invalid/undated.zip",
+                }
+                if created is not None:
+                    version["created"] = created
+                old_cwd = Path.cwd()
+                try:
+                    os.chdir(workdir)
+                    with (
+                        patch.object(generate_json, "fetch_json", return_value=[]),
+                        patch.object(
+                            generate_json,
+                            "get_repo_info",
+                            return_value={
+                                "default_branch": "main",
+                                "updated_at": "2026-09-01T00:00:00Z",
+                            },
+                        ),
+                        patch.object(
+                            generate_json,
+                            "get_package_json",
+                            return_value={"name": "Undated"},
+                        ),
+                        patch.object(
+                            generate_json,
+                            "get_plugin_json",
+                            return_value={"name": "Undated"},
+                        ),
+                        patch.object(
+                            generate_json,
+                            "get_releases",
+                            return_value=[{"tag_name": "v1.0.0"}],
+                        ),
+                        patch.object(
+                            generate_json, "build_version_object", return_value=version
+                        ),
+                        patch.object(
+                            generate_json, "resolve_image_url", return_value=""
+                        ),
+                    ):
+                        generate_json.main()
+                finally:
+                    os.chdir(old_cwd)
+                for filename in ("plugins.json", "testing_plugins.json"):
+                    catalog = json.loads((workdir / "public" / filename).read_text())
+                    self.assertIsNone(catalog[0]["updated"])
 
     def test_copy_static_files_publishes_storefront_assets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -502,6 +611,126 @@ class GenerateJsonTests(unittest.TestCase):
             )
             self.assertTrue((destination / "storefront.css").is_file())
             self.assertTrue((destination / "storefront.js").is_file())
+
+    def test_merge_plugin_versions_defers_to_the_store_file_but_not_to_a_fork(self):
+        """Equal hashes resolve differently depending on who holds the version.
+
+        A version the official store publishes carries no artifact of its own
+        and the catalog serves the store's file for it, so it is left alone. A
+        version this run already built belongs to another tracked repository,
+        and read_repo_urls() reads the store-backed list last so its source
+        should own the artifact.
+        """
+        mirrored = {
+            "name": "1.0.0",
+            "hash": "a" * 64,
+            "artifact": "https://github.com/owner/upstream/releases/x.zip",
+            "created": "2026-01-01T00:00:00Z",
+        }
+
+        store_entry = {
+            "versions": [
+                {"name": "1.0.0", "hash": "a" * 64, "created": "2026-01-01T00:00:00Z"}
+            ]
+        }
+        generate_json.merge_plugin_versions(store_entry, [dict(mirrored)])
+        self.assertNotIn("artifact", store_entry["versions"][0])
+
+        run_entry = {
+            "versions": [
+                {
+                    "name": "1.0.0",
+                    "hash": "a" * 64,
+                    "artifact": "https://github.com/owner/fork/releases/x.zip",
+                    "created": "2026-01-01T00:00:00Z",
+                }
+            ]
+        }
+        # The fork wrote 1.0.0 into this entry earlier in the same run.
+        generate_json.merge_plugin_versions(run_entry, [dict(mirrored)], {"1.0.0"})
+        self.assertEqual(run_entry["versions"][0]["artifact"], mirrored["artifact"])
+
+        # Bytes that actually differ still replace the store's row, unchanged.
+        changed = {
+            "versions": [
+                {"name": "1.0.0", "hash": "a" * 64, "created": "2026-01-01T00:00:00Z"}
+            ]
+        }
+        generate_json.merge_plugin_versions(changed, [dict(mirrored, hash="b" * 64)])
+        self.assertEqual(changed["versions"][0]["hash"], "b" * 64)
+
+    def test_build_storefront_metadata_keeps_one_row_per_version_identity(self):
+        """A fork mirroring its upstream must not leave the version sourceless.
+
+        The storefront resolves a version to its source on name and hash, so a
+        second row differing only in repository makes the match ambiguous and
+        the version loses both its source link and its audit record.
+        """
+        stable = [{"name": "Mirrored Plugin", "visible": True}]
+
+        def contribution(repository, version_hash):
+            return {
+                "name": "Mirrored Plugin",
+                "version": {
+                    "name": "3.3.0",
+                    "hash": version_hash,
+                    "tag": "3.3.0",
+                    "repository": repository,
+                    "source_url": f"https://github.com/{repository}",
+                },
+            }
+
+        metadata = generate_json.build_storefront_metadata(
+            stable,
+            [],
+            set(),
+            # The hand-maintained list is read first, the store-backed one last.
+            [
+                contribution("owner/fork", "d" * 64),
+                contribution("owner/upstream", "d" * 64),
+            ],
+            "enforce",
+        )
+        versions = metadata["plugins"]["mirrored plugin"]["versions"]
+        self.assertEqual(len(versions), 1)
+        self.assertEqual(versions[0]["repository"], "owner/upstream")
+        # Both source links survive even though only one version row does.
+        self.assertEqual(
+            metadata["plugins"]["mirrored plugin"]["source_urls"],
+            ["https://github.com/owner/fork", "https://github.com/owner/upstream"],
+        )
+
+        # Different bytes are genuinely different versions: keep both rows so
+        # the hash still picks out exactly one.
+        differing = generate_json.build_storefront_metadata(
+            stable,
+            [],
+            set(),
+            [
+                contribution("owner/fork", "e" * 64),
+                contribution("owner/upstream", "f" * 64),
+            ],
+            "enforce",
+        )
+        self.assertEqual(len(differing["plugins"]["mirrored plugin"]["versions"]), 2)
+
+    def test_read_repo_urls_reads_the_store_backed_list_last(self):
+        # merge_plugin_versions lets the later write win, so this order is what
+        # makes the store's own source decide a conflicting version's artifact.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workdir = Path(temp_dir)
+            (workdir / "additional.txt").write_text(
+                "https://github.com/owner/fork\n", encoding="utf-8"
+            )
+            (workdir / "store.txt").write_text(
+                "https://github.com/owner/upstream\n", encoding="utf-8"
+            )
+            self.assertEqual(
+                generate_json.read_repo_urls(
+                    str(workdir / "additional.txt"), str(workdir / "store.txt")
+                ),
+                ["https://github.com/owner/fork", "https://github.com/owner/upstream"],
+            )
 
     def test_build_storefront_metadata_keeps_per_version_provenance(self):
         stable = [
@@ -567,9 +796,10 @@ class GenerateJsonTests(unittest.TestCase):
         self.assertEqual(metadata["testing_count"], 2)
         self.assertEqual(metadata["stable_extended_count"], 1)
         self.assertEqual(metadata["testing_extended_count"], 1)
-        self.assertEqual(
-            metadata["plugins"]["official plugin"]["provenance"], "official"
-        )
+        # In the store's catalog and carrying builds from here, so it is both.
+        self.assertEqual(metadata["plugins"]["official plugin"]["provenance"], "both")
+        # In the store's catalog with nothing contributed here stays official.
+        self.assertEqual(metadata["plugins"]["extended two"]["provenance"], "extended")
         self.assertEqual(metadata["plugins"]["extended one"]["provenance"], "extended")
         self.assertEqual(
             metadata["plugins"]["extended two"]["source_urls"],
@@ -720,7 +950,7 @@ class GenerateJsonTests(unittest.TestCase):
             "default_branch": "main",
             "description": "Repository description",
             "created_at": "2025-01-01T00:00:00Z",
-            "updated_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-09-01T00:00:00Z",
         }
         # The store entry must be keyed on the plugin.json name, not this one.
         plugin_json = {"name": "Custom Plugin"}
@@ -733,6 +963,7 @@ class GenerateJsonTests(unittest.TestCase):
         releases = [
             {
                 "tag_name": "v3.0.0",
+                "published_at": "2026-03-01T00:00:00Z",
                 "prerelease": False,
                 "assets": [
                     {
@@ -745,6 +976,7 @@ class GenerateJsonTests(unittest.TestCase):
             },
             {
                 "tag_name": "v2.0.0-beta.1",
+                "published_at": "2026-02-01T00:00:00Z",
                 "prerelease": True,
                 "assets": [
                     {
@@ -758,6 +990,7 @@ class GenerateJsonTests(unittest.TestCase):
             },
             {
                 "tag_name": "v1.0.0",
+                "published_at": "2026-01-01T00:00:00Z",
                 "prerelease": False,
                 "assets": [
                     {
@@ -786,7 +1019,7 @@ class GenerateJsonTests(unittest.TestCase):
                 "name": name,
                 "hash": ("c" if release["prerelease"] else "d") * 64,
                 "artifact": f"https://example.invalid/{name}.zip",
-                "created": "2026-01-01T00:00:00Z",
+                "created": release["published_at"],
                 "downloads": 0,
                 "updates": 0,
             }
@@ -842,6 +1075,8 @@ class GenerateJsonTests(unittest.TestCase):
         # Testing IDs are synced to their stable counterpart, so this is 8 and
         # not the 12 that the independent testing ID space would have assigned.
         self.assertEqual(testing_plugin["id"], stable_plugin["id"])
+        self.assertEqual(stable_plugin["updated"], "2026-01-01T00:00:00Z")
+        self.assertEqual(testing_plugin["updated"], "2026-02-01T00:00:00Z")
         self.assertEqual(
             [version["name"] for version in stable_plugin["versions"]], ["1.0.0"]
         )
@@ -883,6 +1118,147 @@ class GenerateJsonTests(unittest.TestCase):
             "https://opengraph.githubassets.com/1/example/custom-plugin",
         )
         self.assertEqual(testing_plugin["image_url"], stable_plugin["image_url"])
+
+    def test_main_preserves_four_component_release_identity(self):
+        repository = "example/friendeck"
+        source_url = f"https://github.com/{repository}"
+        repo_info = {
+            "default_branch": "main",
+            "description": "Friend activity",
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2026-09-01T00:00:00Z",
+        }
+        package = {"name": "friendeck", "author": "Your Name <you@example.com>"}
+        plugin_json = {"name": "Friendeck"}
+        releases = [
+            {
+                "tag_name": "0.7.6",
+                "html_url": f"{source_url}/releases/tag/0.7.6",
+                "published_at": "2026-02-01T00:00:00Z",
+                "prerelease": False,
+                "assets": [
+                    {
+                        "id": 76,
+                        "name": "Friendeck.zip",
+                        "size": 1_000,
+                        "digest": f"sha256:{'a' * 64}",
+                        "browser_download_url": (
+                            f"{source_url}/releases/download/0.7.6/Friendeck.zip"
+                        ),
+                    }
+                ],
+            },
+            {
+                "tag_name": "0.7.6.5",
+                "html_url": f"{source_url}/releases/tag/0.7.6.5",
+                "published_at": "2026-01-01T00:00:00Z",
+                "prerelease": False,
+                "assets": [
+                    {
+                        "id": 765,
+                        "name": "Friendeck.zip",
+                        "size": 1_000,
+                        "digest": f"sha256:{'b' * 64}",
+                        "browser_download_url": (
+                            f"{source_url}/releases/download/0.7.6.5/Friendeck.zip"
+                        ),
+                    }
+                ],
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workdir = Path(temp_dir)
+            (workdir / "additional_plugins.txt").write_text(
+                f"{source_url}\n", encoding="utf-8"
+            )
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(workdir)
+                with (
+                    patch.object(generate_json, "fetch_json", side_effect=[[], []]),
+                    patch.object(
+                        generate_json, "get_repo_info", return_value=repo_info
+                    ),
+                    patch.object(
+                        generate_json, "get_package_json", return_value=package
+                    ),
+                    patch.object(
+                        generate_json, "get_plugin_json", return_value=plugin_json
+                    ),
+                    patch.object(generate_json, "get_releases", return_value=releases),
+                    patch.object(generate_json, "resolve_image_url", return_value=""),
+                    patch.object(
+                        generate_json,
+                        "calculate_hash",
+                        side_effect=AssertionError("Unexpected artifact download"),
+                    ),
+                ):
+                    generate_json.main()
+            finally:
+                os.chdir(old_cwd)
+
+            catalogs = {
+                channel: json.loads(
+                    (workdir / f"public/{filename}").read_text(encoding="utf-8")
+                )
+                for channel, filename in (
+                    ("stable", "plugins.json"),
+                    ("testing", "testing_plugins.json"),
+                )
+            }
+            storefront = json.loads(
+                (workdir / "public/storefront.json").read_text(encoding="utf-8")
+            )
+
+        for channel, catalog in catalogs.items():
+            with self.subTest(channel=channel):
+                self.assertEqual([plugin["name"] for plugin in catalog], ["Friendeck"])
+                self.assertEqual(catalog[0]["author"], "Your Name <you@example.com>")
+                self.assertEqual(
+                    [
+                        (version["name"], version["hash"], version["artifact"])
+                        for version in catalog[0]["versions"]
+                    ],
+                    [
+                        (
+                            "0.7.6.5",
+                            "b" * 64,
+                            f"{source_url}/releases/download/0.7.6.5/Friendeck.zip",
+                        ),
+                        (
+                            "0.7.6",
+                            "a" * 64,
+                            f"{source_url}/releases/download/0.7.6/Friendeck.zip",
+                        ),
+                    ],
+                )
+
+        metadata = storefront["plugins"]["friendeck"]
+        self.assertEqual(metadata["catalog_names"], ["Friendeck"])
+        self.assertEqual(metadata["provenance"], "extended")
+        self.assertEqual(metadata["source_urls"], [source_url])
+        self.assertCountEqual(
+            metadata["versions"],
+            [
+                {
+                    "name": "0.7.6",
+                    "hash": "a" * 64,
+                    "tag": "0.7.6",
+                    "repository": repository,
+                    "source_url": source_url,
+                    "release_url": f"{source_url}/releases/tag/0.7.6",
+                },
+                {
+                    "name": "0.7.6.5",
+                    "hash": "b" * 64,
+                    "tag": "0.7.6.5",
+                    "repository": repository,
+                    "source_url": source_url,
+                    "release_url": f"{source_url}/releases/tag/0.7.6.5",
+                },
+            ],
+        )
 
     def test_main_publishes_storefront_metadata_for_same_name_repositories(self):
         base_stable = [
@@ -954,6 +1330,16 @@ class GenerateJsonTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+            (workdir / "store_sources.json").write_text(
+                json.dumps(
+                    {
+                        "Shared Plugin": [
+                            "https://github.com/owner/official",
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
             static = workdir / "static"
             static.mkdir()
             for name in ("index.html", "storefront.css", "storefront.js"):
@@ -998,12 +1384,14 @@ class GenerateJsonTests(unittest.TestCase):
             published = {path.name for path in (workdir / "public").iterdir()}
 
         self.assertEqual(storefront["schema_version"], 1)
-        self.assertEqual(
-            storefront["plugins"]["shared plugin"]["provenance"], "official"
-        )
+        self.assertEqual(storefront["plugins"]["shared plugin"]["provenance"], "both")
         self.assertEqual(
             storefront["plugins"]["shared plugin"]["source_urls"],
-            ["https://github.com/owner/one", "https://github.com/owner/two"],
+            [
+                "https://github.com/owner/official",
+                "https://github.com/owner/one",
+                "https://github.com/owner/two",
+            ],
         )
         self.assertEqual(
             storefront["plugins"]["shared plugin"]["versions"],
@@ -1065,7 +1453,7 @@ class GenerateJsonTests(unittest.TestCase):
                         "name": "1.0.0",
                         "hash": "b" * 64,
                         "artifact": "https://example.invalid/unconfigured.zip",
-                        "created": "2024-01-01T00:00:00Z",
+                        "created": "2024-02-01T00:00:00Z",
                     }
                 ],
             },
@@ -1145,8 +1533,121 @@ class GenerateJsonTests(unittest.TestCase):
             )
         )
         self.assertEqual(merged["updated"], "2026-01-01T00:00:00Z")
-        self.assertEqual(unconfigured["updated"], "2024-01-01T00:00:00Z")
+        self.assertEqual(unconfigured["updated"], "2024-02-01T00:00:00Z")
         self.assertEqual(unconfigured["description"], "Unconfigured description")
+
+    def test_main_annotates_once_when_two_repositories_share_a_plugin_name(self):
+        """The note reports the store, not this catalog's own earlier merge.
+
+        A fork in additional_plugins.txt and the store's own source repository
+        both resolve to one plugin name, so the entry is merged into twice. The
+        second merge must not read the first merge back as the official version.
+        """
+        base_stable = [
+            {
+                "id": 7,
+                "name": "Merged Plugin",
+                "description": "Official description",
+                "updated": "2025-01-01T00:00:00Z",
+                "versions": [
+                    {
+                        "name": "1.0.0",
+                        "hash": "a" * 64,
+                        "artifact": "https://example.invalid/official.zip",
+                        "created": "2025-01-01T00:00:00Z",
+                    }
+                ],
+            }
+        ]
+        repo_info = {
+            "default_branch": "main",
+            "description": "Repository description",
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        plugin_json = {"name": "Merged Plugin"}
+        package = {
+            "name": "merged-plugin",
+            "author": {"name": "Decky Author"},
+            "description": "Plugin description",
+            "keywords": "utility",
+        }
+
+        def get_releases(owner, repo):
+            del owner
+            tag = "v2.0.0-fork.2" if repo == "fork-plugin" else "v2.0.0"
+            return [{"tag_name": tag, "prerelease": False}]
+
+        def build_version_object(release, existing_plugin=None, policy=None):
+            del existing_plugin, policy
+            name = release["tag_name"].lstrip("v")
+            return {
+                "name": name,
+                "hash": "c" * 64,
+                "artifact": f"https://example.invalid/{name}.zip",
+                "created": "2026-01-01T00:00:00Z",
+                "downloads": 0,
+                "updates": 0,
+            }
+
+        def fetch_json(url):
+            if url == generate_json.PLUGINS_URL:
+                return copy.deepcopy(base_stable)
+            return []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workdir = Path(temp_dir)
+            # The fork is read first, so it is the merge the second pass could
+            # mistake for the official store.
+            (workdir / "additional_plugins.txt").write_text(
+                "https://github.com/example/fork-plugin\n", encoding="utf-8"
+            )
+            (workdir / "store_plugins.txt").write_text(
+                "https://github.com/example/upstream-plugin\n", encoding="utf-8"
+            )
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(workdir)
+                with (
+                    patch.object(generate_json, "fetch_json", side_effect=fetch_json),
+                    patch.object(
+                        generate_json, "get_repo_info", return_value=repo_info
+                    ),
+                    patch.object(
+                        generate_json, "get_package_json", return_value=package
+                    ),
+                    patch.object(
+                        generate_json, "get_plugin_json", return_value=plugin_json
+                    ),
+                    patch.object(
+                        generate_json, "get_releases", side_effect=get_releases
+                    ),
+                    patch.object(
+                        generate_json,
+                        "build_version_object",
+                        side_effect=build_version_object,
+                    ),
+                ):
+                    generate_json.main()
+            finally:
+                os.chdir(old_cwd)
+
+            stable = json.loads(
+                (workdir / "public/plugins.json").read_text(encoding="utf-8")
+            )
+
+        merged = next(plugin for plugin in stable if plugin["name"] == "Merged Plugin")
+        self.assertTrue(
+            merged["description"].startswith(
+                "Official store has 1.0.0; this store has 2.0.0."
+            ),
+            merged["description"],
+        )
+        self.assertEqual(
+            merged["description"].count(generate_json.OFFICIAL_VERSION_NOTE_PREFIX),
+            1,
+            merged["description"],
+        )
 
 
 if __name__ == "__main__":

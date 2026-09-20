@@ -115,6 +115,12 @@ h1 { max-width: 760px; margin: 0; font-size: clamp(42px, 6vw, 72px); line-height
 .sort-controls { display: grid; grid-template-columns: repeat(2, minmax(140px, auto)); gap: 12px; }
 .search-wrap { position: relative; }
 .search-wrap svg { position: absolute; top: 50%; left: 13px; width: 18px; height: 18px; color: var(--faint); pointer-events: none; transform: translateY(-50%); }
+/* The native control renders inconsistently, cannot be styled, and is sized for
+   a mouse rather than the Deck's touch and trackpad input. */
+input[type="search"]::-webkit-search-cancel-button { appearance: none; }
+.search-clear { position: absolute; top: 50%; right: 6px; display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--faint); cursor: pointer; transform: translateY(-50%); }
+.search-clear svg { width: 16px; height: 16px; }
+.search-clear:hover, .search-clear:focus-visible { color: var(--text); background: var(--raised); }
 .control { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 9px; background: var(--raised); color: var(--text); }
 input.control { padding: 0 14px 0 42px; }
 select.control { min-width: 176px; padding: 0 34px 0 12px; }
@@ -147,8 +153,8 @@ select.control { min-width: 176px; padding: 0 34px 0 12px; }
 .description { display: -webkit-box; margin: 12px 0; overflow: hidden; color: var(--soft); font-size: 13px; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .card-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--faint); font-size: 11px; }
 .card-metrics { display: grid; flex: 0 0 auto; gap: 3px; justify-items: end; }
-.card-downloads { display: inline-flex; align-items: center; gap: 4px; color: var(--soft); font-weight: 750; white-space: nowrap; }
-.card-downloads .detail-icon { width: 15px; height: 15px; }
+.card-installs { display: inline-flex; align-items: center; gap: 4px; color: var(--soft); font-weight: 750; white-space: nowrap; }
+.card-installs .detail-icon { width: 15px; height: 15px; }
 .tag-list { display: flex; gap: 4px; overflow: hidden; }
 .tag { overflow: hidden; max-width: 88px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 999px; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -160,6 +166,7 @@ select.control { min-width: 176px; padding: 0 34px 0 12px; }
 .modal { width: min(100%, 720px); max-height: min(760px, calc(100vh - 40px)); overflow: auto; border: 1px solid var(--line); border-radius: 16px; background: var(--raised); box-shadow: var(--shadow); }
 .modal-head { position: sticky; z-index: 1; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 22px; border-bottom: 1px solid var(--line); background: var(--raised); }
 .modal-head h2 { margin: 0; font-size: 30px; line-height: 1.1; letter-spacing: -.025em; }
+.modal-title { display: grid; min-width: 0; gap: 5px; }
 .close-button { display: grid; width: 44px; height: 44px; place-items: center; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: var(--soft); cursor: pointer; font-size: 26px; }
 .modal-body { padding: 22px; }
 .steps { display: grid; gap: 12px; padding-left: 22px; }
@@ -169,6 +176,53 @@ select.control { min-width: 176px; padding: 0 34px 0 12px; }
 .detail-hero { display: grid; gap: 12px; }
 .detail-art { display: grid; width: 100%; height: 240px; place-items: center; overflow: hidden; border-radius: 14px; background: linear-gradient(135deg, var(--cyan-wash), rgb(232 74 216 / 18%)); color: var(--cyan); font-size: 36px; font-weight: 900; }
 .detail-art img { width: 100%; height: 100%; object-fit: cover; }
+/* The card crops to a fixed height, so the full image needs a way out. */
+button.detail-art { position: relative; padding: 0; border: 0; font: inherit; cursor: zoom-in; }
+button.detail-art:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+button.detail-art[disabled] { cursor: default; }
+.zoom-hint {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgb(9 14 24 / 78%);
+  color: #fff;
+  pointer-events: none;
+}
+.zoom-hint svg { width: 18px; height: 18px; }
+button.detail-art:hover .zoom-hint, button.detail-art:focus-visible .zoom-hint { background: var(--cyan); color: #071019; }
+.zoom-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(4 8 14 / 92%);
+}
+.zoom-backdrop img { max-width: min(100%, 1200px); max-height: 88vh; object-fit: contain; border-radius: 12px; }
+.zoom-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--raised);
+  color: var(--text);
+  cursor: pointer;
+}
+.zoom-close svg { width: 20px; height: 20px; }
+.zoom-close:hover, .zoom-close:focus-visible { border-color: var(--cyan); color: var(--cyan); }
 .detail-meta { margin: 0; color: var(--soft); }
 .detail-description { margin: 16px 0; color: var(--soft); }
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
@@ -184,7 +238,7 @@ select.control { min-width: 176px; padding: 0 34px 0 12px; }
 .detail-box-action:hover, .detail-box-action:focus-visible { border-color: var(--cyan); background: var(--surface-hover); }
 .detail-copy-status { min-height: 0; margin: 7px 0 0; text-align: left; }
 .detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-.detail-primary-actions { margin-top: 0; }
+.detail-primary-actions { margin-top: 0; margin-bottom: 18px; }
 .detail-totals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
 .detail-total { display: flex; align-items: center; gap: 11px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; color: var(--cyan); background: rgb(49 230 242 / 4%); }
 .detail-total-copy { display: grid; min-width: 0; }

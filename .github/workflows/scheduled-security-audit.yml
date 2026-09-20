@@ -72,7 +72,7 @@ jobs:
   scheduled-audit:
     name: Scheduled Audit (shard ${{ matrix.shard_index }}/14)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     needs: prepare-audit-worklist
     strategy:
       fail-fast: false
@@ -108,12 +108,14 @@ jobs:
         run: |
           POLICY_HASH=$(sha256sum security-policy.yml security-allowlist.yml semgrep-rules.yml audit_plugins.py audit_worklist.py plugin_release_utils.py scripts/install-security-scanners pyproject.toml uv.lock | sha256sum | cut -c1-16)
           echo "restore_key=audit-cache-v2-${POLICY_HASH}-shard-${SHARD_INDEX}-of-14" >> "$GITHUB_OUTPUT"
-          echo "save_key=audit-cache-v2-${POLICY_HASH}-shard-${SHARD_INDEX}-of-14-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+          echo "save_key=audit-cache-v2-${POLICY_HASH}-shard-${SHARD_INDEX}-of-14-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
       - name: Restore audit cache
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684
         with:
-          path: .audit-cache
+          path: |
+            .audit-cache
+            security-reports
           key: ${{ steps.cache-key.outputs.save_key }}
           restore-keys: |
             ${{ steps.cache-key.outputs.restore_key }}
@@ -140,6 +142,14 @@ jobs:
       - name: Install required security scanners
         run: scripts/install-security-scanners
         timeout-minutes: 12
+
+      - name: Prefetch Trivy vulnerability database
+        run: |
+          if ! trivy image --download-db-only; then
+            echo "::error::Trivy vulnerability database prefetch failed"
+            exit 1
+          fi
+        timeout-minutes: 5
 
       - name: Save scanner package cache
         if: success()
@@ -183,13 +193,15 @@ jobs:
               exit 1
               ;;
           esac
-        timeout-minutes: 45
+        timeout-minutes: 60
 
       - name: Save audit cache
-        if: always() && steps.audit.outputs.publishable == 'true'
+        if: always() && !cancelled()
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684
         with:
-          path: .audit-cache
+          path: |
+            .audit-cache
+            security-reports
           key: ${{ steps.cache-key.outputs.save_key }}
 
       - name: Upload isolated scheduled evidence

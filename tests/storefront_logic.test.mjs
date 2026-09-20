@@ -9,6 +9,7 @@ import {
   channelCounts,
   classifyPrimaryBadge,
   filterCatalog,
+  matchesCategory,
   normalizeAuditTag,
   normalizeCatalogEntry,
   normalizeVersionName,
@@ -152,10 +153,10 @@ test("large release warnings are channel-aware and explicit", () => {
 test("audit envelopes and producer-normalized tags retain exact current identities", () => {
   const entry = plugin({
     name: "Release Notes",
-    versions: [{ name: "1.2.3", hash: "d".repeat(64) }],
+    versions: [{ name: "1.2.3.4", hash: "d".repeat(64) }],
   });
   const source = {
-    name: "1.2.3",
+    name: "1.2.3.4",
     hash: "d".repeat(64),
     tag: "v1.2.3.4",
     repository: "owner/release-notes",
@@ -174,16 +175,59 @@ test("audit envelopes and producer-normalized tags retain exact current identiti
     { schema_version: 1, plugins: { "release notes": { name: "Release Notes", provenance: "official", versions: [source] } } },
     auditRecordsFrom({ enforcement_mode: "enforce", releases: [audit] }),
   );
-  assert.equal(normalizeVersionName("v1.2.3.4"), "1.2.3");
+  assert.equal(normalizeVersionName("v1.2.3.4"), "1.2.3.4");
   assert.equal(detail.source, source);
   assert.equal(detail.audit, audit);
-  assert.deepEqual(classifyPrimaryBadge(entry, detail, "stable"), {
-    kind: "warning",
-    label: "Manual review",
-  });
+  // MANUAL_REVIEW no longer earns a badge; the detail pane still carries it.
+  assert.equal(classifyPrimaryBadge(entry, detail, "stable"), null);
+  assert.equal(detail.audit.classification, "MANUAL_REVIEW");
   assert.deepEqual(auditRecordsFrom({ records: [audit] }), [audit]);
   assert.deepEqual(auditRecordsFrom({ releases: [audit] }), [audit]);
   assert.deepEqual(auditRecordsFrom({ payload: { releases: [audit] } }), [audit]);
+});
+
+test("three- and four-component identities stay separate even with the same hash", () => {
+  const entry = plugin({
+    versions: [{ name: "1.2.3.4", hash: "d".repeat(64) }],
+  });
+  const source = {
+    name: "1.2.3.4",
+    tag: "v1.2.3.4",
+    hash: "d".repeat(64),
+    repository: "owner/plugin",
+    source_url: "https://github.com/owner/plugin",
+  };
+  const wrongSource = { ...source, name: "1.2.3", tag: "v1.2.3" };
+  const metadata = { plugins: { "example plugin": { name: entry.name, versions: [wrongSource, source] } } };
+  const audit = {
+    repository: "owner/plugin",
+    tag: "v1.2.3.4",
+    identity_status: "CURRENT",
+    outcome: "APPLIED",
+    current_artifact_sha256: "d".repeat(64),
+    classification: "PASS",
+  };
+  const wrongAudit = { ...audit, tag: "v1.2.3", classification: "BLOCK" };
+  const detail = buildDetailViewModel(entry, metadata, [wrongAudit, audit]);
+  assert.equal(detail.source, source);
+  assert.equal(detail.audit, audit);
+  assert.equal(buildDetailViewModel(entry, metadata, [wrongAudit]).audit, null);
+  assert.equal(buildDetailViewModel(entry, {
+    plugins: { "example plugin": { name: entry.name, versions: [wrongSource] } },
+  }, [wrongAudit]).source, null);
+});
+
+test("version normalizers preserve bounded numeric runs and suffix case rules", () => {
+  for (const [tag, expected] of [
+    ["v0.7.6.5", "0.7.6.5"],
+    ["release-1.2.3.4", "1.2.3.4"],
+    ["v0.7.6.5-ALPHA", "0.7.6.5-ALPHA"],
+    ["v1.2.3.4.5", "1.2.3.4.5"],
+    ["release-1.2.3.4.5", "release-1.2.3.4.5"],
+  ]) {
+    assert.equal(normalizeAuditTag(tag), expected);
+    assert.equal(normalizeVersionName(tag), expected.toLowerCase());
+  }
 });
 
 test("audit tags retain producer case and reject case-distinct aliases", () => {
@@ -267,8 +311,8 @@ test("text and category filters are case-insensitive and direct tags still match
 
 test("catalog sorting supports both directions without mutating source entries", () => {
   const entries = [
-    plugin({ name: "Zulu", updated: "2026-01-01T00:00:00Z", downloads: 1 }),
-    plugin({ name: "Alpha", updated: "2026-08-01T00:00:00Z", downloads: 40 }),
+    plugin({ name: "Zulu", updated: "2026-01-01T00:00:00Z", downloads: 40, updates: 1 }),
+    plugin({ name: "Alpha", updated: "2026-08-01T00:00:00Z", downloads: 10, updates: 50 }),
   ];
   const original = entries.map((entry) => entry.name);
   assert.deepEqual(sortCatalog(entries, "name", "asc").map((entry) => entry.name), [
@@ -530,4 +574,79 @@ test("malformed catalog data is normalized defensively", () => {
 test("only the latest channel request may update the rendered state", () => {
   assert.equal(shouldAcceptChannelResponse(4, 4), true);
   assert.equal(shouldAcceptChannelResponse(5, 4), false);
+});
+
+test("a manual-review audit no longer hides the version comparison", () => {
+  const entry = plugin({
+    description: "Official store has 1.0.0; this store has 2.0.0. A useful utility.",
+  });
+  const detail = buildDetailViewModel(entry, { schema_version: 1, plugins: {} }, []);
+  detail.audit = { classification: "MANUAL_REVIEW" };
+  assert.deepEqual(classifyPrimaryBadge(entry, detail, "stable"), {
+    kind: "newer",
+    label: "Newer than official",
+  });
+  detail.audit = { classification: "BLOCK" };
+  assert.deepEqual(classifyPrimaryBadge(entry, detail, "stable"), {
+    kind: "warning",
+    label: "Audit block",
+  });
+});
+
+test("a plugin the store carries and this catalog builds reads as both", () => {
+  const entry = plugin({ name: "Mixed Plugin" });
+  const metadata = (provenance) => ({
+    schema_version: 1,
+    plugins: { "mixed plugin": { name: "Mixed Plugin", provenance, versions: [] } },
+  });
+
+  const both = buildDetailViewModel(entry, metadata("both"), []);
+  assert.equal(both.provenance, "both");
+  assert.equal(both.provenanceLabel, "Official and extended");
+  assert.deepEqual(classifyPrimaryBadge(entry, both, "stable"), {
+    kind: "extended",
+    label: "Extended builds",
+  });
+
+  const extended = buildDetailViewModel(entry, metadata("extended"), []);
+  assert.equal(extended.provenanceLabel, "Extended catalog");
+  assert.deepEqual(classifyPrimaryBadge(entry, extended, "stable"), {
+    kind: "extended",
+    label: "Extended only",
+  });
+  assert.equal(buildDetailViewModel(entry, metadata("official"), []).provenanceLabel, "Official catalog");
+
+  // The chip reads "Extended only", so a mixed plugin stays out of it.
+  assert.equal(matchesCategory(entry, "extended", "both"), false);
+  assert.equal(matchesCategory(entry, "extended", "extended"), true);
+  assert.equal(matchesCategory(entry, "extended", "official"), false);
+});
+
+test("the audit link stays available when the plugin is in the log but this release is not", () => {
+  const entry = plugin({ name: "Logged Plugin", versions: [{ name: "9.9.9", hash: "f".repeat(64) }] });
+  const records = [
+    // A different release of the same plugin: no exact match for 9.9.9.
+    {
+      repository: "https://github.com/owner/logged",
+      plugin_name: "Logged Plugin",
+      tag: "v1.0.0",
+      identity_status: "CURRENT",
+      outcome: "APPLIED",
+      current_artifact_sha256: "a".repeat(64),
+      classification: "MANUAL_REVIEW",
+    },
+  ];
+
+  const detail = buildDetailViewModel(entry, { schema_version: 1, plugins: {} }, records);
+  // The outcome stays honest; only the way in survives.
+  assert.equal(detail.audit, null);
+  assert.equal(detail.inAuditLog, true);
+
+  // A plugin the log has never seen offers no link.
+  const absent = buildDetailViewModel(
+    plugin({ name: "Unlogged Plugin" }),
+    { schema_version: 1, plugins: {} },
+    records,
+  );
+  assert.equal(absent.inAuditLog, false);
 });

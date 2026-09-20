@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import select
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -271,6 +272,72 @@ def test_worklist_excludes_declared_oversized_releases_without_repository_error(
     oversized = worklist.load_worklist_document(oversized_path)["payload"]
     assert oversized["items"] == []
     assert "repository_errors" not in oversized
+
+
+def test_worklist_skips_archived_repositories_without_repository_error(tmp_path):
+    archived = "https://github.com/owner/archived"
+    active = "https://github.com/owner/active"
+
+    def release_fetcher(owner: str, repo: str) -> list[dict]:
+        repository = f"https://github.com/{owner}/{repo}"
+        return [
+            _with_digest(
+                _with_asset_urls(
+                    _release("v1", 1, 10, repository_url=repository),
+                    repository,
+                ),
+                "a" * 64,
+            ),
+        ]
+
+    def metadata_fetcher(owner: str, repo: str) -> dict:
+        return _release_metadata(owner, repo, archived=repo == "archived")
+
+    output = tmp_path / "worklist.json"
+    worklist.prepare_audit_worklist(
+        output,
+        source_revision=SOURCE_REVISION,
+        selection_mode="all",
+        repository_urls=[archived, active],
+        shard_count=14,
+        release_fetcher=release_fetcher,
+        metadata_fetcher=metadata_fetcher,
+        tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
+    )
+
+    payload = worklist.load_worklist_document(output)["payload"]
+    assert [item["repository"] for item in payload["items"]] == [active]
+    assert "repository_errors" not in payload
+
+
+def test_worklist_skips_every_archived_repository_without_failing_the_run(tmp_path):
+    archived = "https://github.com/owner/archived"
+
+    output = tmp_path / "worklist.json"
+    worklist.prepare_audit_worklist(
+        output,
+        source_revision=SOURCE_REVISION,
+        selection_mode="all",
+        repository_urls=[archived],
+        shard_count=14,
+        release_fetcher=lambda *_args: [
+            _with_digest(
+                _with_asset_urls(
+                    _release("v1", 1, 10, repository_url=archived),
+                    archived,
+                ),
+                "a" * 64,
+            ),
+        ],
+        metadata_fetcher=lambda *_args: _release_metadata(
+            "owner", "archived", archived=True
+        ),
+        tag_resolver=lambda *_args, **_kwargs: {"v1": "a" * 40},
+    )
+
+    payload = worklist.load_worklist_document(output)["payload"]
+    assert payload["items"] == []
+    assert "repository_errors" not in payload
 
 
 def test_worklist_load_rejects_tampered_fingerprint(tmp_path):
@@ -2171,6 +2238,25 @@ def test_worklist_audits_every_eligible_release_in_deterministic_order():
     ]
 
 
+def test_build_audit_worklist_skips_archived_repositories():
+    releases = {
+        "owner/archived": [_release("v1", 1, 10, "2026-01-01T00:00:00Z")],
+        "owner/active": [_release("v2", 2, 20, "2026-02-01T00:00:00Z")],
+    }
+
+    worklist, errors = ap.build_audit_worklist(
+        ["https://github.com/owner/archived", "https://github.com/owner/active"],
+        release_fetcher=lambda owner, repo: releases[f"{owner}/{repo}"],
+        metadata_fetcher=lambda owner, repo: {
+            "full_name": f"{owner}/{repo}",
+            "archived": repo == "archived",
+        },
+    )
+
+    assert errors == []
+    assert [item.repository for item in worklist] == ["https://github.com/owner/active"]
+
+
 def test_fourteen_shards_are_deterministic_disjoint_and_union_identical():
     items = [
         ap.AuditWorkItem(
@@ -3522,6 +3608,77 @@ def test_worker_mode_manifest_checkpoint_failure_is_run_global(monkeypatch, tmp_
         output_dir / "progress-shard-0.json", fingerprint
     )
     assert len(progress) == 1
+
+
+def test_worker_checkpoint_cache_round_trip_resumes_only_committed_release(
+    monkeypatch, tmp_path
+):
+    worklist_path, fingerprint = _write_worker_worklist(tmp_path)
+    document = json.loads(worklist_path.read_text(encoding="utf-8"))
+    completed_item = copy.deepcopy(document["payload"]["items"][0])
+    completed_item.update(
+        release_id=2,
+        tag_name="v2",
+        published_at="2026-02-01T00:00:00Z",
+        created_at="2026-02-01T00:00:00Z",
+        asset_id=20,
+        asset_name="plugin-v2.zip",
+        asset_url="https://github.com/owner/repo/releases/download/v2/plugin-v2.zip",
+        resolved_source_commit_sha="c" * 40,
+    )
+    remaining_item = document["payload"]["items"][0]
+    document["payload"]["items"] = [completed_item, remaining_item]
+    fingerprint = worklist.compute_worklist_fingerprint(document["payload"])
+    document["fingerprint"] = fingerprint
+    worklist_path.write_text(json.dumps(document), encoding="utf-8")
+
+    _configure_release_progress_worker(monkeypatch)
+    monkeypatch.setattr(ap, "_scanner_runtime_identities", lambda *_args: {})
+    monkeypatch.setattr(
+        ap, "compute_audit_context_hash", lambda *_args, **_kwargs: "current-context"
+    )
+    interrupted_calls = []
+
+    def interrupt_after_first(repository, release, **kwargs):
+        interrupted_calls.append(release["id"])
+        if release["id"] == completed_item["release_id"]:
+            return _release_progress_report(repository, release, **kwargs)
+        raise KeyboardInterrupt("simulate audit-step timeout before checkpoint")
+
+    monkeypatch.setattr(ap, "audit_release", interrupt_after_first)
+    interrupted_reports = tmp_path / "interrupted" / "security-reports"
+    with pytest.raises(KeyboardInterrupt):
+        ap.main(_worker_cli(worklist_path, fingerprint, interrupted_reports))
+
+    assert interrupted_calls == [2, 1]
+    interrupted_manifest = ap._load_shard_manifest(
+        interrupted_reports / "shard-manifest.json"
+    )
+    assert interrupted_manifest["report_identities"] == [
+        worklist.worklist_identity(completed_item)
+    ]
+
+    restored_reports = tmp_path / "restored" / "security-reports"
+    shutil.copytree(interrupted_reports, restored_reports)
+    resumed_calls = []
+
+    def resume_remaining(repository, release, **kwargs):
+        resumed_calls.append(release["id"])
+        return _release_progress_report(repository, release, **kwargs)
+
+    monkeypatch.setattr(ap, "audit_release", resume_remaining)
+    assert ap.main(_worker_cli(worklist_path, fingerprint, restored_reports)) == 0
+
+    assert resumed_calls == [1]
+    manifest = ap._load_shard_manifest(restored_reports / "shard-manifest.json")
+    expected_identities = [
+        worklist.worklist_identity(completed_item),
+        worklist.worklist_identity(remaining_item),
+    ]
+    assert manifest["assigned_identities"] == expected_identities
+    assert manifest["report_identities"] == expected_identities
+    report = json.loads((restored_reports / "security-report.json").read_text())
+    assert [item["release_id"] for item in report["reports"]] == ["v2@20", "v1@10"]
 
 
 @pytest.mark.parametrize(

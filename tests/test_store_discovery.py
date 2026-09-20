@@ -107,6 +107,21 @@ def test_canonical_github_url_normalises_or_rejects(raw, expected):
 
 
 @pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("https://gitlab.com/Owner/Repo.git", "https://gitlab.com/Owner/Repo"),
+        (
+            "git@git.example.invalid:Owner/Repo.git",
+            "https://git.example.invalid/Owner/Repo",
+        ),
+        ("http://gitlab.com/owner/repo", None),
+    ],
+)
+def test_canonical_source_url_normalises_safe_repository_links(raw, expected):
+    assert store_discovery.canonical_source_url(raw) == expected
+
+
+@pytest.mark.parametrize(
     ("releases", "expected"),
     [
         ([_release()], True),
@@ -142,7 +157,14 @@ def test_discovery_keeps_store_backed_github_repositories():
         "https://github.com/owner/keeper",
         "https://github.com/owner/sshremote",
     ]
-    assert _reasons(result)["plugins/gitlab"].startswith("not a GitHub repository")
+    assert (
+        _reasons(result)["plugins/gitlab"]
+        == "source name 'gitlab' matches no store plugin"
+    )
+    assert result.sources == {
+        "Keeper": ["https://github.com/owner/keeper"],
+        "SshRemote": ["https://github.com/owner/sshremote"],
+    }
 
 
 def test_discovery_skips_repositories_already_hand_maintained():
@@ -168,6 +190,55 @@ def test_discovery_skips_archived_repositories():
     assert (
         _reasons(result)["https://github.com/owner/keeper"] == "repository is archived"
     )
+    assert result.sources["Keeper"] == ["https://github.com/owner/keeper"]
+
+
+def test_discovery_records_external_sources_without_adding_them_to_the_audit():
+    gitmodules = """\
+[submodule "plugins/PowerTools"]
+\tpath = plugins/PowerTools
+\turl = https://gitlab.com/NGnius/PowerTools
+[submodule "plugins/decky-bluetooth-wake-control"]
+\tpath = plugins/decky-bluetooth-wake-control
+\turl = https://gitlab.com/finewolf-projects/decky-plugin-bluetooth-wake-control.git
+"""
+    result = _discover(
+        gitmodules_text=gitmodules,
+        store_versions={"powertools": set(), "bt wake control": set()},
+        repo_metadata=lambda *_args: pytest.fail("external sources need no GitHub API"),
+        plugin_name=lambda *_args: pytest.fail("external sources need no plugin.json"),
+        releases=lambda *_args: pytest.fail("external sources are not audited"),
+    )
+
+    assert result.included == []
+    assert result.sources == {
+        "BT Wake Control": [
+            "https://gitlab.com/finewolf-projects/decky-plugin-bluetooth-wake-control"
+        ],
+        "PowerTools": ["https://gitlab.com/NGnius/PowerTools"],
+    }
+
+
+def test_discovery_matches_unique_names_without_spaces_for_source_links():
+    gitmodules = """\
+[submodule "plugins/MusicControl"]
+\tpath = plugins/MusicControl
+\turl = https://github.com/owner/MusicControl
+"""
+    result = _discover(
+        gitmodules_text=gitmodules,
+        store_versions={
+            "music control": {"0.9.0"},
+            "musiccontrol": {"1.0.0"},
+        },
+        plugin_name=lambda *_args: "Music Control",
+        releases=lambda *_args: [],
+    )
+
+    assert result.sources == {
+        "Music Control": ["https://github.com/owner/musiccontrol"],
+        "musiccontrol": ["https://github.com/owner/musiccontrol"],
+    }
 
 
 def test_discovery_skips_when_metadata_is_unavailable():
@@ -277,6 +348,7 @@ def test_discovery_skips_repositories_the_store_has_caught_up_to():
         == "no stable single-zip release beyond what the official store "
         "already publishes"
     )
+    assert result.sources["Keeper"] == ["https://github.com/owner/keeper"]
 
 
 def test_discovery_records_the_store_versions_to_defer_to():
@@ -305,6 +377,18 @@ def test_render_versions_is_sorted_and_newline_terminated():
     ]
 
 
+def test_render_sources_is_sorted_and_newline_terminated():
+    rendered = store_discovery.render_sources(
+        {
+            "Plugin B": ["https://github.com/owner/b"],
+            "Plugin A": ["https://github.com/owner/a"],
+        }
+    )
+
+    assert rendered.endswith("\n")
+    assert list(json.loads(rendered)) == ["Plugin A", "Plugin B"]
+
+
 def test_discovery_lets_only_one_repository_claim_a_plugin_name():
     # An original and a maintainer fork both resolve to one plugin name; the
     # catalog can merge only one source into that entry.
@@ -330,6 +414,10 @@ def test_discovery_lets_only_one_repository_claim_a_plugin_name():
         _reasons(result)["https://github.com/forker/keeper"]
         == "plugin name 'Keeper' already tracked via https://github.com/owner/keeper"
     )
+    assert result.sources["Keeper"] == [
+        "https://github.com/forker/keeper",
+        "https://github.com/owner/keeper",
+    ]
 
 
 def test_release_size_classifier_is_digest_independent_and_release_local():
@@ -518,3 +606,39 @@ def test_load_store_versions_rejects_malformed_documents(tmp_path):
     )
     with pytest.raises(ValueError):
         plugin_release_utils.load_store_versions(str(path))
+
+
+def test_load_store_sources_canonicalises_and_tolerates_absence(tmp_path):
+    assert plugin_release_utils.load_store_sources(str(tmp_path / "absent.json")) == {}
+
+    path = tmp_path / "store_sources.json"
+    path.write_text(
+        json.dumps(
+            {
+                "Official Plugin": [
+                    "https://github.com/Owner/Repo/",
+                    "https://github.com/owner/repo",
+                    "https://gitlab.com/Owner/Repo.git",
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert plugin_release_utils.load_store_sources(str(path)) == {
+        "Official Plugin": [
+            "https://github.com/owner/repo",
+            "https://gitlab.com/Owner/Repo",
+        ]
+    }
+
+
+def test_load_store_sources_rejects_malformed_documents(tmp_path):
+    path = tmp_path / "store_sources.json"
+    path.write_text(json.dumps([]), encoding="utf-8")
+    with pytest.raises(ValueError):
+        plugin_release_utils.load_store_sources(str(path))
+
+    path.write_text(json.dumps({"Official Plugin": "owner/repo"}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        plugin_release_utils.load_store_sources(str(path))

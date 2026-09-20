@@ -3224,18 +3224,13 @@ def _trivy_database_identity(version_payload: Any) -> Optional[dict[str, Any]]:
     ):
         return None
 
-    freshness_values = []
-    for freshness_field in ("UpdatedAt", "DownloadedAt"):
-        if freshness_field not in vulnerability_database:
-            continue
-        value = vulnerability_database[freshness_field]
-        if not isinstance(value, str) or not value.strip():
-            return None
-        freshness_values.append(value)
-
-    if not freshness_values:
+    updated_at = vulnerability_database.get("UpdatedAt")
+    if not isinstance(updated_at, str) or not updated_at.strip():
         return None
-    return dict(vulnerability_database)
+    # DownloadedAt describes local cache state, not vulnerability database
+    # content. Keep the audit context stable when the same database is
+    # restored or prefetched at a different time.
+    return {"Version": database_version, "UpdatedAt": updated_at.strip()}
 
 
 def _scanner_runtime_identities(policy: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -4313,6 +4308,12 @@ def build_audit_worklist(
                 )
             )
             continue
+        # Archived repositories are read-only and can never publish another
+        # release, so they are skipped rather than enumerated. See the
+        # matching skip in audit_worklist.prepare_audit_worklist.
+        if isinstance(metadata, Mapping) and metadata.get("archived"):
+            log.info("Skipping archived repository %s", repository)
+            continue
         if latest_only:
             eligible = eligible[:1]
         if not eligible:
@@ -4973,7 +4974,11 @@ def audit_release(
         return report
 
     if meta.get("archived"):
-        report.errors.append(f"Repository {owner}/{repo} is archived.")
+        # Worklist preparation skips archived repositories, so reaching here
+        # means a caller asked for this release directly or the snapshot went
+        # stale mid-run. Archival is a repository lifecycle fact and not a
+        # defect in the artifact, so it must not poison the classification.
+        log.info("Auditing archived repository %s/%s.", owner, repo)
 
     # A producer-recorded source-resolution failure is already a complete,
     # release-local worker outcome.  In particular, it must not probe scanner

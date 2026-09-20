@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="A browser catalog for Decky Extended Plugins.">
   <title>Decky Extended Plugins</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="storefront.css">
 </head>
 <body>
@@ -28,8 +29,8 @@
       <div class="shell hero-grid">
         <div>
           <p class="eyebrow">Community catalog for Decky Loader</p>
-          <h1 id="hero-title">More plugins.<br><span class="gradient-text">Clearer choices.</span></h1>
-          <p class="hero-copy">Browse newer releases and selected community plugins with their source, version difference, and audit state visible before you add the store to Decky Loader.</p>
+          <h1 id="hero-title">The official store.<br><span class="gradient-text">Plus everything else.</span></h1>
+          <p class="hero-copy">Adds newer builds and community plugins alongside the official store, and defers to the official file whenever both have the same version.</p>
           <p class="hero-links"><a href="#catalog">Browse the catalog</a> <a href="audit.html">How security review works</a></p>
         </div>
 
@@ -82,6 +83,10 @@
           <span class="sr-only">Search plugins</span>
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m20 20-4.3-4.3m1.3-5.2a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           <input class="control" id="search" type="search" placeholder="Search plugins, authors, or tags" autocomplete="off">
+          <button class="search-clear" id="search-clear" type="button" hidden>
+            <span class="sr-only">Clear search</span>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
         </label>
         <div class="sort-controls">
           <label class="sort-wrap" for="sort"><span class="sr-only">Sort plugins</span>
@@ -106,6 +111,7 @@
         <button class="chip" type="button" data-category="library" aria-pressed="false">Library</button>
         <button class="chip" type="button" data-category="utilities" aria-pressed="false">Utilities</button>
         <button class="chip" type="button" data-category="media" aria-pressed="false">Media</button>
+        <button class="chip" type="button" data-category="root" aria-pressed="false">Runs as root</button>
       </div>
       <p class="catalog-state" id="catalog-loading" role="status">Loading the Stable catalog.</p>
       <div class="catalog-state catalog-error" id="catalog-error" role="alert" hidden>
@@ -144,10 +150,21 @@
     </section>
   </div>
 
+  <div class="zoom-backdrop" id="zoom-backdrop" role="dialog" aria-modal="true" aria-label="Plugin image" hidden>
+    <button class="zoom-close" id="zoom-close" type="button">
+      <span class="sr-only">Close image</span>
+      <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+    <img id="zoom-image" alt="">
+  </div>
+
   <div class="modal-backdrop" id="detail-backdrop" hidden>
     <section class="modal" id="detail-dialog" role="dialog" aria-modal="true" aria-labelledby="detail-name" tabindex="-1">
       <header class="modal-head">
-        <h2 id="detail-name">Plugin details</h2>
+        <div class="modal-title">
+          <h2 id="detail-name">Plugin details</h2>
+          <p class="detail-meta" id="detail-meta"></p>
+        </div>
         <button class="close-button" type="button" data-close="detail" aria-label="Close plugin details">×</button>
       </header>
       <div class="modal-body" id="detail-content"></div>

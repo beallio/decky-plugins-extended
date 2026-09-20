@@ -1,5 +1,4 @@
 import base64
-import html
 import json
 import os
 import shutil
@@ -24,6 +23,7 @@ from plugin_release_utils import (
     canonicalize_github_repository_url,
     get_zip_asset,
     is_release_eligible,
+    load_store_sources,
     load_store_versions,
     normalize_github_sha256_digest,
     normalize_version,
@@ -182,6 +182,24 @@ def resolve_tags(plugin_json, pkg):
     return sorted({tag for tag in tags if tag != "debug"})
 
 
+def merge_root_tag(entry, tags):
+    """Carry a declared root flag onto an entry that keeps the store's tags.
+
+    A merged entry inherits the official catalog's tags, so a plugin whose
+    plugin.json declares the flag would otherwise install with no warning:
+    PluginCard decides that from the tag alone. Append rather than replace --
+    the store's tags are curated, and two repositories can merge into one
+    entry, so replacing could drop what the earlier one contributed.
+    """
+    if not entry or "root" not in tags:
+        return False
+    existing = entry.get("tags") or []
+    if "root" in existing:
+        return False
+    entry["tags"] = [*existing, "root"]
+    return True
+
+
 def resolve_description(plugin_json, pkg, repo_info):
     """publish.description is the store-facing copy; package.json's description
     is aimed at developers and is sometimes not even in English."""
@@ -292,8 +310,10 @@ def sort_versions(versions):
 def official_latest_version(entry):
     """The version an upstream catalog entry leads with before this run merges.
 
-    Called before merge_plugin_versions() mutates the entry, so it reports what
-    the official store publishes rather than what this catalog assembles.
+    Call this on the freshly fetched catalog, before the repository loop starts:
+    merge_plugin_versions() mutates entries in place, and two repositories can
+    resolve to one plugin name, so a call from inside the loop can read back
+    this catalog's own merge as the official store's version.
 
     The ordering rule must match the one annotate_official_version() applies to
     the merged side. Ranking the official side by created timestamp while
@@ -336,14 +356,40 @@ def annotate_official_version(entry, official_version):
     return True
 
 
-def merge_plugin_versions(existing_plugin, new_versions):
+def refresh_plugin_updated(plugin) -> None:
+    """Use the latest valid publication date without changing its source string."""
+    latest_key = None
+    for version in plugin.get("versions") or []:
+        value = version.get("created")
+        key = timestamp_order_key(value)
+        if key[0] and (latest_key is None or key > latest_key):
+            latest_key = key
+            plugin["updated"] = value
+
+
+def merge_plugin_versions(existing_plugin, new_versions, contributed=None):
+    """Merge one repository's releases into a catalog entry.
+
+    `contributed` collects the version names earlier repositories wrote into
+    this same entry during this run. An equal hash on one of those means two
+    repositories resolved to one plugin name and mirrored each other's bytes,
+    so the later one takes the artifact: read_repo_urls() reads the
+    store-backed list last and its source should own it. An equal hash on any
+    other version is left alone, which keeps the catalog deferring to the
+    official store's file and keeps an unchanged release's created date.
+    """
+    if contributed is None:
+        contributed = set()
     existing_versions = {v["name"]: v for v in existing_plugin.get("versions", [])}
 
     for nv in new_versions:
+        existing = existing_versions.get(nv["name"])
         # Update if it doesn't exist or if the hash has changed
-        if nv["name"] not in existing_versions or existing_versions[nv["name"]].get(
-            "hash"
-        ) != nv.get("hash"):
+        if (
+            existing is None
+            or existing.get("hash") != nv.get("hash")
+            or nv["name"] in contributed
+        ):
             if nv["name"] in existing_versions:
                 idx = existing_plugin["versions"].index(existing_versions[nv["name"]])
                 # Preserve existing fields we don't strictly overwrite
@@ -357,19 +403,11 @@ def merge_plugin_versions(existing_plugin, new_versions):
             else:
                 existing_plugin.setdefault("versions", []).append(nv)
             existing_versions[nv["name"]] = nv
+        contributed.add(nv["name"])
 
     sort_versions(existing_plugin["versions"])
 
-    publication_dates = [
-        version.get("created") for version in existing_plugin["versions"]
-    ]
-    valid_publication_dates = [
-        value for value in publication_dates if timestamp_order_key(value)[0]
-    ]
-    if valid_publication_dates:
-        existing_plugin["updated"] = max(
-            valid_publication_dates, key=timestamp_order_key
-        )
+    refresh_plugin_updated(existing_plugin)
 
 
 def remove_blocked_versions(existing_plugin, blocked_identities):
@@ -495,6 +533,12 @@ def read_repo_urls(path=PLUGIN_LIST_FILE, discovered=DISCOVERED_PLUGIN_LIST_FILE
     hand-maintained file. Lines are returned verbatim rather than canonicalized:
     main() canonicalizes inside its per-repository try block so one malformed
     line is reported as that repository's failure instead of aborting the run.
+
+    The order matters. Two repositories can resolve to one plugin name and
+    publish different bytes under one version name -- a fork and its upstream
+    both tagging 'nightly'. merge_plugin_versions() lets the later write win,
+    so reading the store-backed list second means the store's own source
+    decides the artifact rather than whichever list happened to come first.
     """
     urls = _read_url_lines(path)
     if discovered and os.path.exists(discovered):
@@ -625,17 +669,18 @@ def build_storefront_metadata(
         if not all(record.values()):
             continue
         details["source_urls"].add(record["source_url"])
-        identity = tuple(
-            record[field]
-            for field in ("name", "hash", "tag", "repository", "source_url")
-        )
-        if identity not in {
-            tuple(
-                item[field]
-                for field in ("name", "hash", "tag", "repository", "source_url")
-            )
-            for item in details["versions"]
-        }:
+        # Key on name and hash alone. Two repositories can publish identical
+        # bytes for one version -- a fork mirroring its upstream -- and the
+        # storefront matches a version to its source on exactly those two
+        # fields, so a second row differing only in repository leaves that
+        # version with no resolvable source and no audit record. Last write
+        # wins, and read_repo_urls() reads the store-backed list last.
+        identity = (record["name"], record["hash"])
+        for index, item in enumerate(details["versions"]):
+            if (item["name"], item["hash"]) == identity:
+                details["versions"][index] = record
+                break
+        else:
             details["versions"].append(record)
 
     catalog_keys = set(catalog_names_by_key)
@@ -704,7 +749,14 @@ def build_storefront_metadata(
                 catalog_names_by_key.get(key, set()),
                 key=lambda name: (name.casefold(), name),
             ),
-            "provenance": "official" if key in official_catalog_names else "extended",
+            # A name in the official catalog says nothing about where the
+            # versions came from: most entries here are in the store AND carry
+            # builds this catalog adds, which is the whole point of it.
+            "provenance": (
+                ("both" if versions else "official")
+                if key in official_catalog_names
+                else "extended"
+            ),
             "versions": versions,
         }
         source_urls = sorted(details["source_urls"])
@@ -741,8 +793,45 @@ def write_storefront_metadata(path, metadata):
         metadata_file.write("\n")
 
 
+def _backfill_names_by_artifact(records):
+    """Name records left over from a repository rename, by artifact identity.
+
+    A repository that was renamed keeps its old URL in the verdict store, so
+    the caller's map -- keyed on the repositories currently tracked -- cannot
+    name it. The same bytes under the current name can. GitHub does redirect a
+    renamed repository, but its own documentation says that breaks the moment
+    the old name is reused, and it would then resolve to an unrelated project
+    silently; a SHA-256 cannot be repointed that way.
+
+    Only an unambiguous match is used. A hash claimed by two names would mean
+    two plugins shipping identical bytes, and guessing between them is worse
+    than leaving the record unnamed.
+    """
+    hash_fields = ("current_artifact_sha256", "stored_artifact_sha256")
+    claimed = {}
+    for record in records:
+        name = record.get("plugin_name")
+        if not name:
+            continue
+        for field in hash_fields:
+            digest = record.get(field)
+            if digest:
+                claimed.setdefault(digest, set()).add(name)
+
+    for record in records:
+        if record.get("plugin_name"):
+            continue
+        candidates = set()
+        for field in hash_fields:
+            digest = record.get(field)
+            if digest:
+                candidates |= claimed.get(digest, set())
+        if len(candidates) == 1:
+            record["plugin_name"] = candidates.pop()
+
+
 def _public_audit_records(
-    verdicts, blockable_rules=None, current_identity_records=None
+    verdicts, blockable_rules=None, current_identity_records=None, plugin_names=None
 ):
     """Return only the verdict fields that are safe and useful to publish."""
     records = []
@@ -819,6 +908,23 @@ def _public_audit_records(
             }
         )
 
+    # The audit stores verdicts by repository, so the plugin name has to be
+    # supplied by the caller. Stamp it once here rather than at each of the
+    # places a record can be built. It is already public in plugins.json; the
+    # audit page shows it so a reader does not have to recognise a slug.
+    names = {
+        _repository_slug(repository) or str(repository).casefold(): str(name)
+        for repository, name in (plugin_names or {}).items()
+        if repository and name
+    }
+    for record in records:
+        slug = _repository_slug(record["repository"])
+        record["plugin_name"] = names.get(slug) or names.get(
+            record["repository"].casefold(), ""
+        )
+
+    _backfill_names_by_artifact(records)
+
     # BLOCK is the only tier that can remove a release, so it must always be
     # visually first. Other tiers are labels, not a severity score.
     records.sort(
@@ -832,174 +938,6 @@ def _public_audit_records(
     return records
 
 
-def _audit_enforcement_copy(enforcement_mode):
-    escaped_mode = html.escape(str(enforcement_mode))
-    if enforcement_mode == "enforce":
-        return (
-            f"<strong>Current enforcement mode: {escaped_mode}.</strong> "
-            "Releases with a BLOCK verdict are excluded from the catalogs."
-        )
-    if enforcement_mode == "report-only":
-        return (
-            f"<strong>Current enforcement mode: {escaped_mode}.</strong> "
-            "No releases are currently excluded from the catalogs because of "
-            "audit verdicts; BLOCK results are reported only."
-        )
-    return (
-        f"<strong>Current enforcement mode: {escaped_mode}.</strong> "
-        "Consult the repository policy for how this mode affects the catalogs."
-    )
-
-
-def _render_audit_html(records, enforcement_mode):
-    cards = []
-    for record in records:
-        classification = html.escape(record["classification"])
-        classification_class = "block" if record["classification"] == "BLOCK" else ""
-        stored_classification = html.escape(record["stored_classification"])
-        policy_disagreement = ""
-        if record["classification"] != record["stored_classification"]:
-            policy_disagreement = f"""
-            <p class="policy-disagreement"><strong>Stored verdict: {stored_classification}.</strong>
-            This verdict predates the current policy; its recorded blocking rule IDs are not currently blockable.</p>"""
-        rule_ids = record["rule_ids"]
-        rendered_rules = (
-            " ".join(f"<code>{html.escape(rule_id)}</code>" for rule_id in rule_ids)
-            if rule_ids
-            else '<span class="none-recorded">None recorded</span>'
-        )
-        audited_at = html.escape(record["audited_at"] or "Not recorded")
-        current_hash = html.escape(record["current_artifact_sha256"] or "Not verified")
-        stored_hash = html.escape(record["stored_artifact_sha256"] or "Not recorded")
-        cards.append(
-            f"""        <article class="verdict {classification_class}">
-            <div class="classification">Effective classification: {classification}</div>{policy_disagreement}
-            <dl>
-                <dt>Repository</dt>
-                <dd>{html.escape(record["repository"])}</dd>
-                <dt>Release</dt>
-                <dd>{html.escape(record["release"])}</dd>
-                <dt>Tag / asset</dt>
-                <dd>{html.escape(record["tag"])} / {html.escape(str(record["asset_id"]))}</dd>
-                <dt>Identity</dt>
-                <dd>{html.escape(record["identity_status"])} — {html.escape(record["outcome"])}</dd>
-                <dt>Current hash</dt>
-                <dd>{current_hash}</dd>
-                <dt>Stored hash</dt>
-                <dd>{stored_hash}</dd>
-                <dt>Rule IDs</dt>
-                <dd class="rules">{rendered_rules}</dd>
-                <dt>Audited</dt>
-                <dd>{audited_at}</dd>
-            </dl>
-        </article>"""
-        )
-
-    verdict_markup = "\n".join(cards)
-    if not verdict_markup:
-        verdict_markup = (
-            '        <p class="empty">No releases have been audited yet.</p>'
-        )
-
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Plugin Audit Log — Decky Extended Plugins</title>
-    <style>
-        :root {{ color-scheme: dark; }}
-        * {{ box-sizing: border-box; }}
-        body {{
-            margin: 0;
-            background: #0d0d0d;
-            color: #f7f7f7;
-            font-family: system-ui, sans-serif;
-            line-height: 1.5;
-        }}
-        main {{ width: min(100% - 2rem, 960px); margin: 0 auto; padding: 3rem 0; }}
-        h1 {{ color: #00ffff; margin-bottom: 0.5rem; }}
-        h2 {{ color: #ffff00; margin-top: 2.5rem; }}
-        a {{ color: #00ffff; }}
-        .intro, .enforcement {{
-            padding: 1rem 1.25rem;
-            background: #191919;
-            border-left: 4px solid #00ffff;
-            border-radius: 0.35rem;
-        }}
-        .enforcement {{ border-color: #ffff00; }}
-        .tier-explanation {{ display: grid; gap: 0.75rem; }}
-        .tier-explanation p {{ margin: 0; }}
-        .verdict {{
-            margin: 1rem 0;
-            padding: 1.25rem;
-            background: #191919;
-            border: 2px solid #555;
-            border-radius: 0.5rem;
-        }}
-        .verdict.block {{
-            border: 4px solid #ff4d6d;
-            box-shadow: 0 0 18px rgba(255, 77, 109, 0.45);
-        }}
-        .classification {{
-            display: inline-block;
-            margin-bottom: 0.75rem;
-            padding: 0.25rem 0.55rem;
-            background: #333;
-            color: #fff;
-            font-weight: 800;
-            letter-spacing: 0.04em;
-        }}
-        .block .classification {{ background: #ff4d6d; color: #090909; }}
-        .policy-disagreement {{
-            margin: 0 0 1rem;
-            padding: 0.75rem;
-            background: #302a16;
-            border-left: 4px solid #ffff00;
-        }}
-        dl {{ display: grid; grid-template-columns: 8rem 1fr; gap: 0.4rem 1rem; margin: 0; }}
-        dt {{ font-weight: 700; color: #c9c9c9; }}
-        dd {{ margin: 0; overflow-wrap: anywhere; }}
-        code {{
-            display: inline-block;
-            margin: 0 0.3rem 0.3rem 0;
-            padding: 0.15rem 0.35rem;
-            background: #303030;
-            color: #ffff00;
-            border-radius: 0.2rem;
-        }}
-        .none-recorded, .empty {{ color: #bdbdbd; }}
-        .empty {{ padding: 2rem; text-align: center; border: 2px dashed #555; }}
-        @media (max-width: 600px) {{
-            dl {{ grid-template-columns: 1fr; }}
-            dt {{ margin-top: 0.45rem; }}
-        }}
-    </style>
-</head>
-<body>
-    <main>
-        <p><a href="index.html">&larr; Decky Extended Plugins</a></p>
-        <h1>Plugin Audit Log</h1>
-        <p class="intro">This page publishes each release's effective classification under the current policy and keeps any older stored verdict visible when the two disagree. It lists rule IDs only; private evidence and file contents are never published.</p>
-
-        <h2>What the tiers mean</h2>
-        <section class="tier-explanation" aria-label="Audit tier explanations">
-            <p><strong>BLOCK</strong> means a deterministic structural fact such as a malware signature, archive traversal, a setuid bit, or a zip bomb, with no innocent explanation. It is the only tier that can remove a release.</p>
-            <p><strong>MANUAL_REVIEW</strong> means a human should look; it does not mean the plugin is dangerous. Most Decky plugins trip these rules because SteamOS has a read-only root and useful plugins often need sudo, mount, or systemctl.</p>
-            <p><strong>Passing does not prove a plugin is safe.</strong> An automated audit can miss harmful behavior.</p>
-        </section>
-
-        <h2>Current policy</h2>
-        <p class="enforcement">{_audit_enforcement_copy(enforcement_mode)}</p>
-
-        <h2>Audited releases</h2>
-{verdict_markup}
-    </main>
-</body>
-</html>
-"""
-
-
 def write_audit_outputs(
     verdicts,
     enforcement_mode,
@@ -1007,10 +945,13 @@ def write_audit_outputs(
     *,
     blockable_rules=None,
     current_identity_records=None,
+    plugin_names=None,
 ):
     """Publish human- and machine-readable audit records without evidence."""
     os.makedirs(destination, exist_ok=True)
-    records = _public_audit_records(verdicts, blockable_rules, current_identity_records)
+    records = _public_audit_records(
+        verdicts, blockable_rules, current_identity_records, plugin_names
+    )
     payload = {
         "enforcement_mode": str(enforcement_mode),
         "releases": records,
@@ -1019,9 +960,6 @@ def write_audit_outputs(
     with open(os.path.join(destination, "audit.json"), "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
         f.write("\n")
-    with open(os.path.join(destination, "audit.html"), "w", encoding="utf-8") as f:
-        f.write(_render_audit_html(records, enforcement_mode))
-
     print(f"Published audit log with {len(records)} release(s).")
 
 
@@ -1054,6 +992,15 @@ def main():
     official_catalog_names = _catalog_name_keys(plugins) | _catalog_name_keys(
         testing_plugins
     )
+    # Capture what the store leads with before any merge touches these entries.
+    # Two repositories can resolve to one plugin name, so reading this inside the
+    # loop lets the second pass mistake the first pass's merge for the store.
+    official_stable_versions = {
+        p.get("name", "").lower(): official_latest_version(p) for p in plugins
+    }
+    official_testing_versions = {
+        p.get("name", "").lower(): official_latest_version(p) for p in testing_plugins
+    }
 
     # Maintain independent ID spaces
     max_stable_id = max([p.get("id", 0) for p in plugins]) if plugins else 0
@@ -1067,6 +1014,7 @@ def main():
     # store's own artifact for each one, and the audit skips them for the same
     # reason, so both read this single committed file.
     store_versions = load_store_versions()
+    store_sources = load_store_sources()
 
     # The catalog gate honours security-policy.yml's current enforcement mode.
     # Under report-only a CURRENT BLOCK is reported and still ships; under the
@@ -1089,8 +1037,16 @@ def main():
 
     errors = []
     custom_plugin_names = set()
+    # Version names each entry received this run, keyed by channel and plugin
+    # name, so a second repository resolving to one name can be told apart from
+    # the official store's own rows.
+    contributed_versions = {}
     current_identity_records = []
-    storefront_contributions = []
+    storefront_contributions = [
+        {"name": name, "source_url": source_url}
+        for name, source_urls in store_sources.items()
+        for source_url in source_urls
+    ]
     storefront_warnings = []
 
     for url in repo_urls:
@@ -1320,9 +1276,14 @@ def main():
             # --- TESTING PLUGINS ---
             if existing_testing:
                 print("  Found in testing plugins. Merging versions...")
-                official_testing_version = official_latest_version(existing_testing)
-                merge_plugin_versions(existing_testing, testing_versions)
-                annotate_official_version(existing_testing, official_testing_version)
+                merge_plugin_versions(
+                    existing_testing,
+                    testing_versions,
+                    contributed_versions.setdefault(
+                        ("testing", plugin_name.casefold()), set()
+                    ),
+                )
+                merge_root_tag(existing_testing, tags)
             else:
                 print("  Adding to testing plugins...")
                 max_testing_id += 1
@@ -1338,7 +1299,7 @@ def main():
                     "downloads": 0,
                     "updates": 0,
                     "created": repo_info.get("created_at"),
-                    "updated": repo_info.get("updated_at"),
+                    "updated": None,
                 }
                 testing_plugins.append(new_testing)
 
@@ -1346,9 +1307,14 @@ def main():
             if stable_versions:
                 if existing_stable:
                     print("  Found in stable plugins. Merging versions...")
-                    official_stable_version = official_latest_version(existing_stable)
-                    merge_plugin_versions(existing_stable, stable_versions)
-                    annotate_official_version(existing_stable, official_stable_version)
+                    merge_plugin_versions(
+                        existing_stable,
+                        stable_versions,
+                        contributed_versions.setdefault(
+                            ("stable", plugin_name.casefold()), set()
+                        ),
+                    )
+                    merge_root_tag(existing_stable, tags)
                 else:
                     print("  Adding to stable plugins...")
                     max_stable_id += 1
@@ -1364,7 +1330,7 @@ def main():
                         "downloads": 0,
                         "updates": 0,
                         "created": repo_info.get("created_at"),
-                        "updated": repo_info.get("updated_at"),
+                        "updated": None,
                     }
                     plugins.append(new_stable)
             else:
@@ -1379,6 +1345,17 @@ def main():
             raise SystemExit(1) from exc
         except Exception as e:
             errors.append(f"Failed to process {url}: {e}")
+
+    # Once every repository has merged, so the note reports the version this
+    # catalog actually settled on and each entry is annotated exactly once.
+    for entry in plugins:
+        annotate_official_version(
+            entry, official_stable_versions.get(entry.get("name", "").lower())
+        )
+    for entry in testing_plugins:
+        annotate_official_version(
+            entry, official_testing_versions.get(entry.get("name", "").lower())
+        )
 
     if errors:
         print("\n=== ERRORS ===")
@@ -1407,6 +1384,9 @@ def main():
             testing_plugin["id"] = stable_plugin["id"]
 
     print("\nValidating plugin schemas...")
+    for catalog in (plugins, testing_plugins):
+        for plugin in catalog:
+            refresh_plugin_updated(plugin)
     validate_plugin_schema(plugins, "stable", custom_plugin_names)
     validate_plugin_schema(testing_plugins, "testing", custom_plugin_names)
 
@@ -1438,6 +1418,11 @@ def main():
         enforcement_mode,
         blockable_rules=blockable_rules,
         current_identity_records=current_identity_records,
+        plugin_names={
+            contribution["repository"]: contribution["name"]
+            for contribution in storefront_contributions
+            if contribution.get("repository") and contribution.get("name")
+        },
     )
 
     print("Successfully generated JSON files in the 'public' directory.")

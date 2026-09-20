@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Project quality gates. Invoked by orchestration/run-quality-gates from the repo
-# root. Exit non-zero to fail the gate. The engine separately enforces that
-# review notes are not deleted, so that is not repeated here.
+# root. Exit non-zero to fail the gate.
 set -euo pipefail
 
 fail() { echo "GATE FAILED: $*" >&2; exit 1; }
@@ -122,9 +121,8 @@ expect_actionlint_failure \
   "invalid job dependency" "job-needs" "$actionlint_mutation_dir/invalid-needs.yml"
 
 # --- lint --------------------------------------------------------------------
-# Rule set is pinned in pyproject.toml [tool.ruff.lint]. The whole tree was
-# linted and formatted clean on main before this plan started, so both gates run
-# repo-wide rather than scoped to changed files.
+# Rule set is pinned in pyproject.toml [tool.ruff.lint]. Both gates run repo-wide
+# rather than scoped to changed files.
 echo "== ruff check =="
 uv run ruff check . || fail "ruff check reported violations"
 

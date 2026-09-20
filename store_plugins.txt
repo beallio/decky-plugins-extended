@@ -6,9 +6,11 @@
 #
 # additional_plugins.txt stays hand-maintained and holds only the plugins the
 # official store does not carry.
+https://github.com/0u73r-h34v3n/sdh-playtime
 https://github.com/akazarenn/sdh-gamesync
 https://github.com/andrewburgess/steamdeck-discord-status
 https://github.com/bkohler616/tunneldeck
+https://github.com/bschelst/protondb-decky
 https://github.com/cat-in-a-box/decky-translator
 https://github.com/chenx-dust/betterkeyboard
 https://github.com/chenx-dust/deckyclash
@@ -46,6 +48,7 @@ https://github.com/s0t7x/decky-sunshine
 https://github.com/saad-alareqi/gamesprefixmanager
 https://github.com/sebet/decky-nonsteam-badges
 https://github.com/seraphli/decky-spy
+https://github.com/sheffeyg/cheatdeck
 https://github.com/steam3d/magicpodsdecky
 https://github.com/teppichseite/deckpass
 https://github.com/tikh-iv/shadowdeck
@@ -56,3 +59,4 @@ https://github.com/wtlnetwork/muon
 https://github.com/wurielle/decky-launch-options
 https://github.com/wynn1212/sdh-pausegames
 https://github.com/xfangfang/deckyinhibitscreensaver
+https://github.com/xxjsonderuloxx/decky-framegen
