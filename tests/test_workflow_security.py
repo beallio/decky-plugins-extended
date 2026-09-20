@@ -163,19 +163,6 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertNotIn("download-db-only", pull_request_workflow)
         self.assertNotIn("timeout-minutes: 90", pull_request_workflow)
 
-    def test_scheduled_audit_uses_central_verdict_delta_merge_cli(self):
-        workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
-
-        self.assertIn(
-            "uv run python audit_plugins.py \\\n"
-            "            --merge-verdict-delta security-reports/security-verdict-delta.json \\\n"
-            "            --verdict-store security-verdicts.json",
-            workflow,
-        )
-        self.assertNotIn(
-            "verdicts.setdefault(repository, {}).update(releases)", workflow
-        )
-
     def test_workflows_use_one_checked_in_scanner_bootstrap(self):
         plugin_workflow = (WORKFLOWS / "plugin-security-audit.yml").read_text()
         scheduled_workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
@@ -287,36 +274,35 @@ class WorkflowSecurityTests(unittest.TestCase):
     def test_scheduled_audit_publishes_only_changed_verdict_store(self):
         workflow = (WORKFLOWS / "scheduled-security-audit.yml").read_text()
         scheduled_job = workflow.split("  scheduled-audit:\n", maxsplit=1)[1]
+        publish_step = workflow.split(
+            "      - name: Publish updated verdicts\n", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
 
         self.assertIn("    permissions:\n      contents: write", scheduled_job)
+        self.assertIn("for attempt in 1 2; do", publish_step)
+        self.assertIn('git fetch origin "$GITHUB_REF_NAME"', publish_step)
         self.assertIn(
-            "git diff --quiet -- security-verdicts.json",
-            scheduled_job,
+            'git reset --hard "origin/${GITHUB_REF_NAME}"',
+            publish_step,
         )
-        self.assertIn("git add -- security-verdicts.json", scheduled_job)
-        self.assertNotIn("git add -A", scheduled_job)
-        self.assertIn("${changed_count} changed verdicts", scheduled_job)
-        self.assertIn("git status --porcelain", scheduled_job)
-        self.assertEqual(1, scheduled_job.count("git reset --hard HEAD"))
+        self.assertIn(
+            "--merge-verdict-delta security-reports/security-verdict-delta.json",
+            publish_step,
+        )
+        self.assertIn("git diff --quiet -- security-verdicts.json", publish_step)
+        self.assertIn("git add -- security-verdicts.json", publish_step)
+        self.assertNotIn("git add -A", publish_step)
+        self.assertIn("${changed_count} changed verdicts", publish_step)
+        self.assertIn("git status --porcelain", publish_step)
+        self.assertIn('git push origin "HEAD:${GITHUB_REF_NAME}"', publish_step)
+        self.assertNotIn("git pull --rebase", publish_step)
         self.assertLess(
-            scheduled_job.index('git commit -m "chore(security): publish'),
-            scheduled_job.index("git status --porcelain"),
+            publish_step.index('git reset --hard "origin/${GITHUB_REF_NAME}"'),
+            publish_step.index("--merge-verdict-delta"),
         )
         self.assertLess(
-            scheduled_job.index("git status --porcelain"),
-            scheduled_job.index("git reset --hard HEAD"),
-        )
-        self.assertLess(
-            scheduled_job.index("git reset --hard HEAD"),
-            scheduled_job.index('git pull --rebase origin "$GITHUB_REF_NAME"'),
-        )
-        self.assertEqual(
-            2,
-            scheduled_job.count('git pull --rebase origin "$GITHUB_REF_NAME"'),
-        )
-        self.assertEqual(
-            2,
-            scheduled_job.count('git push origin "HEAD:${GITHUB_REF_NAME}"'),
+            publish_step.index("--merge-verdict-delta"),
+            publish_step.index("git diff --quiet -- security-verdicts.json"),
         )
 
     def test_worklists_are_prepared_once_and_workers_are_api_free(self):

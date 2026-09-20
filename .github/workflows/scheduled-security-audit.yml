@@ -313,28 +313,29 @@ jobs:
             echo "Aggregate exit: ${{ steps.aggregate.outputs.audit_exit }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Merge publishable verdict delta
-        if: steps.aggregate.outputs.publishable == 'true'
-        run: |
-          uv run python audit_plugins.py \
-            --merge-verdict-delta security-reports/security-verdict-delta.json \
-            --verdict-store security-verdicts.json
-
-      - name: Snapshot published verdicts
-        if: steps.aggregate.outputs.publishable == 'true'
-        run: git show HEAD:security-verdicts.json > "$RUNNER_TEMP/security-verdicts-before.json"
-
       - name: Publish updated verdicts
         if: steps.aggregate.outputs.publishable == 'true'
         env:
           BEFORE_VERDICTS: ${{ runner.temp }}/security-verdicts-before.json
         run: |
-          if git diff --quiet -- security-verdicts.json; then
-            echo "No verdict changes to publish."
-            exit 0
-          fi
+          git config user.name "decky-plugins-extended audit bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          changed_count=$(uv run python - "$BEFORE_VERDICTS" security-verdicts.json <<'PY'
+          for attempt in 1 2; do
+            git fetch origin "$GITHUB_REF_NAME"
+            git reset --hard "origin/${GITHUB_REF_NAME}"
+            git show HEAD:security-verdicts.json > "$BEFORE_VERDICTS"
+
+            uv run python audit_plugins.py \
+              --merge-verdict-delta security-reports/security-verdict-delta.json \
+              --verdict-store security-verdicts.json
+
+            if git diff --quiet -- security-verdicts.json; then
+              echo "No verdict changes to publish."
+              exit 0
+            fi
+
+            changed_count=$(uv run python - "$BEFORE_VERDICTS" security-verdicts.json <<'PY'
           import json
           import sys
 
@@ -356,21 +357,20 @@ jobs:
           PY
           )
 
-          git config user.name "decky-plugins-extended audit bot"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- security-verdicts.json
-          git commit -m "chore(security): publish ${changed_count} changed verdicts"
+            git add -- security-verdicts.json
+            git commit -m "chore(security): publish ${changed_count} changed verdicts"
+            git status --porcelain
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
 
-          git status --porcelain
-          git reset --hard HEAD
-          git pull --rebase origin "$GITHUB_REF_NAME"
-          if git push origin "HEAD:${GITHUB_REF_NAME}"; then
-            exit 0
-          fi
+            if (( attempt == 1 )); then
+              echo "Initial verdict push raced with another update; reapplying delta and retrying once."
+            fi
+          done
 
-          echo "Initial verdict push raced with another update; rebasing and retrying once."
-          git pull --rebase origin "$GITHUB_REF_NAME"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          echo "::error::Verdict push raced with another update twice; no verdicts were published."
+          exit 1
 
       - name: Enforcement result
         if: always() && steps.aggregate.outputs.audit_exit != ''

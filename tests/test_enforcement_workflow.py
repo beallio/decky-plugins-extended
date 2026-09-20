@@ -416,16 +416,6 @@ def test_workflow_aggregation_enforces_coverage_and_merges_shard_deltas(tmp_path
         ),
         (
             SCHEDULED,
-            "Merge publishable verdict delta",
-            "steps.aggregate.outputs.publishable == 'true'",
-        ),
-        (
-            SCHEDULED,
-            "Snapshot published verdicts",
-            "steps.aggregate.outputs.publishable == 'true'",
-        ),
-        (
-            SCHEDULED,
             "Publish updated verdicts",
             "steps.aggregate.outputs.publishable == 'true'",
         ),

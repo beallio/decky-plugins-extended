@@ -51,7 +51,14 @@ def _init_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     _git(seed, "config", "user.email", "fixture@example.invalid")
     (seed / "security-verdicts.json").write_text("{}\n", encoding="utf-8")
     (seed / "runner-noise.txt").write_text("clean\n", encoding="utf-8")
-    _git(seed, "add", "security-verdicts.json", "runner-noise.txt")
+    for source_name in (
+        "audit_plugins.py",
+        "audit_source_snapshot.py",
+        "audit_worklist.py",
+        "plugin_release_utils.py",
+    ):
+        shutil.copy2(ROOT / source_name, seed / source_name)
+    _git(seed, "add", ".")
     _git(seed, "commit", "-m", "seed")
     _git(seed, "push", "origin", "main")
 
@@ -64,23 +71,51 @@ def _init_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     )
     _git(audit, "config", "user.name", "fixture")
     _git(audit, "config", "user.email", "fixture@example.invalid")
+    reports = audit / "security-reports"
+    reports.mkdir()
+    (reports / "security-verdict-delta.json").write_text("{}\n", encoding="utf-8")
 
     before = tmp_path / "security-verdicts-before.json"
     before.write_text("{}\n", encoding="utf-8")
     return origin, audit, before
 
 
+def _verdict_record(
+    *,
+    digest_character: str,
+    audit_context_character: str,
+    audited_at: str,
+) -> dict[str, object]:
+    return {
+        "artifact_sha256": digest_character * 64,
+        "audit_context_hash": audit_context_character * 64,
+        "audited_at": audited_at,
+        "blocking_rule_ids": [],
+        "classification": "PASS",
+        "review_rule_ids": [],
+        "warning_rule_ids": [],
+    }
+
+
 def _change_verdicts(repository: Path) -> None:
     verdicts = {
-        "owner/plugin": {
-            "v1.0.0@1": {
-                "artifact_sha256": "a" * 64,
-                "classification": "PASS",
-            }
+        "https://github.com/owner/plugin": {
+            "v1.0.0@1": _verdict_record(
+                digest_character="a",
+                audit_context_character="c",
+                audited_at="2026-09-20T00:00:00Z",
+            )
         }
     }
+    serialized = json.dumps(verdicts, indent=2, sort_keys=True) + "\n"
     (repository / "security-verdicts.json").write_text(
-        json.dumps(verdicts, indent=2, sort_keys=True) + "\n",
+        serialized,
+        encoding="utf-8",
+    )
+    reports = repository / "security-reports"
+    reports.mkdir(exist_ok=True)
+    (reports / "security-verdict-delta.json").write_text(
+        serialized,
         encoding="utf-8",
     )
 
@@ -122,6 +157,25 @@ def _run_publish(
         capture_output=True,
         text=True,
     )
+
+
+def _install_racing_git_wrapper(tmp_path: Path) -> Path:
+    wrapper_dir = tmp_path / "wrapper"
+    wrapper_dir.mkdir()
+    wrapper = wrapper_dir / "git"
+    wrapper.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "push" && ! -e "$RACE_FLAG" ]]; then
+  touch "$RACE_FLAG"
+  "$REAL_GIT" -C "$RACE_REPOSITORY" push origin main
+fi
+exec "$REAL_GIT" "$@"
+""",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    return wrapper_dir
 
 
 def test_publish_succeeds_with_unstaged_runner_noise(tmp_path):
@@ -168,7 +222,7 @@ def test_unchanged_verdicts_create_no_commit(tmp_path):
     assert _git(origin, "rev-parse", "main").stdout.strip() == original_head
 
 
-def test_publish_rebases_and_retries_once_after_losing_race(tmp_path):
+def test_publish_retries_once_after_losing_unrelated_file_race(tmp_path):
     origin, audit, before = _init_fixture(tmp_path)
     _change_verdicts(audit)
 
@@ -185,21 +239,7 @@ def test_publish_rebases_and_retries_once_after_losing_race(tmp_path):
     _git(competitor, "add", "competing-change.txt")
     _git(competitor, "commit", "-m", "competing update")
 
-    wrapper_dir = tmp_path / "wrapper"
-    wrapper_dir.mkdir()
-    wrapper = wrapper_dir / "git"
-    wrapper.write_text(
-        """#!/usr/bin/env bash
-set -euo pipefail
-if [[ "${1:-}" == "push" && ! -e "$RACE_FLAG" ]]; then
-  touch "$RACE_FLAG"
-  "$REAL_GIT" -C "$RACE_REPOSITORY" push origin main
-fi
-exec "$REAL_GIT" "$@"
-""",
-        encoding="utf-8",
-    )
-    wrapper.chmod(0o755)
+    wrapper_dir = _install_racing_git_wrapper(tmp_path)
 
     result = _run_publish(
         audit,
@@ -219,6 +259,60 @@ exec "$REAL_GIT" "$@"
     subjects = _git(origin, "log", "--format=%s", "main").stdout.splitlines()
     assert "competing update" in subjects
     assert "chore(security): publish 1 changed verdicts" in subjects
+
+
+def test_publish_reapplies_delta_after_competing_verdict_update(tmp_path):
+    origin, audit, before = _init_fixture(tmp_path)
+    _change_verdicts(audit)
+
+    competitor = tmp_path / "competitor"
+    subprocess.run(
+        ["git", "clone", str(origin), str(competitor)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    _git(competitor, "config", "user.name", "competitor")
+    _git(competitor, "config", "user.email", "competitor@example.invalid")
+    competing_verdicts = {
+        "https://github.com/other/plugin": {
+            "v2.0.0@2": _verdict_record(
+                digest_character="b",
+                audit_context_character="d",
+                audited_at="2026-09-20T00:01:00Z",
+            )
+        }
+    }
+    (competitor / "security-verdicts.json").write_text(
+        json.dumps(competing_verdicts, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    _git(competitor, "add", "security-verdicts.json")
+    _git(competitor, "commit", "-m", "competing verdict update")
+
+    result = _run_publish(
+        audit,
+        before,
+        tmp_path,
+        path_prefix=_install_racing_git_wrapper(tmp_path),
+        extra_env={
+            "RACE_FLAG": str(tmp_path / "race-triggered"),
+            "RACE_REPOSITORY": str(competitor),
+            "REAL_GIT": shutil.which("git") or "git",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Initial verdict push raced with another update" in result.stdout
+    published = json.loads(_git(origin, "show", "main:security-verdicts.json").stdout)
+    assert published == {
+        **competing_verdicts,
+        **json.loads(
+            (audit / "security-reports" / "security-verdict-delta.json").read_text(
+                encoding="utf-8"
+            )
+        ),
+    }
 
 
 def test_failed_commit_preserves_modified_verdicts(tmp_path):
@@ -261,11 +355,14 @@ def test_dirty_tree_diagnostic_prints_only_status_and_paths(tmp_path):
     _, audit, before = _init_fixture(tmp_path)
     _change_verdicts(audit)
     secret_content = "third-party source contents must not leak"
-    (audit / "runner-noise.txt").write_text(secret_content, encoding="utf-8")
+    (audit / "untracked-runner-output.txt").write_text(
+        secret_content,
+        encoding="utf-8",
+    )
 
     result = _run_publish(audit, before, tmp_path)
 
     assert result.returncode == 0, result.stderr
-    assert " M runner-noise.txt" in result.stdout
+    assert "?? untracked-runner-output.txt" in result.stdout
     assert secret_content not in result.stdout
     assert secret_content not in result.stderr
