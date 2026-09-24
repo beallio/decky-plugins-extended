@@ -44,3 +44,4 @@ https://github.com/beallio/protondb-decky
 https://github.com/beallio/hltb-for-deck
 https://github.com/moi952/decky-quick-tab
 https://github.com/goooroooX/CE-Decky
+https://github.com/Albusquerque/SignalBar
