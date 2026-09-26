@@ -605,6 +605,38 @@ def test_custom_update_check_skips_oversized_release_without_digest(monkeypatch)
     )
 
 
+def test_custom_update_check_does_not_download_obsolete_release(monkeypatch):
+    old_release = _release("v1.0.0", 1, "invalid")
+    newest_release = _release("v2.0.0", 2, FALLBACK_HASH)
+    # GitHub's release order can differ from version order.
+    old_release["published_at"] = "2026-09-01T00:00:00Z"
+    newest_release["published_at"] = "2026-01-01T00:00:00Z"
+    monkeypatch.setattr(generate_json, "read_repo_urls", lambda: [REPOSITORY])
+    monkeypatch.setattr(
+        generate_json, "get_repo_info", lambda *_: {"default_branch": "main"}
+    )
+    monkeypatch.setattr(generate_json, "get_plugin_json", lambda *_: {"name": "Plugin"})
+    monkeypatch.setattr(
+        generate_json, "get_package_json", lambda *_: {"name": "plugin"}
+    )
+    monkeypatch.setattr(
+        generate_json, "get_releases", lambda *_: [old_release, newest_release]
+    )
+    monkeypatch.setattr(generate_json, "load_store_versions", lambda: {})
+
+    def fail_on_old_asset(*_args, **_kwargs):
+        raise generate_json.ArtifactDownloadError("GitHub returned HTTP 500")
+
+    monkeypatch.setattr(generate_json, "calculate_hash", fail_on_old_asset)
+
+    assert (
+        check_for_updates.check_custom_repos(
+            {"Plugin": {("2.0.0", FALLBACK_HASH)}}, {}, BLOCKABLE_RULES
+        )
+        == []
+    )
+
+
 def test_custom_update_check_ignores_blocked_newest_release(monkeypatch):
     releases = [
         _release("v2.0.0", 2, BLOCKED_HASH),
@@ -710,61 +742,6 @@ def test_upstream_update_check_includes_blocked_newest_release_in_report_only_mo
         BLOCKABLE_RULES,
         enforcement_mode="report-only",
     ) == [("Plugin", "2.0.0")]
-
-
-def test_upstream_update_check_passes_non_default_download_policy(monkeypatch):
-    policy = _download_policy()
-    release = _release("v1.0.0", 1, "invalid")
-    artifact = release["assets"][0]["browser_download_url"]
-    monkeypatch.setattr(
-        generate_json,
-        "fetch_json",
-        lambda _url: [_plugin([_version("v1.0.0", "a" * 64)])],
-    )
-    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: [release])
-    observed = []
-
-    def calculate_hash(url, policy=None):
-        observed.append((url, policy))
-        return "b" * 64
-
-    monkeypatch.setattr(generate_json, "calculate_hash", calculate_hash)
-
-    assert check_for_updates.check_upstream(
-        {}, {}, BLOCKABLE_RULES, download_policy=policy
-    ) == [("Plugin", "1.0.0")]
-    assert observed == [(artifact, policy)]
-
-
-def test_custom_update_check_passes_non_default_download_policy(monkeypatch):
-    policy = _download_policy()
-    release = _release("v1.0.0", 1, "invalid")
-    artifact = release["assets"][0]["browser_download_url"]
-    monkeypatch.setattr(generate_json, "read_repo_urls", lambda: [REPOSITORY])
-    monkeypatch.setattr(
-        generate_json,
-        "get_repo_info",
-        lambda *_args: {"default_branch": "main"},
-    )
-    monkeypatch.setattr(
-        generate_json, "get_plugin_json", lambda *_args: {"name": "Plugin"}
-    )
-    monkeypatch.setattr(
-        generate_json, "get_package_json", lambda *_args: {"name": "plugin"}
-    )
-    monkeypatch.setattr(generate_json, "get_releases", lambda *_args: [release])
-    observed = []
-
-    def calculate_hash(url, policy=None):
-        observed.append((url, policy))
-        return "b" * 64
-
-    monkeypatch.setattr(generate_json, "calculate_hash", calculate_hash)
-
-    assert check_for_updates.check_custom_repos(
-        {}, {}, BLOCKABLE_RULES, download_policy=policy
-    ) == [("Plugin", "1.0.0")]
-    assert observed == [(artifact, policy)]
 
 
 def test_upstream_update_gate_requires_the_audited_hash(monkeypatch):

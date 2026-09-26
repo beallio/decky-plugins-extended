@@ -229,11 +229,21 @@ def check_custom_repos(
             )
             if not name:
                 raise ValueError(f"No plugin name resolved for {url}")
-            versions = []
+            newest = None
             valid_version_count = 0
-            for release in g.get_releases(owner, repo):
-                if not g.is_release_eligible(release, allow_prerelease=False):
-                    continue
+            releases = sorted(
+                (
+                    release
+                    for release in g.get_releases(owner, repo)
+                    if g.is_release_eligible(release, allow_prerelease=False)
+                ),
+                key=lambda release: g.version_sort_key(
+                    g.normalize_version(release.get("tag_name", "1.0.0")),
+                    release.get("published_at") or release.get("created_at") or "",
+                ),
+                reverse=True,
+            )
+            for release in releases:
                 if (
                     g.normalize_version(release.get("tag_name", "1.0.0"))
                     in deferred_versions
@@ -260,8 +270,8 @@ def check_custom_repos(
                     verdict.effective_classification != "BLOCK"
                     or enforcement_mode != "enforce"
                 ):
-                    versions.append(version)
-            g.sort_versions(versions)
+                    newest = version
+                    break
             if managed_plugin_names is not None and valid_version_count:
                 managed_plugin_names.add(name)
         except g.ArtifactDownloadError:
@@ -275,10 +285,10 @@ def check_custom_repos(
             print(f"  skipped {url}: {e}")
             continue
 
-        if versions and (versions[0]["name"], versions[0]["hash"]) not in live.get(
+        if newest and (newest["name"], newest["hash"]) not in live.get(
             name.casefold(), set()
         ):
-            missing.append((name, versions[0]["name"]))
+            missing.append((name, newest["name"]))
     return missing
 
 

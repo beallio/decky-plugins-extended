@@ -4,6 +4,7 @@ import os
 import shutil
 import sys
 import tempfile
+import zipfile
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -27,6 +28,7 @@ from plugin_release_utils import (
     load_store_versions,
     normalize_github_sha256_digest,
     normalize_version,
+    parse_github_release_asset_url,
     parse_github_repository_url,
     release_exceeds_download_limit,
     timestamp_order_key,
@@ -242,17 +244,52 @@ def get_releases(owner, repo):
     return get_all_releases(owner, repo, session=session, timeout=10)
 
 
-def calculate_hash(download_url, policy=None):
+def calculate_hash(download_url, policy=None, asset_id=None):
     print(f"    Downloading to calculate hash: {download_url}")
     try:
         with tempfile.TemporaryDirectory(prefix="decky-catalog-hash-") as temp_dir:
-            result = bounded_stream_download(
-                download_url,
-                os.path.join(temp_dir, "release.zip"),
-                session=anon_session,
-                kind="release",
-                policy=policy,
-            )
+            destination = os.path.join(temp_dir, "release.zip")
+            try:
+                result = bounded_stream_download(
+                    download_url,
+                    destination,
+                    session=anon_session,
+                    kind="release",
+                    policy=policy,
+                )
+            except requests.exceptions.RequestException as exc:
+                if (
+                    isinstance(asset_id, bool)
+                    or not isinstance(asset_id, int)
+                    or asset_id <= 0
+                    or (
+                        isinstance(exc, requests.exceptions.HTTPError)
+                        and (exc.response is None or exc.response.status_code < 500)
+                    )
+                ):
+                    raise
+                # Use the immutable asset ID from this release, not a cached
+                # catalog hash or another release's URL. GitHub's browser route
+                # can return 500 even when the authenticated asset API works.
+                owner, repo = parse_github_release_asset_url(download_url)
+                api_url = (
+                    f"https://api.github.com/repos/{owner}/{repo}"
+                    f"/releases/assets/{asset_id}"
+                )
+                print(
+                    f"    Browser download failed; trying GitHub asset API: {api_url}"
+                )
+                with get_session() as asset_session:
+                    asset_session.headers["Accept"] = "application/octet-stream"
+                    result = bounded_stream_download(
+                        api_url,
+                        destination,
+                        session=asset_session,
+                        kind="release",
+                        policy=policy,
+                    )
+                if not zipfile.is_zipfile(result.path):
+                    raise ValueError("GitHub asset API did not return a ZIP")
             return result.sha256
     except Exception as exc:
         raise ArtifactDownloadError(
@@ -287,7 +324,9 @@ def build_version_object(release, existing_plugin=None, policy=None):
     final_hash = normalize_github_sha256_digest(zip_asset.get("digest"))
 
     if not final_hash:
-        final_hash = calculate_hash(download_url, policy=policy)
+        final_hash = calculate_hash(
+            download_url, policy=policy, asset_id=zip_asset.get("id")
+        )
 
     return {
         "name": tag_name,

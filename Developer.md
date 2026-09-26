@@ -280,6 +280,14 @@ POST the Cloudflare deploy hook. The check asks whether a version is *absent* fr
 rather than whether the newest versions match, because merging GitHub releases
 into upstream entries regularly leaves this catalog ahead of Deckbrew's.
 
+For configured repositories, the update check verifies the highest eligible
+version first. It checks an older release only when the newer one is blocked
+or cannot be published. This avoids downloading obsolete ZIPs on every
+scheduled run. If GitHub provides no SHA-256 digest and the browser download
+fails, catalog hashing tries the authenticated GitHub asset API using that
+release's exact asset ID. Both routes still use the download size and timeout
+limits; an unverified asset stops the job rather than reusing a stored hash.
+
 To enable it, create a deploy hook under Pages -> Settings -> Builds &
 deployments -> Deploy hooks, and store the URL as the repository secret
 `CLOUDFLARE_DEPLOY_HOOK`. Without the secret the job fails loudly rather than silently

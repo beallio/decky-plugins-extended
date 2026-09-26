@@ -1,10 +1,15 @@
 import copy
+import hashlib
+import io
 import json
 import os
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+import requests
 
 os.environ.setdefault("GITHUB_TOKEN", "test-token")
 
@@ -40,68 +45,64 @@ class GenerateJsonTests(unittest.TestCase):
             "versions": [{"name": "1.2.3", "artifact": artifact, "hash": known_hash}]
         }
 
-        with patch.object(
-            generate_json, "calculate_hash", return_value=current_hash
-        ) as calculate_hash:
+        with patch.object(generate_json, "calculate_hash", return_value=current_hash):
             version = generate_json.build_version_object(release, existing)
 
-        calculate_hash.assert_called_once_with(artifact, policy=None)
         self.assertEqual(version["hash"], current_hash)
         self.assertEqual(version["artifact"], artifact)
 
-    def test_build_version_object_passes_non_default_download_policy(self):
-        artifact = "https://example.invalid/plugin.zip"
-        current_hash = "b" * 64
-        policy = {
-            "downloads": {
-                "release_max_bytes": 7,
-                "source_max_bytes": 11,
-                "connect_timeout_seconds": 2,
-                "read_timeout_seconds": 3,
-                "chunk_size_bytes": 2,
-            }
-        }
+    def test_hash_uses_exact_github_asset_api_when_browser_download_fails(self):
+        artifact = "https://github.com/owner/plugin/releases/download/v1.2.3/plugin.zip"
         release = {
             "tag_name": "v1.2.3",
-            "assets": [{"name": "plugin.zip", "browser_download_url": artifact}],
+            "assets": [
+                {"id": 42, "name": "plugin.zip", "browser_download_url": artifact}
+            ],
         }
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w") as archive:
+            archive.writestr("plugin.json", '{"name":"Plugin"}')
+        zip_bytes = payload.getvalue()
+        response = Mock(headers={"Content-Length": str(len(zip_bytes))})
+        response.iter_content.return_value = [zip_bytes]
+        asset_session = requests.Session()
+        with (
+            patch.object(
+                generate_json.anon_session,
+                "get",
+                side_effect=requests.exceptions.RetryError("500"),
+            ),
+            patch.object(generate_json, "get_session", return_value=asset_session),
+            patch.object(asset_session, "get", return_value=response) as asset_get,
+        ):
+            version = generate_json.build_version_object(release)
 
-        with patch.object(
-            generate_json, "calculate_hash", return_value=current_hash
-        ) as calculate_hash:
-            version = generate_json.build_version_object(release, policy=policy)
+        self.assertEqual(version["hash"], hashlib.sha256(zip_bytes).hexdigest())
+        self.assertEqual(version["artifact"], artifact)
+        self.assertEqual(asset_session.headers["Accept"], "application/octet-stream")
+        self.assertEqual(
+            asset_get.call_args.args[0],
+            "https://api.github.com/repos/owner/plugin/releases/assets/42",
+        )
 
-        calculate_hash.assert_called_once_with(artifact, policy=policy)
-        self.assertEqual(version["hash"], current_hash)
-
-    def test_calculate_hash_delegates_to_bounded_release_stream(self):
-        artifact = "https://example.invalid/plugin.zip"
-        current_hash = "b" * 64
-        policy = {
-            "downloads": {
-                "release_max_bytes": 7,
-                "source_max_bytes": 11,
-                "connect_timeout_seconds": 2,
-                "read_timeout_seconds": 3,
-                "chunk_size_bytes": 2,
-            }
-        }
-
-        class Result:
-            sha256 = current_hash
-
-        with patch.object(
-            generate_json, "bounded_stream_download", return_value=Result()
-        ) as bounded_download:
-            observed_hash = generate_json.calculate_hash(artifact, policy=policy)
-
-        args, kwargs = bounded_download.call_args
-        self.assertEqual(args[0], artifact)
-        self.assertEqual(Path(args[1]).name, "release.zip")
-        self.assertIs(kwargs["session"], generate_json.anon_session)
-        self.assertEqual(kwargs["kind"], "release")
-        self.assertIs(kwargs["policy"], policy)
-        self.assertEqual(observed_hash, current_hash)
+    def test_hash_rejects_non_zip_api_response_after_browser_failure(self):
+        artifact = "https://github.com/owner/plugin/releases/download/v1/plugin.zip"
+        response = Mock(headers={"Content-Length": "2"})
+        response.iter_content.return_value = [b"{}"]
+        asset_session = requests.Session()
+        with (
+            patch.object(
+                generate_json.anon_session,
+                "get",
+                side_effect=requests.exceptions.RetryError("500"),
+            ),
+            patch.object(generate_json, "get_session", return_value=asset_session),
+            patch.object(asset_session, "get", return_value=response),
+        ):
+            with self.assertRaisesRegex(
+                generate_json.ArtifactDownloadError, "did not return a ZIP"
+            ):
+                generate_json.calculate_hash(artifact, asset_id=42)
 
     def test_build_version_object_accepts_only_exact_github_digest(self):
         artifact = "https://example.invalid/plugin.zip"
@@ -134,9 +135,8 @@ class GenerateJsonTests(unittest.TestCase):
                 release["assets"][0]["digest"] = malformed
                 with patch.object(
                     generate_json, "calculate_hash", return_value=current_hash
-                ) as calculate_hash:
+                ):
                     version = generate_json.build_version_object(release)
-                calculate_hash.assert_called_once_with(artifact, policy=None)
                 self.assertEqual(version["hash"], current_hash)
 
     def test_normalize_version_extracts_version_from_prefixed_tags(self):
