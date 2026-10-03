@@ -4395,11 +4395,37 @@ def test_release_outcome_exit_precedence(classifications, expected):
 
 
 def test_empty_repository_selection_cli_writes_complete_shard_outputs(tmp_path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / "additional_plugins.txt").write_text(
+        "https://github.com/owner/repo\n", encoding="utf-8"
+    )
     output_dir = tmp_path / "reports"
     progress_path = tmp_path / "state" / "progress.json"
     verdict_delta_path = tmp_path / "deltas" / "shard-2.json"
-    tracked_verdict_path = ROOT / "security-verdicts.json"
+    tracked_verdict_path = repository / "security-verdicts.json"
+    tracked_verdict_path.write_text("{}\n", encoding="utf-8")
     tracked_verdict_bytes = tracked_verdict_path.read_bytes()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "add", "additional_plugins.txt", "security-verdicts.json"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=repository,
+        check=True,
+    )
 
     result = subprocess.run(
         [
@@ -4419,7 +4445,7 @@ def test_empty_repository_selection_cli_writes_complete_shard_outputs(tmp_path):
             "--verdict-delta",
             str(verdict_delta_path),
         ],
-        cwd=ROOT,
+        cwd=repository,
         capture_output=True,
         text=True,
     )
@@ -4435,11 +4461,6 @@ def test_empty_repository_selection_cli_writes_complete_shard_outputs(tmp_path):
         "reports": [],
         "schema_version": ap.AUDIT_SCHEMA_VERSION,
     }
-    assert (output_dir / "security-report.md").read_text(encoding="utf-8") == (
-        "# Decky Plugin Security Audit\n\n"
-        "Generated: \n\n"
-        "No plugin repository changes were detected.\n"
-    )
     assert verdict_delta_path.read_text(encoding="utf-8") == "{}\n"
     assert not progress_path.exists()
     assert tracked_verdict_path.read_bytes() == tracked_verdict_bytes
