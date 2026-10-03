@@ -46,3 +46,6 @@ https://github.com/moi952/decky-quick-tab
 https://github.com/goooroooX/CE-Decky
 https://github.com/Alyenax/GabeCubeAura
 https://github.com/jmedina21/deck-as-controller
+https://github.com/justinca92/spindeck
+https://github.com/michpalm/game-glance
+https://github.com/michpalm/ambideck
