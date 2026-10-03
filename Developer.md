@@ -99,6 +99,14 @@ Add the plugin repository URL to `additional_plugins.txt`, one URL per line:
 https://github.com/beallio/SDH-Ludusavi
 ```
 
+If a repository is renamed or transferred, confirm that it is still the same
+project and replace its URL in this list. The scheduled audit rejects a different
+repository name returned by GitHub with `repository-metadata-identity-mismatch`
+and records an incomplete audit (exit 4). Keep this identity check enabled. After
+the source change is merged, start a new scheduled audit against that revision.
+Verdicts are repository-specific; audit the releases under the new URL instead
+of copying verdicts from the old repository.
+
 Each repository must have:
 
 - A `plugin.json` file on its default branch with a `name` field. Decky
