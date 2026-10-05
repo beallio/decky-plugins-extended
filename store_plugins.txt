@@ -8,7 +8,6 @@
 # official store does not carry.
 https://github.com/0u73r-h34v3n/sdh-playtime
 https://github.com/akazarenn/sdh-gamesync
-https://github.com/andrewburgess/steamdeck-discord-status
 https://github.com/bkohler616/tunneldeck
 https://github.com/bschelst/protondb-decky
 https://github.com/cat-in-a-box/decky-translator
