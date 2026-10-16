@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 dependencies = [
     "PyYAML",
     "requests",
-    "urllib3",
+    "urllib3>=2.8.0",
 ]
 
 # This repository is a script plus its deps, not an importable package. Without

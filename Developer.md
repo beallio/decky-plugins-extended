@@ -234,6 +234,11 @@ uv run generate_json.py
 environment. The generated catalogs are written to `public/plugins.json` and
 `public/testing_plugins.json`.
 
+The HTTP transport requires `urllib3>=2.8.0`. Older versions have known issues
+with HTTPS proxy TLS verification, oversized chunk-size headers, and chunked
+Deflate streams. Keep the minimum in `pyproject.toml` and the resolved version
+in `uv.lock` at or above this patched release.
+
 Run the same local gates as CI with:
 
 ```sh
