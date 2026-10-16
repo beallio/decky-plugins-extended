@@ -18,6 +18,7 @@ import os
 import sys
 
 import generate_json as g
+from store_catalog import fetch_catalogs
 
 LIVE_URL = os.environ.get(
     "LIVE_CATALOG_URL", "https://decky-extended-plugins.beallio.com/plugins.json"
@@ -170,7 +171,8 @@ def check_upstream(
         for name in (ignored_plugin_names or set())
         if isinstance(name, str) and name
     }
-    for plugin in g.fetch_json(g.PLUGINS_URL):
+    catalogs = fetch_catalogs(g.fetch_json, g.PLUGINS_URL, g.TESTING_PLUGINS_URL)
+    for plugin in catalogs.stable:
         plugin_name = plugin.get("name")
         if (
             isinstance(plugin_name, str)

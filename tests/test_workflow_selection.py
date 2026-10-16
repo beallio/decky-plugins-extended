@@ -174,6 +174,7 @@ def _run_selection_summary(
         pytest.param(["audit_plugins.py"], "all", id="audit-only"),
         pytest.param(["generate_json.py"], "all", id="generator-only"),
         pytest.param(["check_for_updates.py"], "all", id="update-checker-only"),
+        pytest.param(["store_catalog.py"], "all", id="official-catalog-helper-only"),
         pytest.param(["plugin_release_utils.py"], "all", id="release-utility-only"),
         pytest.param(["security-policy.yml"], "all", id="policy-only"),
         pytest.param(["security-allowlist.yml"], "all", id="allowlist-only"),

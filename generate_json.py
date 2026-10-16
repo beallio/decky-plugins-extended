@@ -39,6 +39,7 @@ from plugin_release_utils import get_releases as get_all_releases
 from plugin_release_utils import (
     parse_semver as parse_semver,  # re-export for external callers of generate_json.parse_semver
 )
+from store_catalog import fetch_catalogs
 
 # Source URLs
 PLUGINS_URL = "https://plugins.deckbrew.xyz/plugins"
@@ -1026,8 +1027,9 @@ def main():
         sys.exit(1)
 
     print("Fetching base JSON lists...")
-    plugins = fetch_json(PLUGINS_URL)
-    testing_plugins = fetch_json(TESTING_PLUGINS_URL)
+    catalogs = fetch_catalogs(fetch_json, PLUGINS_URL, TESTING_PLUGINS_URL)
+    plugins = catalogs.stable
+    testing_plugins = catalogs.testing
     official_catalog_names = _catalog_name_keys(plugins) | _catalog_name_keys(
         testing_plugins
     )

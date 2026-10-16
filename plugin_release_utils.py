@@ -742,6 +742,7 @@ _FULL_AUDIT_PATHS = frozenset(
         "audit_plugins.py",
         "generate_json.py",
         "check_for_updates.py",
+        "store_catalog.py",
         "plugin_release_utils.py",
         "security-policy.yml",
         "security-allowlist.yml",

@@ -36,8 +36,11 @@ the repository is on GitHub, is not archived, is absent from
 `additional_plugins.txt`, has a `plugin.json` name that matches a published
 store plugin, and publishes at least one non-draft, non-prerelease single-zip
 release the official store does not already carry. Every rejection is printed
-with its reason, and `--check` exits 1 when any of its three generated files is
-stale.
+with its reason. A successful refresh writes four files: `store_plugins.txt`,
+`store_versions.json`, `store_sources.json`, and `store_catalogs.json`.
+`--check` exits 1 when an output is stale or an official catalog outage prevents
+a freshness check. Use `--catalogs-output PATH` to change the snapshot path for
+an isolated discovery run; normal builds read `store_catalogs.json`.
 
 ## Versions the official store already publishes
 
@@ -259,13 +262,13 @@ Cloudflare Pages dashboard, and the same deploy publishes `functions/`.
 
 The GitHub Actions workflow has two jobs.
 
-Both jobs first run `store_discovery.py`, which regenerates `store_plugins.txt`,
-`store_versions.json` and `store_sources.json` from the live official database.
+Both jobs first run `store_discovery.py`. When both official catalog channels
+are available, it refreshes `store_plugins.txt`, `store_versions.json`,
+`store_sources.json`, and the raw official catalog pair in `store_catalogs.json`.
 The official store publishes releases on its own schedule, so the committed
-discovery outputs go stale on their own; regenerating means neither job builds
-or polls an incomplete repository list. `store_discovery.py --check` reports
-staleness without writing and is the form to use locally or in a pre-commit
-hook.
+discovery outputs can become stale without a repository change.
+`store_discovery.py --check` reports staleness without writing and is the form
+to use locally or in a pre-commit hook.
 
 `build` runs when generator inputs change and on manual dispatch. It generates
 both catalogs with `uv` and validates their plugin IDs, names, version lists and
@@ -274,11 +277,12 @@ check instead of a failed Cloudflare build. It publishes nothing, and it
 discards its refreshed discovery outputs.
 
 `refresh` runs every 6 hours and on manual dispatch. It is the single writer of
-the discovery outputs: when they moved, it commits and pushes them, which is
-also what keeps the committed data current. A push made with `GITHUB_TOKEN`
-raises no workflow event, so this cannot loop back into the workflow, but
-Cloudflare does rebuild on it — the job therefore skips the deploy hook on any
-run where it pushed.
+the four discovery outputs: after a successful live discovery, it commits and
+pushes changed files. Counter-only changes to official download/update totals
+do not create a new saved snapshot or trigger a push. A push made with
+`GITHUB_TOKEN` raises no workflow event, so this cannot loop back into the
+workflow, but Cloudflare does rebuild on it. The job therefore skips the deploy
+hook on any run where it pushed.
 
 Because Cloudflare only rebuilds on push, the catalog would otherwise stay
 frozen at whatever upstream looked like at the last deploy. `check_for_updates.py`
@@ -300,6 +304,34 @@ To enable it, create a deploy hook under Pages -> Settings -> Builds &
 deployments -> Deploy hooks, and store the URL as the repository secret
 `CLOUDFLARE_DEPLOY_HOOK`. Without the secret the job fails loudly rather than silently
 skipping the rebuild.
+
+### Official store outages
+
+Discovery, update checking, and generation use the same paired-catalog loader
+in `store_catalog.py`. If either official channel cannot be fetched or has an
+invalid catalog structure, the loader uses both channels from the last saved
+`store_catalogs.json`. It never combines a fresh channel with a saved channel,
+uses merged `public/` output as an official source, or substitutes an empty
+catalog after a failed request.
+
+The saved snapshot has a UTC `captured_at` timestamp. Each fallback emits a
+warning with that timestamp; GitHub Actions also receives a workflow warning.
+There is no automatic age cutoff. Official entries can remain stale during a
+long outage, while current GitHub releases can still be checked and generated.
+The storefront has no separate outage indicator.
+
+During an outage, discovery validates and preserves its existing repository,
+version, and source files, reports `refreshed=false`, and skips publication.
+The later update check can still request a rebuild for a confirmed change, and
+Cloudflare can build with the committed snapshot. An outage alone does not
+request a rebuild. `--check` returns nonzero because it cannot establish live
+freshness.
+
+A missing or malformed saved catalog is fatal when live retrieval fails.
+Missing or invalid discovery metadata also stops an offline discovery run.
+Successful live retrieval can replace a corrupt snapshot on the next complete
+refresh. Existing artifact identity, hash, and security-policy checks remain
+in effect; this fallback does not suppress their failures.
 
 ## Security auditing
 

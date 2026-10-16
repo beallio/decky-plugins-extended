@@ -33,6 +33,7 @@ from typing import Callable, Iterable, Optional
 
 import generate_json as g
 import plugin_release_utils
+import store_catalog
 
 DATABASE_REPOSITORY = "SteamDeckHomebrew/decky-plugin-database"
 
@@ -194,16 +195,13 @@ def fetch_gitmodules(repository: str = DATABASE_REPOSITORY) -> str:
     return base64.b64decode(payload["content"]).decode("utf-8")
 
 
-def fetch_store_versions() -> dict[str, set[str]]:
-    """Versions the official store publishes, keyed by casefolded plugin name.
-
-    Both channels count: a version the testing store already carries is one the
-    official infrastructure built and vets, so this catalog has no reason to
-    republish or re-scan its own artifact for it.
-    """
+def fetch_store_versions(
+    catalogs: store_catalog.OfficialCatalogs,
+) -> dict[str, set[str]]:
+    """Versions already published by either official store channel."""
     published: dict[str, set[str]] = {}
-    for url in (g.PLUGINS_URL, g.TESTING_PLUGINS_URL):
-        for plugin in g.fetch_json(url):
+    for channel in (catalogs.stable, catalogs.testing):
+        for plugin in channel:
             name = plugin.get("name")
             if not isinstance(name, str) or not name:
                 continue
@@ -400,6 +398,57 @@ def render_sources(sources: dict[str, list[str]]) -> str:
     return json.dumps(ordered, indent=2, sort_keys=False) + "\n"
 
 
+def _validate_preserved_outputs(
+    output: str, versions_output: str, sources_output: str
+) -> None:
+    """Reject an outage fallback if committed discovery data is incomplete."""
+    paths = (output, versions_output, sources_output)
+    for path in paths:
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Discovery output not found: {path}")
+
+    plugin_release_utils.load_store_versions(versions_output)
+    plugin_release_utils.load_store_sources(sources_output)
+    with open(output, encoding="utf-8") as handle:
+        for line in handle:
+            url = line.strip()
+            if url and not url.startswith("#"):
+                plugin_release_utils.canonicalize_github_repository_url(url)
+
+
+def _write_refreshed_output(refreshed: bool) -> None:
+    """Publish the refresh outcome to GitHub Actions when running there."""
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if output_path:
+        with open(output_path, "a", encoding="utf-8") as handle:
+            handle.write(f"refreshed={'true' if refreshed else 'false'}\n")
+
+
+def _read_output(path: str) -> str:
+    if not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _check_outputs(outputs: dict[str, str]) -> int:
+    stale = [
+        path for path, rendered in outputs.items() if _read_output(path) != rendered
+    ]
+    if stale:
+        print(f"out of date: {', '.join(stale)}; run: uv run store_discovery.py")
+        return 1
+    print("generated files are up to date.")
+    return 0
+
+
+def _write_outputs(outputs: dict[str, str]) -> None:
+    for path, rendered in outputs.items():
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(rendered)
+        print(f"Wrote {path}.")
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -418,16 +467,43 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Where to write the official plugin source map.",
     )
     parser.add_argument(
+        "--catalogs-output",
+        default=store_catalog.SNAPSHOT_FILE,
+        help="Where to write the raw official catalog snapshot.",
+    )
+    parser.add_argument(
         "--check",
         action="store_true",
         help="Exit 1 when any generated file is out of date instead of writing.",
     )
     args = parser.parse_args(argv)
 
+    catalogs = store_catalog.fetch_catalogs(
+        g.fetch_json,
+        g.PLUGINS_URL,
+        g.TESTING_PLUGINS_URL,
+        snapshot_path=args.catalogs_output,
+    )
+    if catalogs.from_snapshot:
+        _validate_preserved_outputs(
+            args.output, args.versions_output, args.sources_output
+        )
+        _write_refreshed_output(False)
+        if args.check:
+            print(
+                "official catalog endpoints unavailable; freshness cannot be checked."
+            )
+            return 1
+        print(
+            "official catalog endpoints unavailable; "
+            "keeping existing discovery outputs."
+        )
+        return 0
+
     print(f"Reading submodules from {DATABASE_REPOSITORY}...")
     result = discover_store_repositories(
         gitmodules_text=fetch_gitmodules(),
-        store_versions=fetch_store_versions(),
+        store_versions=fetch_store_versions(catalogs),
         tracked_urls=read_tracked_urls(),
         repo_metadata=_repo_metadata,
         plugin_name=_plugin_name,
@@ -447,26 +523,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         args.output: render_list(result.included),
         args.versions_output: render_versions(result.versions),
         args.sources_output: render_sources(result.sources),
+        args.catalogs_output: store_catalog.render_snapshot(
+            catalogs, previous_path=args.catalogs_output
+        ),
     }
     if args.check:
-        stale = []
-        for path, rendered in outputs.items():
-            current = ""
-            if os.path.exists(path):
-                with open(path, encoding="utf-8") as handle:
-                    current = handle.read()
-            if current != rendered:
-                stale.append(path)
-        if stale:
-            print(f"out of date: {', '.join(stale)}; run: uv run store_discovery.py")
-            return 1
-        print("generated files are up to date.")
-        return 0
+        return _check_outputs(outputs)
 
-    for path, rendered in outputs.items():
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(rendered)
-        print(f"Wrote {path}.")
+    _write_outputs(outputs)
+    _write_refreshed_output(True)
     return 0
 
 

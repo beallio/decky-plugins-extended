@@ -319,6 +319,7 @@ def _invoke_generator_hash(monkeypatch, tmp_path, session, policy):
 
 def _upstream_plugin():
     return {
+        "id": 1,
         "name": "Plugin",
         "versions": [
             {

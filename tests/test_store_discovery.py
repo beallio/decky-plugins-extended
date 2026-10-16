@@ -1,11 +1,13 @@
 """Cover store-backed repository discovery and the two-file plugin list."""
 
+import copy
 import json
 import os
 
 os.environ.setdefault("GITHUB_TOKEN", "test-token")
 
 import pytest
+import requests
 
 import audit_plugins
 import generate_json
@@ -642,3 +644,243 @@ def test_load_store_sources_rejects_malformed_documents(tmp_path):
     path.write_text(json.dumps({"Official Plugin": "owner/repo"}), encoding="utf-8")
     with pytest.raises(ValueError):
         plugin_release_utils.load_store_sources(str(path))
+
+
+# ---------------------------------------------------------------------------
+# Official catalog snapshot continuation
+# ---------------------------------------------------------------------------
+
+
+def _catalogs(*, from_snapshot=False):
+    return store_discovery.store_catalog.OfficialCatalogs(
+        stable=[
+            {
+                "id": 1,
+                "name": "Keeper",
+                "versions": [{"name": "0.9.0"}],
+            }
+        ],
+        testing=[
+            {
+                "id": 1,
+                "name": "Keeper",
+                "versions": [{"name": "1.0.0"}],
+            }
+        ],
+        captured_at="2026-10-16T12:00:00Z",
+        from_snapshot=from_snapshot,
+    )
+
+
+def _discovery_paths(tmp_path):
+    paths = {
+        "output": tmp_path / "store_plugins.txt",
+        "versions": tmp_path / "store_versions.json",
+        "sources": tmp_path / "store_sources.json",
+        "catalogs": tmp_path / "store_catalogs.json",
+        "github_output": tmp_path / "github-output.txt",
+    }
+    return paths
+
+
+def _discovery_args(paths, *, check=False):
+    args = [
+        "--output",
+        str(paths["output"]),
+        "--versions-output",
+        str(paths["versions"]),
+        "--sources-output",
+        str(paths["sources"]),
+        "--catalogs-output",
+        str(paths["catalogs"]),
+    ]
+    if check:
+        args.append("--check")
+    return args
+
+
+def _write_preserved_discovery_outputs(paths):
+    paths["output"].write_text(
+        store_discovery.render_list(["https://github.com/owner/keeper"]),
+        encoding="utf-8",
+    )
+    paths["versions"].write_text(
+        store_discovery.render_versions({"https://github.com/owner/keeper": ["0.9.0"]}),
+        encoding="utf-8",
+    )
+    paths["sources"].write_text(
+        store_discovery.render_sources({"Keeper": ["https://github.com/owner/keeper"]}),
+        encoding="utf-8",
+    )
+    paths["catalogs"].write_text(
+        store_discovery.store_catalog.render_snapshot(_catalogs()),
+        encoding="utf-8",
+    )
+
+
+def _use_catalogs(monkeypatch, catalogs):
+    def fetch_json(url):
+        if catalogs.from_snapshot:
+            raise requests.ConnectionError("official catalog endpoints unavailable")
+        channel = (
+            catalogs.stable
+            if url == store_discovery.g.PLUGINS_URL
+            else catalogs.testing
+        )
+        return copy.deepcopy(channel)
+
+    monkeypatch.setattr(store_discovery.g, "fetch_json", fetch_json)
+
+
+def test_offline_discovery_preserves_outputs_and_reports_not_refreshed(
+    monkeypatch, tmp_path
+):
+    paths = _discovery_paths(tmp_path)
+    _write_preserved_discovery_outputs(paths)
+    before = {
+        path: path.read_bytes()
+        for path in paths.values()
+        if path != paths["github_output"]
+    }
+    _use_catalogs(monkeypatch, _catalogs(from_snapshot=True))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(paths["github_output"]))
+    monkeypatch.setattr(
+        store_discovery,
+        "fetch_gitmodules",
+        lambda: pytest.fail("offline discovery must not query GitHub"),
+    )
+
+    with pytest.warns(store_discovery.store_catalog.StoreCatalogWarning):
+        assert store_discovery.main(_discovery_args(paths)) == 0
+
+    assert {
+        path: path.read_bytes()
+        for path in paths.values()
+        if path != paths["github_output"]
+    } == before
+    assert paths["github_output"].read_text(encoding="utf-8") == "refreshed=false\n"
+
+
+def test_check_offline_discovery_fails_without_changing_outputs(monkeypatch, tmp_path):
+    paths = _discovery_paths(tmp_path)
+    _write_preserved_discovery_outputs(paths)
+    before = {
+        path: path.read_bytes()
+        for path in paths.values()
+        if path != paths["github_output"]
+    }
+    _use_catalogs(monkeypatch, _catalogs(from_snapshot=True))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(paths["github_output"]))
+
+    assert store_discovery.main(_discovery_args(paths, check=True)) == 1
+    assert {
+        path: path.read_bytes()
+        for path in paths.values()
+        if path != paths["github_output"]
+    } == before
+    assert paths["github_output"].read_text(encoding="utf-8") == "refreshed=false\n"
+
+
+@pytest.mark.parametrize(
+    ("broken", "error"),
+    [
+        ("missing-list", FileNotFoundError),
+        ("missing-versions", FileNotFoundError),
+        ("missing-sources", FileNotFoundError),
+        ("invalid-url", ValueError),
+        ("invalid-versions", ValueError),
+        ("invalid-sources", ValueError),
+    ],
+)
+def test_offline_discovery_rejects_missing_or_invalid_preserved_outputs(
+    monkeypatch, tmp_path, broken, error
+):
+    paths = _discovery_paths(tmp_path)
+    _write_preserved_discovery_outputs(paths)
+    target_key = {
+        "missing-list": "output",
+        "missing-versions": "versions",
+        "missing-sources": "sources",
+        "invalid-url": "output",
+        "invalid-versions": "versions",
+        "invalid-sources": "sources",
+    }[broken]
+    target = paths[target_key]
+    if broken.startswith("missing-"):
+        target.unlink()
+    elif broken == "invalid-url":
+        target.write_text("not-a-repository-url\n", encoding="utf-8")
+    elif broken == "invalid-versions":
+        target.write_text(json.dumps({"https://github.com/owner/keeper": "1.0"}))
+    else:
+        target.write_text(json.dumps([]), encoding="utf-8")
+
+    _use_catalogs(monkeypatch, _catalogs(from_snapshot=True))
+
+    with pytest.raises(error):
+        store_discovery.main(_discovery_args(paths))
+
+
+def test_non_catalog_discovery_error_remains_fatal(monkeypatch, tmp_path):
+    paths = _discovery_paths(tmp_path)
+    _use_catalogs(monkeypatch, _catalogs())
+
+    def fail_fetch_gitmodules():
+        raise RuntimeError("GitHub API unavailable")
+
+    monkeypatch.setattr(store_discovery, "fetch_gitmodules", fail_fetch_gitmodules)
+
+    with pytest.raises(RuntimeError, match="GitHub API unavailable"):
+        store_discovery.main(_discovery_args(paths))
+
+
+def test_healthy_discovery_persists_raw_catalog_pair_and_metadata(
+    monkeypatch, tmp_path
+):
+    paths = _discovery_paths(tmp_path)
+    catalogs = _catalogs()
+    _use_catalogs(monkeypatch, catalogs)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(paths["github_output"]))
+    monkeypatch.setattr(
+        store_discovery,
+        "fetch_gitmodules",
+        lambda: (
+            '[submodule "plugins/keeper"]\n    url = https://github.com/owner/keeper\n'
+        ),
+    )
+    monkeypatch.setattr(store_discovery, "read_tracked_urls", lambda: set())
+    monkeypatch.setattr(
+        store_discovery,
+        "_repo_metadata",
+        lambda owner, repo: {
+            "full_name": f"{owner}/{repo}",
+            "default_branch": "main",
+            "archived": False,
+        },
+    )
+    monkeypatch.setattr(
+        store_discovery, "_plugin_name", lambda owner, repo, branch: "Keeper"
+    )
+    monkeypatch.setattr(
+        store_discovery,
+        "_releases",
+        lambda owner, repo: [_release(tag="v2.0.0")],
+    )
+
+    assert store_discovery.main(_discovery_args(paths)) == 0
+
+    assert (
+        paths["output"]
+        .read_text(encoding="utf-8")
+        .endswith("https://github.com/owner/keeper\n")
+    )
+    assert plugin_release_utils.load_store_versions(str(paths["versions"])) == {
+        "https://github.com/owner/keeper": {"0.9.0", "1.0.0"}
+    }
+    assert plugin_release_utils.load_store_sources(str(paths["sources"])) == {
+        "Keeper": ["https://github.com/owner/keeper"]
+    }
+    persisted = store_discovery.store_catalog.load_snapshot(str(paths["catalogs"]))
+    assert persisted.stable == catalogs.stable
+    assert persisted.testing == catalogs.testing
+    assert paths["github_output"].read_text(encoding="utf-8") == "refreshed=true\n"
