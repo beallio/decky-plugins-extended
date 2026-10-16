@@ -37,6 +37,7 @@ https://github.com/managor/decky-clipper
 https://github.com/maroun2/deck-progress-tracker
 https://github.com/megalonvii/sdh-gamethememusic
 https://github.com/moi952/decky-proton-launch
+https://github.com/moonveil-kanata/muradeck
 https://github.com/morwy/hltb-for-deck
 https://github.com/moyoez/decky-localsend
 https://github.com/nikitaclicks/decky-multi-user
