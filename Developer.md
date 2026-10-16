@@ -265,21 +265,47 @@ committed — `public/` is gitignored and holds only local build output. The
 build reads a `GITHUB_TOKEN` configured as an environment variable in the
 Cloudflare Pages dashboard, and the same deploy publishes `functions/`.
 
-The GitHub Actions workflow has two jobs.
+The GitHub Actions workflow has three jobs. Its own workflow file is included in
+the push paths so publishing changes take effect without a separate dispatch.
 
-Both jobs first run `store_discovery.py`. When both official catalog channels
-are available, it refreshes `store_plugins.txt`, `store_versions.json`,
+Both `build` and `refresh` first run `store_discovery.py`. When both official
+catalog channels are available, it refreshes `store_plugins.txt`,
+`store_versions.json`,
 `store_sources.json`, and the raw official catalog pair in `store_catalogs.json`.
 The official store publishes releases on its own schedule, so the committed
 discovery outputs can become stale without a repository change.
 `store_discovery.py --check` reports staleness without writing and is the form
 to use locally or in a pre-commit hook.
 
-`build` runs when generator inputs change and on manual dispatch. It generates
-both catalogs with `uv` and validates their plugin IDs, names, version lists and
-SHA-256 hashes, so a bad `additional_plugins.txt` entry surfaces as a failed
-check instead of a failed Cloudflare build. It publishes nothing, and it
-discards its refreshed discovery outputs.
+`build` runs when generator inputs or the workflow change, every six hours, and
+on manual dispatch. It generates both catalogs with `uv` and validates their
+plugin IDs, names, version lists and SHA-256 hashes. It does not commit its
+refreshed discovery outputs.
+
+On `main`, a successful build stages only `public/plugins.json` and
+`public/testing_plugins.json` under `RUNNER_TEMP` and uploads them with the
+SHA-pinned official `actions/upload-pages-artifact` action. It does not publish
+the storefront, audit pages, or Cloudflare `_headers` file.
+
+`deploy-backup` depends only on `build`, not on `refresh` or Cloudflare. It uses
+the SHA-pinned official `actions/deploy-pages` action with `pages: write` and
+`id-token: write` permissions and the `github-pages` environment. Deployment is
+restricted to `refs/heads/main`; a manual build on another branch cannot replace
+the production backup. Failed generation or deployment leaves the last
+successful Pages deployment in place.
+
+The files are served at
+`https://beallio.github.io/decky-plugins-extended/plugins.json` and
+`https://beallio.github.io/decky-plugins-extended/testing_plugins.json`.
+Cloudflare and GitHub generate independently, so releases fetched between their
+builds can make their catalogs differ.
+
+These URLs are file backups, not supported Decky custom-store endpoints.
+Decky's frontend fetches the catalog with an `X-Decky-Version` header, which
+requires a successful browser CORS preflight. GitHub Pages rejects `OPTIONS`
+requests and does not apply the generator's Cloudflare `_headers` rules.
+Pages also cannot run the sorting and install-count middleware. Plugin ZIP
+downloads still depend on the artifact URLs in each catalog.
 
 `refresh` runs every 6 hours and on manual dispatch. It is the single writer of
 the four discovery outputs: after a successful live discovery, it commits and

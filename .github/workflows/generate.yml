@@ -4,6 +4,7 @@ on:
   push:
     branches: [ "main" ]
     paths:
+      - '.github/workflows/generate.yml'
       - 'additional_plugins.txt'
       - 'store_plugins.txt'
       - 'store_sources.json'
@@ -36,11 +37,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Cloudflare Pages runs the generator itself on every push, so this job does
-  # not publish anything: it is a pre-flight check that the catalog still builds
-  # and validates before Cloudflare tries the same thing.
+  # Cloudflare generates its own catalogs. Build an independent GitHub backup
+  # on every run, including schedules, even if Cloudflare's refresh job fails.
   build:
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -72,6 +71,36 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: uv run generate_json.py
+
+      - name: Stage catalog backup
+        if: github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p "$RUNNER_TEMP/catalog-backup"
+          cp public/plugins.json public/testing_plugins.json "$RUNNER_TEMP/catalog-backup/"
+
+      - name: Upload catalog backup
+        if: github.ref == 'refs/heads/main'
+        # actions/upload-pages-artifact v5.0.0
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
+        with:
+          path: ${{ runner.temp }}/catalog-backup
+
+  deploy-backup:
+    name: Publish GitHub backup
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy catalog backup
+        id: deployment
+        # actions/deploy-pages v5.0.1
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346
 
   # Cloudflare only rebuilds on push, so without this the catalog stays frozen at
   # whatever upstream looked like at the last deploy. Check first and only spend a

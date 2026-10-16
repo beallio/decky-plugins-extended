@@ -67,6 +67,22 @@ contract:
 
 The `decky-plugins-extended.pages.dev` addresses serve the same plugin lists.
 
+## Catalog backups
+
+The generation workflow also publishes the catalog files to GitHub:
+
+- [Stable catalog backup](https://beallio.github.io/decky-plugins-extended/plugins.json)
+- [Testing catalog backup](https://beallio.github.io/decky-plugins-extended/testing_plugins.json)
+
+The backup is updated after successful generation, including scheduled runs
+every six hours. If a build or deployment fails, the last successful backup
+stays available.
+
+These are downloadable file backups, not supported replacement **Custom Store**
+addresses for Decky Loader. They do not include the plugin ZIP files, the browser
+catalog, or live install counts. Continue to use the store addresses above in
+Decky.
+
 ## For developers
 
 See [Developer.md](Developer.md) for local setup, plugin submission rules,
