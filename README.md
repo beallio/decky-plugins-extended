@@ -85,6 +85,11 @@ addresses for Decky Loader. They do not include the plugin ZIP files, the browse
 catalog, or live install counts. Continue to use the store addresses above in
 Decky.
 
+The [Rust fork of Decky Loader](https://github.com/beallio/decky-loader), from
+`v3.3.0-rust.1-rc.4`, can also use these backup addresses as a **Custom Store**
+if the main store is down. They show no install counts, and the store's sort
+options have no effect there.
+
 ## For developers
 
 See [Developer.md](Developer.md) for local setup, plugin submission rules,
