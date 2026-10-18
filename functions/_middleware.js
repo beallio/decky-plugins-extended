@@ -15,6 +15,14 @@ const SORTABLE_PATHS = new Set(["/plugins.json", "/testing_plugins.json"]);
 // ?isUpdate=<True|False> to bump the install counter.
 const INCREMENT_PATH = /^\/(?:plugins|testing_plugins)\.json\/([^/]+)\/versions\/([^/]+)\/increment$/;
 
+// Decky's plugin update check (v3.3.0 and later) fetches <store-url>/versions, a
+// small {name: [version, hash, artifact?]} map. generate_json.py writes one next
+// to each catalog; a static host cannot serve a path below a file by itself.
+const VERSION_LISTS = new Map([
+  ["/plugins.json/versions", "/plugins_versions.json"],
+  ["/testing_plugins.json/versions", "/testing_plugins_versions.json"],
+]);
+
 function timestamp(value) {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;
@@ -147,6 +155,8 @@ export async function onRequestOptions(context) {
 export async function onRequest(context) {
   const url = new URL(context.request.url);
   const increment = context.request.method === "POST" && INCREMENT_PATH.exec(url.pathname);
+  const versionList =
+    ["GET", "HEAD"].includes(context.request.method) && VERSION_LISTS.get(url.pathname);
 
   let response;
   if (increment) {
@@ -162,6 +172,10 @@ export async function onRequest(context) {
       status: 200,
       headers: { "content-type": "application/json; charset=utf-8" },
     });
+  } else if (versionList) {
+    const asset = await context.env.ASSETS.fetch(new URL(versionList, url));
+    // Copy so the headers below can be set; fetched responses are immutable.
+    response = new Response(asset.body, asset);
   } else {
     response = await context.next();
     if (response.ok && SORTABLE_PATHS.has(url.pathname)) {

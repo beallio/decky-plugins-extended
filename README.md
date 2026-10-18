@@ -66,6 +66,8 @@ contract:
 - [Testing plugins](https://decky-extended-plugins.beallio.com/testing_plugins.json)
 
 The `decky-plugins-extended.pages.dev` addresses serve the same plugin lists.
+Plugin update notices also work in Decky Loader 3.3 and later, which checks for
+updates in a new way; you do not need to change the store address.
 
 ## Catalog backups
 

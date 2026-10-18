@@ -901,6 +901,28 @@ class GenerateJsonTests(unittest.TestCase):
                 [],
             )
 
+    def test_store_version_map_matches_decky_update_check(self):
+        catalog = [
+            {"name": "No Artifact", "versions": [{"name": "2.0", "hash": "c" * 64}]},
+            {
+                "name": "Shared",
+                "versions": [
+                    {"name": "1.1", "hash": "a" * 64, "artifact": "https://x/1.1.zip"},
+                    {"name": "1.0", "hash": "b" * 64, "artifact": "https://x/1.0.zip"},
+                ],
+            },
+            {"name": "Shared", "versions": [{"name": "9.0", "hash": "d" * 64}]},
+            {"name": "Empty", "versions": []},
+        ]
+
+        self.assertEqual(
+            generate_json.store_version_map(catalog),
+            {
+                "No Artifact": ["2.0", "c" * 64],
+                "Shared": ["1.1", "a" * 64, "https://x/1.1.zip"],
+            },
+        )
+
     def test_validate_plugin_schema_rejects_bad_hash(self):
         plugins = [
             {
@@ -1207,6 +1229,15 @@ class GenerateJsonTests(unittest.TestCase):
                     ("testing", "testing_plugins.json"),
                 )
             }
+            version_lists = {
+                channel: json.loads(
+                    (workdir / f"public/{filename}").read_text(encoding="utf-8")
+                )
+                for channel, filename in (
+                    ("stable", "plugins_versions.json"),
+                    ("testing", "testing_plugins_versions.json"),
+                )
+            }
             storefront = json.loads(
                 (workdir / "public/storefront.json").read_text(encoding="utf-8")
             )
@@ -1232,6 +1263,17 @@ class GenerateJsonTests(unittest.TestCase):
                             f"{source_url}/releases/download/0.7.6/Friendeck.zip",
                         ),
                     ],
+                )
+                # Decky's update check: the newest version, not the latest published.
+                self.assertEqual(
+                    version_lists[channel],
+                    {
+                        "Friendeck": [
+                            "0.7.6.5",
+                            "b" * 64,
+                            f"{source_url}/releases/download/0.7.6.5/Friendeck.zip",
+                        ]
+                    },
                 )
 
         metadata = storefront["plugins"]["friendeck"]

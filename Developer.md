@@ -191,6 +191,20 @@ date. Decky only ever reads `versions[0]`, so a late hotfix to an old branch or
 a rolling tag would otherwise sit on top and suppress update detection. Versions
 with no parseable number (`nightly`, `dev-build`) sort last.
 
+## Plugin update check
+
+Decky Loader 3.3.0 and later checks for plugin updates with a separate request:
+it appends `/versions` to the store URL and expects a JSON object that maps each
+plugin name to its newest `[version, hash]`, plus the artifact URL when that
+version has one. Earlier Decky versions read `versions[0]` from the full catalog
+instead, so both give the same result.
+
+`generate_json.py` writes these maps as `public/plugins_versions.json` and
+`public/testing_plugins_versions.json`. A static host cannot serve a path below
+a file, so the Pages Function answers `plugins.json/versions` and
+`testing_plugins.json/versions` from those files. Without it, Pages returned the
+landing page there, and Decky's update notices failed for this store.
+
 ## Install counts
 
 Counts live in a D1 database rather than in the catalogs, which are rebuilt from
@@ -232,7 +246,8 @@ uv run generate_json.py
 
 `uv` installs the dependencies from `pyproject.toml` into an isolated virtual
 environment. The generated catalogs are written to `public/plugins.json` and
-`public/testing_plugins.json`.
+`public/testing_plugins.json`, with their update-check version maps in
+`public/plugins_versions.json` and `public/testing_plugins_versions.json`.
 
 The HTTP transport requires `urllib3>=2.8.0`. Older versions have known issues
 with HTTPS proxy TLS verification, oversized chunk-size headers, and chunked

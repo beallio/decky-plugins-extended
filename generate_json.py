@@ -604,6 +604,29 @@ def copy_static_files(source="static", destination="public"):
     return copied
 
 
+def store_version_map(catalog):
+    """Return what Decky's plugin update check reads from <store URL>/versions.
+
+    Each plugin name maps to its newest [version, hash], plus the artifact URL
+    when that version has one. Versions are sorted newest first. When two
+    entries share a name, the first wins, as in Decky's older update check,
+    which searched the full catalog for the first matching name.
+    """
+    versions = {}
+    for plugin in catalog or []:
+        if not isinstance(plugin, dict):
+            continue
+        name = plugin.get("name")
+        latest = (plugin.get("versions") or [None])[0]
+        if not name or not isinstance(latest, dict) or name in versions:
+            continue
+        entry = [latest.get("name"), latest.get("hash")]
+        if latest.get("artifact"):
+            entry.append(latest["artifact"])
+        versions[name] = entry
+    return versions
+
+
 def _catalog_name_keys(catalog):
     """Return the case-insensitive names present in a catalog snapshot."""
     return {
@@ -1436,6 +1459,14 @@ def main():
         json.dump(plugins, f, indent=2)
     with open("public/testing_plugins.json", "w") as f:
         json.dump(testing_plugins, f, indent=2)
+    # functions/_middleware.js serves these at plugins.json/versions and
+    # testing_plugins.json/versions, where Decky's update check looks.
+    for filename, catalog in (
+        ("public/plugins_versions.json", plugins),
+        ("public/testing_plugins_versions.json", testing_plugins),
+    ):
+        with open(filename, "w") as f:
+            json.dump(store_version_map(catalog), f, separators=(",", ":"))
 
     storefront_metadata = build_storefront_metadata(
         plugins,
