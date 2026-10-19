@@ -1410,6 +1410,16 @@ def main():
         except Exception as e:
             errors.append(f"Failed to process {url}: {e}")
 
+    # Official entries can precede their first release; merges may fill them.
+    for channel, catalog in (("stable", plugins), ("testing", testing_plugins)):
+        for entry in catalog[:]:
+            if not entry["versions"]:
+                catalog.remove(entry)
+                print(
+                    f"  Warning: omitting {entry['name']} from {channel}: "
+                    "no published versions."
+                )
+
     # Once every repository has merged, so the note reports the version this
     # catalog actually settled on and each entry is annotated exactly once.
     for entry in plugins:

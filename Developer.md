@@ -161,6 +161,12 @@ Stable releases are included in both catalogs. GitHub prereleases are included
 only in the testing catalog. Releases with zero or multiple `.zip` assets are
 skipped.
 
+The official feeds can list a plugin before it has any published versions.
+The generator keeps that entry available for GitHub release merging, preserving
+its official ID. After merging, it omits entries that still have no versions
+from each channel and logs a warning. Published entries still pass the normal
+schema and hash checks before any output is written.
+
 Every catalog entry's `updated` value is the latest valid publication timestamp
 among its retained versions, calculated separately for Stable and Testing after
 release filtering. UTC ordering selects the original timestamp string; equal

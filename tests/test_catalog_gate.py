@@ -164,6 +164,27 @@ def _run_generator(
     return stable, testing
 
 
+@pytest.mark.parametrize("prerelease", (False, True))
+def test_empty_official_entry_keeps_its_id_when_a_release_is_available(
+    monkeypatch, tmp_path, prerelease
+):
+    stable, testing = _run_generator(
+        monkeypatch,
+        tmp_path,
+        [_release("v1.0.0", 1, FALLBACK_HASH, prerelease=prerelease)],
+        _verdicts(),
+        [],
+    )
+
+    assert testing[0]["id"] == 7
+    assert testing[0]["versions"] == [_version("v1.0.0", FALLBACK_HASH)]
+    if prerelease:
+        assert stable == []
+    else:
+        assert stable[0]["id"] == 7
+        assert stable[0]["versions"] == testing[0]["versions"]
+
+
 @pytest.mark.parametrize("classification", ("PASS", "BLOCK"))
 def test_matching_verdict_hash_is_current(classification):
     release = _release("v1.0.0", 7, BLOCKED_HASH)

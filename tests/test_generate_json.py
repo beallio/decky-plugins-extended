@@ -953,7 +953,8 @@ class GenerateJsonTests(unittest.TestCase):
                         "artifact": "https://example.invalid/official-stable.zip",
                     }
                 ],
-            }
+            },
+            {"id": 3, "name": "Unreleased Stable", "versions": []},
         ]
         base_testing = [
             {
@@ -966,7 +967,8 @@ class GenerateJsonTests(unittest.TestCase):
                         "artifact": "https://example.invalid/official-testing.zip",
                     }
                 ],
-            }
+            },
+            {"id": 4, "name": "Unreleased Testing", "versions": []},
         ]
         repo_info = {
             "default_branch": "main",
@@ -1086,6 +1088,15 @@ class GenerateJsonTests(unittest.TestCase):
             storefront = json.loads(
                 (workdir / "public/storefront.json").read_text(encoding="utf-8")
             )
+
+        self.assertEqual(
+            {plugin["name"] for plugin in stable},
+            {"OfficialStable", "Custom Plugin"},
+        )
+        self.assertEqual(
+            {plugin["name"] for plugin in testing},
+            {"OfficialTesting", "Custom Plugin"},
+        )
 
         stable_plugin = next(
             plugin for plugin in stable if plugin["name"] == "Custom Plugin"
