@@ -51,3 +51,4 @@ https://github.com/michpalm/game-glance
 https://github.com/michpalm/ambideck
 https://github.com/beallio/SDH-CssLoader
 https://github.com/JediRhymeTrix/decky-bluetooth-order
+https://github.com/Rayekkk/LegionGo2Companion
