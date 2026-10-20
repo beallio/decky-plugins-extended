@@ -1,11 +1,11 @@
 {
-  "captured_at": "2026-10-19T21:58:18.065687+00:00",
+  "captured_at": "2026-10-20T03:15:56.177644+00:00",
   "stable": [
     {
       "author": "Wayne Heaney",
       "created": "2024-01-08T16:36:17Z",
       "description": "Virtual display, VR-Lite, and Follow modes for supported XR glasses",
-      "downloads": 51285,
+      "downloads": 51292,
       "id": 1,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/XR%20Gaming-9d81059ecd13e79204fff23ce47e20abc422f41e22c50e3e2d8c1cad2ded8e99.png",
       "name": "XR Gaming",
@@ -21,14 +21,14 @@
         "xreal"
       ],
       "updated": "2026-04-02T00:44:38Z",
-      "updates": 35382,
+      "updates": 35386,
       "versions": [
         {
           "created": "2026-04-02T00:44:38Z",
-          "downloads": 4815,
+          "downloads": 4822,
           "hash": "b51067199cb95f1d32271eb2a0c54a5eda71b1ab3bbc796f4eec01b6d51b6dd6",
           "name": "1.5.4",
-          "updates": 5561
+          "updates": 5565
         },
         {
           "created": "2026-01-29T01:31:38Z",
@@ -163,7 +163,7 @@
       "author": "John Doe",
       "created": "2024-07-04T01:26:10Z",
       "description": "Decky example plugin.",
-      "downloads": 3683,
+      "downloads": 3684,
       "id": 2,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Example%20Plugin-1362399fcdc3b51eb6e6f670bad777244e8cce460413c188269c6be69ab6d930.png",
       "name": "Example Plugin",
@@ -176,7 +176,7 @@
       "versions": [
         {
           "created": "2024-07-04T01:26:10Z",
-          "downloads": 3683,
+          "downloads": 3684,
           "hash": "0a3f5966e38a745b29ca4ea456ebda518a20fb06075d0cc2990fcc80f58763dc",
           "name": "0.0.1",
           "updates": 305
@@ -188,29 +188,36 @@
       "author": "DeckThemes",
       "created": "2023-04-06T02:44:54Z",
       "description": "Dynamically loads themes developed with CSS into the Steam UI. For more information, visit deckthemes.com.",
-      "downloads": 1648263,
+      "downloads": 1648520,
       "id": 7,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/CSS%20Loader-521e6e0b59bd89ba3632f15b7a1463cb96127a8a43449d487a4e49b1f1cbafe2.png",
       "name": "CSS Loader",
       "tags": [
         "style"
       ],
-      "updated": "2024-07-06T11:37:37Z",
-      "updates": 357406,
+      "updated": "2026-10-19T23:43:49Z",
+      "updates": 360454,
       "versions": [
         {
+          "created": "2026-10-19T23:43:49Z",
+          "downloads": 166,
+          "hash": "99beaf1374af82408e6d056e0b0147e5fca544e1035fa7ab88419231697bc231",
+          "name": "2.1.3",
+          "updates": 3027
+        },
+        {
           "created": "2024-07-06T11:37:37Z",
-          "downloads": 1162211,
+          "downloads": 1162302,
           "hash": "1a1e8f4dded8494febe56df16429ef5bba1e5b8feb3fd989d5808fbef0d71350",
           "name": "2.1.2",
-          "updates": 207438
+          "updates": 207458
         },
         {
           "created": "2024-04-19T09:21:43Z",
           "downloads": 216719,
           "hash": "9f83a4c8a95c1e71a56dd375d4ab137d1e2ed9f0e037dbf39a81fa31b65070a4",
           "name": "2.1.1",
-          "updates": 1971
+          "updates": 1972
         },
         {
           "created": "2024-03-17T01:02:51Z",
@@ -401,7 +408,7 @@
       "author": "Scrumplex",
       "created": "2022-11-19T22:42:09Z",
       "description": "Adjust color settings of your Deck",
-      "downloads": 520238,
+      "downloads": 520283,
       "id": 10,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/vibrantDeck-cf0a9fb5eaed94bf5ab0d94a3440ad97b1f555dfafaa21eb65e0ab2a683046b1.jpg",
       "name": "vibrantDeck",
@@ -410,14 +417,14 @@
         "vibrant"
       ],
       "updated": "2024-05-19T18:25:52Z",
-      "updates": 104603,
+      "updates": 104609,
       "versions": [
         {
           "created": "2024-05-19T18:25:52Z",
-          "downloads": 423404,
+          "downloads": 423449,
           "hash": "272f6f3cd66c5d5c9b50ff46463ad509c8afc014633febd22046ff1aee52ee0f",
           "name": "2.0.1",
-          "updates": 64895
+          "updates": 64901
         },
         {
           "created": "2024-01-20T03:58:15Z",
@@ -545,7 +552,7 @@
       "author": "NGnius",
       "created": "2022-08-08T21:02:27Z",
       "description": "Fan controls",
-      "downloads": 172156,
+      "downloads": 172173,
       "id": 11,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Fantastic-b4e4df9c5e23c0a8138f4f0963e59b8eed54b41993bb6d6e0b13ceb22277f752.png",
       "name": "Fantastic",
@@ -555,14 +562,14 @@
         "utility"
       ],
       "updated": "2024-03-17T01:04:49Z",
-      "updates": 35066,
+      "updates": 35068,
       "versions": [
         {
           "created": "2024-03-17T01:04:49Z",
-          "downloads": 153540,
+          "downloads": 153557,
           "hash": "a70f291d2ba681fb6757c0c7e139d3fadd9a350cf3f755a9a1f668cae18b8b8a",
           "name": "0.5.1",
-          "updates": 16372
+          "updates": 16374
         },
         {
           "created": "2024-01-08T17:16:24Z",
@@ -634,7 +641,7 @@
       "author": "Miro Bouma",
       "created": "2023-03-18T00:48:06Z",
       "description": "Control running media players using the DBUS interface (MPRIS). Media player has to be started through game mode.",
-      "downloads": 76461,
+      "downloads": 76467,
       "id": 12,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/MusicControl-d48fd63af4abfc35b9acd75e907d3c081538f4726d5ef95b35c00b035c540b25.png",
       "name": "MusicControl",
@@ -644,14 +651,14 @@
         "music"
       ],
       "updated": "2024-08-12T00:00:36Z",
-      "updates": 14515,
+      "updates": 14516,
       "versions": [
         {
           "created": "2024-08-12T00:00:36Z",
-          "downloads": 76276,
+          "downloads": 76282,
           "hash": "246b89fd653c60a735b1cc401d1b0937d5cb969eea9024561661ff741f081d62",
           "name": "1.1.6",
-          "updates": 14144
+          "updates": 14145
         },
         {
           "created": "2024-06-03T20:50:29Z",
@@ -730,7 +737,7 @@
       "author": "popsUlfr & wynn1212 & AkazaRenn",
       "created": "2022-08-17T20:32:47Z",
       "description": "Pause/Resume games to redirect resources and even play/stop apps that don't natively have an immediate option to do so.",
-      "downloads": 179680,
+      "downloads": 179700,
       "id": 13,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Pause%20Games-14da87b69a6682d5cee6644f03daa6e4b13655ef96061f097d963ac84a5ef9af.jpg",
       "name": "Pause Games",
@@ -745,15 +752,22 @@
         "stop",
         "suspend"
       ],
-      "updated": "2026-09-02T05:19:14Z",
-      "updates": 86201,
+      "updated": "2026-10-19T23:45:13Z",
+      "updates": 86770,
       "versions": [
         {
+          "created": "2026-10-19T23:45:13Z",
+          "downloads": 11,
+          "hash": "4aefdfb0ef25dea9c6d9fd037731c8b99ee8a1be966c2f7d5b0602112ef29f62",
+          "name": "1.0.3",
+          "updates": 562
+        },
+        {
           "created": "2026-09-02T05:19:14Z",
-          "downloads": 4054,
+          "downloads": 4063,
           "hash": "68aa705107ceec43a50882e53d6dedc86cf4d9889c87a83279089c73b9de3c4f",
           "name": "1.0.2",
-          "updates": 14144
+          "updates": 14151
         },
         {
           "created": "2025-10-13T23:23:53Z",
@@ -832,7 +846,7 @@
       "author": "Schelstraete Bart",
       "created": "2023-04-01T16:53:50Z",
       "description": "Display tappable ProtonDB badges on your game pages",
-      "downloads": 1043077,
+      "downloads": 1043278,
       "id": 14,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/ProtonDB%20Badges-aa57ab7fbf2d1fcbd51e8d671c7e702405df674aeac6de039f77a135c8c7586a.png",
       "name": "ProtonDB Badges",
@@ -840,14 +854,14 @@
         "protondb"
       ],
       "updated": "2026-10-14T08:00:23Z",
-      "updates": 482568,
+      "updates": 483698,
       "versions": [
         {
           "created": "2026-10-14T08:00:23Z",
-          "downloads": 3954,
+          "downloads": 4155,
           "hash": "90a3453ac02709cad64096e7539fd8141fa56f99ae3441fc24a4990dc9684358",
           "name": "1.3.4",
-          "updates": 39517
+          "updates": 40647
         },
         {
           "created": "2026-01-07T23:08:55Z",
@@ -947,7 +961,7 @@
       "author": "EMERALD0874 & Beebles",
       "created": "2022-08-22T17:46:47Z",
       "description": "Replaces Steam UI sound effects with custom sounds and adds music to menus.",
-      "downloads": 433305,
+      "downloads": 433375,
       "id": 16,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Audio%20Loader.png",
       "name": "Audio Loader",
@@ -957,14 +971,14 @@
         "style"
       ],
       "updated": "2025-10-05T02:33:03Z",
-      "updates": 185064,
+      "updates": 185074,
       "versions": [
         {
           "created": "2025-10-05T02:33:03Z",
-          "downloads": 152204,
+          "downloads": 152274,
           "hash": "fd5a090c2e2cd4da6723d7bd08937ab31b9f8d4663510431713da531343e303f",
           "name": "1.6.1",
-          "updates": 92729
+          "updates": 92739
         },
         {
           "created": "2024-10-22T18:42:34Z",
@@ -1078,7 +1092,7 @@
       "author": "Outpox",
       "created": "2022-08-29T21:57:20Z",
       "description": "Quickly connect to your already paired bluetooth devices.",
-      "downloads": 525583,
+      "downloads": 525640,
       "id": 18,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Bluetooth-c04d77cc7911ae2ed69cf648dc7066b0c27b150c3fe1043ca7d0956338464826.png",
       "name": "Bluetooth",
@@ -1087,14 +1101,14 @@
         "utility"
       ],
       "updated": "2026-05-13T15:15:08Z",
-      "updates": 144156,
+      "updates": 144166,
       "versions": [
         {
           "created": "2026-05-13T15:15:08Z",
-          "downloads": 45163,
+          "downloads": 45220,
           "hash": "20308728f974289f4da13733d8abf9d938e4569b3db8586d3467b2aed747b35a",
           "name": "2.3.1",
-          "updates": 42796
+          "updates": 42806
         },
         {
           "created": "2024-08-01T08:50:39Z",
@@ -1166,7 +1180,7 @@
       "author": "popsUlfr",
       "created": "2022-09-01T18:13:26Z",
       "description": "Quickly scribble down important codes or notes during your play sessions.",
-      "downloads": 54258,
+      "downloads": 54266,
       "id": 19,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Notebook-57e1f714c85cf8b3b19da9ef5ce2df0af004fa3b193a40fee831ae7a5795b077.png",
       "name": "Notebook",
@@ -1183,7 +1197,7 @@
       "versions": [
         {
           "created": "2024-07-31T01:16:56Z",
-          "downloads": 40094,
+          "downloads": 40102,
           "hash": "c35b09de4bba4b4157fbe84cb7b0d20fc3924f78fa3c48ae17686b4314c1cc0c",
           "name": "0.1.5",
           "updates": 4811
@@ -1230,7 +1244,7 @@
       "author": "NGnius",
       "created": "2022-09-25T18:35:40Z",
       "description": "Power tweaks for power users",
-      "downloads": 603189,
+      "downloads": 603251,
       "id": 21,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/PowerTools-5390b97fa41a45fcfb6529406527059b33c9d982872a286b9dbbbd06c74ca28d.png",
       "name": "PowerTools",
@@ -1240,14 +1254,14 @@
         "utility"
       ],
       "updated": "2024-06-18T14:02:00Z",
-      "updates": 141730,
+      "updates": 141744,
       "versions": [
         {
           "created": "2024-06-18T14:02:00Z",
-          "downloads": 424168,
+          "downloads": 424230,
           "hash": "47614f53b8c538c4caa15f89a01e4ab106fa328e89f78545bacb3166d104d964",
           "name": "2.0.3",
-          "updates": 66017
+          "updates": 66031
         },
         {
           "created": "2024-05-03T03:45:34Z",
@@ -1347,7 +1361,7 @@
       "author": "Camzie99",
       "created": "2023-04-06T15:52:26Z",
       "description": "A simplistic scanmem wrapper for Decky. Enabling scanning for and editing values in memory.",
-      "downloads": 68073,
+      "downloads": 68086,
       "id": 22,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Memory%20Deck-8c8df5469ac2d65d192489cf0e4e7003a609bf90d904baa78c130bdbb2fa996b.png",
       "name": "Memory Deck",
@@ -1357,18 +1371,18 @@
         "scanmem"
       ],
       "updated": "2024-05-07T17:58:14Z",
-      "updates": 10258,
+      "updates": 10270,
       "versions": [
         {
           "created": "2024-05-07T17:58:14Z",
-          "downloads": 58311,
+          "downloads": 58323,
           "hash": "69f4707c2a0580f64df260fbd3de205e068a825b620769038c7bdaec516c104e",
           "name": "0.1.8",
-          "updates": 8902
+          "updates": 8914
         },
         {
           "created": "2023-05-21T06:54:54Z",
-          "downloads": 9649,
+          "downloads": 9650,
           "hash": "741ea7746b11eb8f66bc65be8406308ebb7fcad9e3d6274bc0cd06d45756faad",
           "name": "0.1.7-1",
           "updates": 1296
@@ -1443,7 +1457,7 @@
       "author": "Justin Marentette",
       "created": "2022-10-09T22:46:29Z",
       "description": "A boot/suspend animation management plugin.",
-      "downloads": 889250,
+      "downloads": 889378,
       "id": 23,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Animation%20Changer-2f01eb07e607c3ebd99b7e76648bc2486910d33081fa8571a8f18f718727d8bd.png",
       "name": "Animation Changer",
@@ -1452,21 +1466,21 @@
         "utility"
       ],
       "updated": "2025-02-10T21:25:10Z",
-      "updates": 286063,
+      "updates": 286094,
       "versions": [
         {
           "created": "2025-02-10T21:25:10Z",
-          "downloads": 470543,
+          "downloads": 470670,
           "hash": "f2c62b90ca60d8a80b6d0f75d8027552b1509c7a05842c6f4a24a9072846d133",
           "name": "1.3.2",
-          "updates": 245435
+          "updates": 245465
         },
         {
           "created": "2024-05-07T17:56:13Z",
-          "downloads": 317166,
+          "downloads": 317167,
           "hash": "dfb5a6c6d7ddd5847f247596b3d19bbe937dbf4385c09ab8377526c87de31045",
           "name": "1.3.1",
-          "updates": 29894
+          "updates": 29895
         },
         {
           "created": "2023-05-15T18:53:14Z",
@@ -1545,7 +1559,7 @@
       "author": "Isiah Lloyd",
       "created": "2023-02-26T21:06:29Z",
       "description": "Search and play music from internet radio stations while gaming",
-      "downloads": 67055,
+      "downloads": 67065,
       "id": 24,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/RadiYo%21-647f2b5ca97b7ee7e5b0057560cf5ac19416bf7c6a1648bceb0715ed323cc4af.png",
       "name": "RadiYo!",
@@ -1559,7 +1573,7 @@
       "versions": [
         {
           "created": "2024-03-17T01:02:39Z",
-          "downloads": 60007,
+          "downloads": 60017,
           "hash": "647111578aa7a5ecd16af8d7fe6c068a6d7ea8737c6dce5ac2d52e84a549ec43",
           "name": "1.3",
           "updates": 4851
@@ -1620,7 +1634,7 @@
       "author": "contributors and morwy",
       "created": "2023-04-03T00:22:42Z",
       "description": "A plugin to show you game lengths according to How Long To Beat",
-      "downloads": 347822,
+      "downloads": 347928,
       "id": 26,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/HLTB%20for%20Deck-b407060820a5928d859fba7510b21733ebd6b77a1ae6ec47d6b8dba01aa5d4e9.png",
       "name": "HLTB for Deck",
@@ -1629,22 +1643,29 @@
         "how long to beat",
         "utility"
       ],
-      "updated": "2026-09-08T17:41:16Z",
-      "updates": 475828,
+      "updated": "2026-10-19T23:43:41Z",
+      "updates": 476981,
       "versions": [
         {
+          "created": "2026-10-19T23:43:41Z",
+          "downloads": 60,
+          "hash": "bd54a23b0b8ec0798aa590e5be236522a593529d7680e77fb888e2971bf3d558",
+          "name": "2.0.12",
+          "updates": 1013
+        },
+        {
           "created": "2026-09-08T17:41:16Z",
-          "downloads": 13684,
+          "downloads": 13730,
           "hash": "cf282be160f2b6f649405ec5c4f1e19cf12ff9256f780e56496d0344b8b65bcc",
           "name": "2.0.10",
-          "updates": 55421
+          "updates": 55557
         },
         {
           "created": "2026-05-25T16:56:09Z",
           "downloads": 41164,
           "hash": "a5547a4ad99a6d63d475476396359a4f89fc8aacdf1e9deca0015d9f4ab9751d",
           "name": "2.0.9",
-          "updates": 72144
+          "updates": 72148
         },
         {
           "created": "2026-04-22T22:34:56Z",
@@ -1807,7 +1828,7 @@
       "author": "jurassicplayer",
       "created": "2022-10-27T21:44:30Z",
       "description": "Automatically suspend on low power.",
-      "downloads": 48578,
+      "downloads": 48581,
       "id": 27,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/AutoSuspend-47bf9a1cf53655eafefe893d58e6e442952789c4d4f58909eb46c5275741d1f7.png",
       "name": "AutoSuspend",
@@ -1818,14 +1839,14 @@
         "utility"
       ],
       "updated": "2025-12-26T23:49:40Z",
-      "updates": 32446,
+      "updates": 32448,
       "versions": [
         {
           "created": "2025-12-26T23:49:40Z",
-          "downloads": 7351,
+          "downloads": 7354,
           "hash": "20ceb9aa5327226326531d947e4a7a5318ba78b73f503266996a81877cffa536",
           "name": "2.2.0",
-          "updates": 15792
+          "updates": 15794
         },
         {
           "created": "2024-01-20T03:58:21Z",
@@ -1911,7 +1932,7 @@
       "author": "Kernel Panic",
       "created": "2023-05-15T18:35:46Z",
       "description": "Plugin for viewing RetroAchievements progress. Part of the EmuDeck Project",
-      "downloads": 144757,
+      "downloads": 144787,
       "id": 28,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Emuchievements-3a3fc6e73d049b216d95cfce8ca671dae88595fb2af9d73641e32e451b4bfc49.png",
       "name": "Emuchievements",
@@ -1920,14 +1941,14 @@
         "retroachievements"
       ],
       "updated": "2025-07-10T19:23:00Z",
-      "updates": 60518,
+      "updates": 60526,
       "versions": [
         {
           "created": "2025-07-10T19:23:00Z",
-          "downloads": 60708,
+          "downloads": 60738,
           "hash": "98dcb443e81b9f9011cfe77c69eb659869c8e2df2df8b0a443df66cbfc2f5a89",
           "name": "2.0.5",
-          "updates": 38740
+          "updates": 38748
         },
         {
           "created": "2024-03-15T19:18:07Z",
@@ -1978,7 +1999,7 @@
       "author": "Benjamin Kohler",
       "created": "2023-03-17T18:40:15Z",
       "description": "Enables VPN support within Gaming Mode and activates OpenVPN support for Network Manager.",
-      "downloads": 81704,
+      "downloads": 81717,
       "id": 30,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/TunnelDeck-0c35ec89be6646bab3c29cee8d167a178452049d0a5fc8b8461670dcd9c0449b.png",
       "name": "TunnelDeck",
@@ -1987,21 +2008,21 @@
         "vpn"
       ],
       "updated": "2024-10-22T18:12:18Z",
-      "updates": 11327,
+      "updates": 11341,
       "versions": [
         {
           "created": "2024-10-22T18:12:18Z",
-          "downloads": 54778,
+          "downloads": 54791,
           "hash": "2698b31e53109b992e16f2e888a371a028a2c2719745261d4379d18bed9ac5c8",
           "name": "1.0.4",
-          "updates": 10816
+          "updates": 10827
         },
         {
           "created": "2024-05-26T21:53:07Z",
           "downloads": 15336,
           "hash": "2625c605824a4b1876726de3baf328212790908f1576dc538ae7d6adc8300cb0",
           "name": "1.0.3",
-          "updates": 132
+          "updates": 134
         },
         {
           "created": "2024-01-20T04:12:49Z",
@@ -2015,7 +2036,7 @@
           "downloads": 213,
           "hash": "e2ca6eabac0e3e61b35c1feebc6af951475928a6f6af8c402489ee426303a2d2",
           "name": "1.0.1",
-          "updates": 25
+          "updates": 26
         }
       ],
       "visible": true
@@ -2024,7 +2045,7 @@
       "author": "jurassicplayer",
       "created": "2022-12-20T12:54:21Z",
       "description": "A plugin to manage, notify, and automatically update flatpaks on your steamdeck console",
-      "downloads": 220467,
+      "downloads": 220503,
       "id": 32,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/AutoFlatpaks-93dbace5a31e869ea8e1c6e822c17a8498e651d86c83a195d9bb501030321758.png",
       "name": "AutoFlatpaks",
@@ -2036,14 +2057,14 @@
         "utility"
       ],
       "updated": "2025-06-29T19:22:33Z",
-      "updates": 103691,
+      "updates": 103696,
       "versions": [
         {
           "created": "2025-06-29T19:22:33Z",
-          "downloads": 72515,
+          "downloads": 72551,
           "hash": "344fce82cfb4800caccb4d6c0ec46e1ad6c9594a622d5baa0bb31286baf2d1a5",
           "name": "1.6.8",
-          "updates": 52386
+          "updates": 52391
         },
         {
           "created": "2024-07-31T20:57:21Z",
@@ -2136,7 +2157,7 @@
       "author": "FrogTheFrog",
       "created": "2023-04-09T22:27:29Z",
       "description": "MoonDeck lets you play any of your Steam games via Moonlight without needing to add them to Sunshine first, providing a similar experience to GeForce GameStream or Steam Remote Play.",
-      "downloads": 126350,
+      "downloads": 126370,
       "id": 35,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/MoonDeck-eef913c811ed95e24fa296e445a6815027ff920b7912c8a01cf9fda81fc4060b.png",
       "name": "MoonDeck",
@@ -2147,14 +2168,14 @@
         "streaming"
       ],
       "updated": "2026-09-15T09:32:40Z",
-      "updates": 160924,
+      "updates": 160958,
       "versions": [
         {
           "created": "2026-09-15T09:32:40Z",
-          "downloads": 2361,
+          "downloads": 2381,
           "hash": "891be7946805a01292dc43ebce86cb1b8825cc4cbab1ec898cca80100bc45434",
           "name": "1.12.1",
-          "updates": 8816
+          "updates": 8850
         },
         {
           "created": "2026-09-09T20:12:11Z",
@@ -2527,7 +2548,7 @@
       "author": "SteamGridDB",
       "created": "2022-12-18T21:21:19Z",
       "description": "Customize your library with user-submitted images or local files, and other style tweaks like square capsules, uniform sizing, and more!",
-      "downloads": 1707548,
+      "downloads": 1707856,
       "id": 36,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/SteamGridDB-1a938447c46d3d7816c87181c20b96ca438840cbdbb556c13c37cf1f923b3512.png",
       "name": "SteamGridDB",
@@ -2536,14 +2557,14 @@
         "sgdb"
       ],
       "updated": "2026-10-07T19:45:20Z",
-      "updates": 1173785,
+      "updates": 1174791,
       "versions": [
         {
           "created": "2026-10-07T19:45:20Z",
-          "downloads": 13292,
+          "downloads": 13600,
           "hash": "e84f5b1f111af8862b06218479491fbf61036e1bfd9f16f93f9901e9b9ebc5e0",
           "name": "1.8.1",
-          "updates": 90237
+          "updates": 91243
         },
         {
           "created": "2026-03-27T16:53:16Z",
@@ -2699,7 +2720,7 @@
       "author": "Deceptacle",
       "created": "2023-03-18T00:48:24Z",
       "description": "Displays current Steam Deck game in Discord",
-      "downloads": 111645,
+      "downloads": 111667,
       "id": 37,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Discord%20Status-97272e072a4a387ab14f139b77c7d3e0a9e597b04b40270b7999acad958378ec.png",
       "name": "Discord Status",
@@ -2707,14 +2728,14 @@
         "discord"
       ],
       "updated": "2025-12-20T04:43:28Z",
-      "updates": 48321,
+      "updates": 48326,
       "versions": [
         {
           "created": "2025-12-20T04:43:28Z",
-          "downloads": 36199,
+          "downloads": 36221,
           "hash": "00a45dd919abb6e050685e1e408ce8023b9c4a09d6e91ba528d50aed2a63bf45",
           "name": "1.5.0",
-          "updates": 15823
+          "updates": 15828
         },
         {
           "created": "2025-01-14T19:47:53Z",
@@ -2758,7 +2779,7 @@
       "author": "Isiah Lloyd",
       "created": "2023-06-17T21:06:57Z",
       "description": "Control the volume of applications and connected Bluetooth sources.",
-      "downloads": 116950,
+      "downloads": 116966,
       "id": 38,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Volume%20Mixer-f7fabe091001ef1c0df7b6f56e70de470e7ba333904d01034008ad517eee6ed5.png",
       "name": "Volume Mixer",
@@ -2767,14 +2788,14 @@
         "volume"
       ],
       "updated": "2024-01-20T03:59:56Z",
-      "updates": 17993,
+      "updates": 17995,
       "versions": [
         {
           "created": "2024-01-20T03:59:56Z",
-          "downloads": 113281,
+          "downloads": 113297,
           "hash": "11b259ad234d0e97cfef4e6a2af3f1edfb0908d5482765af56b86b0a4601c5f3",
           "name": "1.2.1-1",
-          "updates": 17591
+          "updates": 17593
         },
         {
           "created": "2023-06-17T21:06:57Z",
@@ -2797,7 +2818,7 @@
       "author": "Jose Fernandez, Ludovic Galibert",
       "created": "2023-03-17T04:15:59Z",
       "description": "The missing game controller menu. Displays the current battery % and charging status. Supports: DualSense, DualShock 4, Nintendo Switch Pro Controller",
-      "downloads": 127818,
+      "downloads": 127855,
       "id": 40,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Controller%20Tools-4b57995ff4fa5e078263ac3403603afde0302c9c2f7a7741d0fc3429dbc001fd.png",
       "name": "Controller Tools",
@@ -2810,14 +2831,14 @@
         "xbox"
       ],
       "updated": "2024-11-25T00:53:49Z",
-      "updates": 38158,
+      "updates": 38162,
       "versions": [
         {
           "created": "2024-11-25T00:53:49Z",
-          "downloads": 115182,
+          "downloads": 115219,
           "hash": "9450e54cbf28082d4513838d0dcd42bf04ffc08ae5a6472d0c1f88677782e3ef",
           "name": "2.0.2",
-          "updates": 34915
+          "updates": 34919
         },
         {
           "created": "2024-10-22T18:37:59Z",
@@ -2889,7 +2910,7 @@
       "author": "Saumya Banthia",
       "created": "2023-04-12T05:16:28Z",
       "description": "A Decky plugin to activate and deactivate Tailscale, while staying in Gaming mode. [Note: Tailscale needs to be installed, this works only like a switch for the same.]",
-      "downloads": 30063,
+      "downloads": 30074,
       "id": 43,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Tailscale%20Control.png",
       "name": "Tailscale Control",
@@ -2897,14 +2918,14 @@
         "tailscale"
       ],
       "updated": "2024-04-02T21:13:38Z",
-      "updates": 4758,
+      "updates": 4759,
       "versions": [
         {
           "created": "2024-04-02T21:13:38Z",
-          "downloads": 27877,
+          "downloads": 27888,
           "hash": "06411711b27101d438339000da3d91202d682862710b02ef3ddf2462e642448a",
           "name": "0.1.3",
-          "updates": 2483
+          "updates": 2484
         },
         {
           "created": "2024-02-18T00:33:10Z",
@@ -2962,7 +2983,7 @@
       "author": "dafta",
       "created": "2023-02-02T07:34:41Z",
       "description": "A plugin that allows your Steam Deck to transfer files to your PC via MTP and USB",
-      "downloads": 179461,
+      "downloads": 179477,
       "id": 44,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/DeckMTP-6cb48ce500f55131e6562ff3afb5808e4c9c35291e71f0ec421d82317867df67.png",
       "name": "DeckMTP",
@@ -2973,14 +2994,14 @@
         "utility"
       ],
       "updated": "2025-08-07T00:26:42Z",
-      "updates": 73442,
+      "updates": 73448,
       "versions": [
         {
           "created": "2025-08-07T00:26:42Z",
-          "downloads": 46071,
+          "downloads": 46087,
           "hash": "a60cbe438226109a21a3eabf881a73460bfb9d70871b70a1508cfa17e3fed496",
           "name": "1.0.5",
-          "updates": 29304
+          "updates": 29310
         },
         {
           "created": "2025-03-31T00:30:59Z",
@@ -3038,7 +3059,7 @@
       "author": "geeksville",
       "created": "2023-03-07T23:12:47Z",
       "description": "Automatic save game snapshot/restore for Steam",
-      "downloads": 23616,
+      "downloads": 23619,
       "id": 46,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Steamback-e5f4826ada525272ea82cf80307d041c8147322e7f2130f8dac24fd2f1f65021.png",
       "name": "Steamback",
@@ -3051,7 +3072,7 @@
       "versions": [
         {
           "created": "2024-01-20T03:59:44Z",
-          "downloads": 22698,
+          "downloads": 22701,
           "hash": "ed5f2fbb47cdfc3aa9a4349a139ab20c29976117a3be0de7e8a588bb265ee7f3",
           "name": "1.0.0-1",
           "updates": 3837
@@ -3084,7 +3105,7 @@
       "author": "Fisch03",
       "created": "2023-03-17T23:13:46Z",
       "description": "Quickly Launch Non-Steam-Apps from the Quick Access menu without adding them as Shortcuts, or add them to the Steam Library.",
-      "downloads": 93654,
+      "downloads": 93664,
       "id": 48,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Quick%20Launch-7c408083451947f5be988e7a1905fd731631c10b248839bb7efb50b6cc0f181c.png",
       "name": "Quick Launch",
@@ -3092,14 +3113,14 @@
         "utility"
       ],
       "updated": "2025-12-17T18:50:14Z",
-      "updates": 33503,
+      "updates": 33508,
       "versions": [
         {
           "created": "2025-12-17T18:50:14Z",
-          "downloads": 18963,
+          "downloads": 18973,
           "hash": "709746bfe2a7e19bda54b4de0b3f4a311053de10fa58aa070d421dbf92317ede",
           "name": "1.2.1",
-          "updates": 15084
+          "updates": 15089
         },
         {
           "created": "2024-02-12T20:49:44Z",
@@ -3150,7 +3171,7 @@
       "author": "GedasFX",
       "created": "2023-03-19T04:41:04Z",
       "description": "Manage cloud saves for games that do not support it in [current year].",
-      "downloads": 69009,
+      "downloads": 69017,
       "id": 49,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Cloud%20Save-392f21ae74dd967981b5943587c7a2f6a5e8ce97aabfb78bfbbd3c141562dbe7.png",
       "name": "Decky Cloud Save",
@@ -3160,14 +3181,14 @@
         "rclone"
       ],
       "updated": "2024-09-12T07:07:01Z",
-      "updates": 22099,
+      "updates": 22100,
       "versions": [
         {
           "created": "2024-09-12T07:07:01Z",
-          "downloads": 40662,
+          "downloads": 40670,
           "hash": "b311d967ddf1b0f0046d36929645855891a40173e3a93f6f0cd8b1576b04b411",
           "name": "1.4.2",
-          "updates": 7569
+          "updates": 7570
         },
         {
           "created": "2024-02-15T04:33:15Z",
@@ -3232,7 +3253,7 @@
       "author": "Matt Carlucci",
       "created": "2023-03-27T22:13:58Z",
       "description": "Quickly visualize, select and clear shader cache and compatibility data.",
-      "downloads": 454824,
+      "downloads": 454899,
       "id": 50,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Storage%20Cleaner-9880dcffdd7e9f7db4b7016aec1b6553ffcb1614da3abcb7d608aa1e9d6fb6d6.png",
       "name": "Storage Cleaner",
@@ -3249,14 +3270,14 @@
         "utility"
       ],
       "updated": "2024-10-22T18:43:44Z",
-      "updates": 131941,
+      "updates": 131949,
       "versions": [
         {
           "created": "2024-10-22T18:43:44Z",
-          "downloads": 289538,
+          "downloads": 289613,
           "hash": "1afa1a6f129c5d419de0e0bf0f6db8d8e50385a5659179346e996031ea372591",
           "name": "1.4.0",
-          "updates": 66220
+          "updates": 66228
         },
         {
           "created": "2024-02-15T04:22:59Z",
@@ -3321,7 +3342,7 @@
       "author": "OMGDuke, MegalonVII",
       "created": "2023-04-08T16:36:48Z",
       "description": "Play theme songs on your game pages",
-      "downloads": 376133,
+      "downloads": 376195,
       "id": 52,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Game%20Theme%20Music-dce63e3764f8114afd8e21ae8288bb54c09077d8202baa7dab572b352cb12512.png",
       "name": "Game Theme Music",
@@ -3329,21 +3350,21 @@
         "audio"
       ],
       "updated": "2025-10-28T02:34:54Z",
-      "updates": 183057,
+      "updates": 183090,
       "versions": [
         {
           "created": "2025-10-28T02:34:54Z",
-          "downloads": 97498,
+          "downloads": 97559,
           "hash": "9ce293ab4db212c03c6b96dfbc5e4d92e874d33387463f53223773921f75a80e",
           "name": "1.7.1-1",
-          "updates": 72715
+          "updates": 72746
         },
         {
           "created": "2025-01-14T20:02:58Z",
-          "downloads": 81764,
+          "downloads": 81765,
           "hash": "2a9fced36b3d34bd4bd4bd7963787b486bf39137f9d444632140ab1fe1872de8",
           "name": "1.7.0",
-          "updates": 66932
+          "updates": 66934
         },
         {
           "created": "2024-09-12T07:10:26Z",
@@ -3394,7 +3415,7 @@
       "author": "Jariullah Safi",
       "created": "2023-04-12T17:46:07Z",
       "description": "A plugin for copying over screenshots to the Pictures folder",
-      "downloads": 29231,
+      "downloads": 29232,
       "id": 53,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Shotty-1d91927415ae472afab4b28f6d4dd7c2d7b73e70b68a89a1836c683bc449bff3.png",
       "name": "Shotty",
@@ -3406,7 +3427,7 @@
       "versions": [
         {
           "created": "2024-04-01T14:19:06Z",
-          "downloads": 24980,
+          "downloads": 24981,
           "hash": "ab7f6618b264a0cb766525e788cef6c3e1478c0fef98a701225e5e8af441e2fe",
           "name": "0.1.0",
           "updates": 1556
@@ -3432,7 +3453,7 @@
       "author": "yxx",
       "created": "2023-05-28T17:17:27Z",
       "description": "A decky plugin for custom performance monitoring style.",
-      "downloads": 90815,
+      "downloads": 90827,
       "id": 56,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/MangoPeel-52ba42012bc0a46044793bbc34a0242519338bd33b8594240b0796c9c32561bb.png",
       "name": "MangoPeel",
@@ -3441,14 +3462,14 @@
         "mangohud"
       ],
       "updated": "2025-11-13T15:40:52Z",
-      "updates": 48237,
+      "updates": 48239,
       "versions": [
         {
           "created": "2025-11-13T15:40:52Z",
-          "downloads": 29464,
+          "downloads": 29476,
           "hash": "71dc21ce5f9f4ee0573bd927e9b444d45dc47327888ca78ed063c7bcc57bfac1",
           "name": "0.0.7",
-          "updates": 14987
+          "updates": 14989
         },
         {
           "created": "2025-07-13T20:07:42Z",
@@ -3506,7 +3527,7 @@
       "author": "Saumya Banthia",
       "created": "2023-06-02T01:13:21Z",
       "description": "A Decky plugin to boost volume.",
-      "downloads": 107997,
+      "downloads": 108011,
       "id": 58,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Volume%20Boost.png",
       "name": "Volume Boost",
@@ -3519,14 +3540,14 @@
         "volume"
       ],
       "updated": "2026-04-21T19:58:05Z",
-      "updates": 30901,
+      "updates": 30906,
       "versions": [
         {
           "created": "2026-04-21T19:58:05Z",
-          "downloads": 16399,
+          "downloads": 16413,
           "hash": "2cc576a7f60751306d690268e227df626e59d3733680ced753de4c116629a9cc",
           "name": "0.0.7",
-          "updates": 14672
+          "updates": 14677
         },
         {
           "created": "2024-04-10T16:00:25Z",
@@ -3563,7 +3584,7 @@
       "author": "Jesse Bofill",
       "created": "2023-06-10T13:52:58Z",
       "description": "A web browser with multiple features including tabs!, limited gamepad support, favorites and a multifunction search/url bar.",
-      "downloads": 212767,
+      "downloads": 212804,
       "id": 59,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Web%20Browser-ecbc735316cf6dd27394d34a15fb88ae06992583b059362d694fde544427533c.png",
       "name": "Web Browser",
@@ -3573,14 +3594,14 @@
         "web"
       ],
       "updated": "2026-01-05T15:35:56Z",
-      "updates": 118743,
+      "updates": 118752,
       "versions": [
         {
           "created": "2026-01-05T15:35:56Z",
-          "downloads": 43453,
+          "downloads": 43490,
           "hash": "1192864fddc5d72550346b8dff02c21d71f0c40a06ac41c4e67bb6220d267f9d",
           "name": "1.4.3",
-          "updates": 19006
+          "updates": 19015
         },
         {
           "created": "2025-10-06T11:12:23Z",
@@ -3681,14 +3702,14 @@
         "root"
       ],
       "updated": "2026-02-18T21:37:50Z",
-      "updates": 20601,
+      "updates": 20602,
       "versions": [
         {
           "created": "2026-02-18T21:37:50Z",
           "downloads": 5549,
           "hash": "7dc2ecdcd05aa415d1ac90afaff28ecb17f77809a2bc7a77aee8e92505b976f0",
           "name": "1.2.0",
-          "updates": 4361
+          "updates": 4362
         },
         {
           "created": "2025-10-13T23:21:45Z",
@@ -3746,7 +3767,7 @@
       "author": "Travis Lane (Tormak), Jesse Bofill, & Kernel Panic",
       "created": "2023-07-03T16:08:51Z",
       "description": "Gives you full control over your Steam library! Support for customizing, adding, and hiding Library Tabs.",
-      "downloads": 306272,
+      "downloads": 306309,
       "id": 61,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/TabMaster-2528f87eed33004efbea4a4de9076c0885b74b13b015e2103dbb7d73ba139a8c.png",
       "name": "TabMaster",
@@ -3756,14 +3777,14 @@
         "Tabs"
       ],
       "updated": "2026-07-27T15:56:49Z",
-      "updates": 311816,
+      "updates": 311842,
       "versions": [
         {
           "created": "2026-07-27T15:56:49Z",
-          "downloads": 13543,
+          "downloads": 13580,
           "hash": "e08333859a32b0c177b8e9a7959c5eeeafe38f946578f7f1d161c721f0e05da5",
           "name": "2.15.1",
-          "updates": 24710
+          "updates": 24736
         },
         {
           "created": "2026-03-18T22:20:03Z",
@@ -4013,7 +4034,7 @@
       "author": "jwhitlow45",
       "created": "2023-08-05T07:29:51Z",
       "description": "Notifications for free games on Steam, GOG, Epic Games, and Itch.io!",
-      "downloads": 192788,
+      "downloads": 192815,
       "id": 63,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Free%20Loader-532ae8cf47ec0b98f004bb879879db5b13f6767d9e047157c976490362372027.png",
       "name": "Free Loader",
@@ -4032,14 +4053,14 @@
         "store"
       ],
       "updated": "2026-10-14T07:59:20Z",
-      "updates": 145707,
+      "updates": 145905,
       "versions": [
         {
           "created": "2026-10-14T07:59:20Z",
-          "downloads": 510,
+          "downloads": 537,
           "hash": "05208aee6f6ba824391d8ddc81b1168b2599a9711e7528cdaa789f6cc710b42a",
           "name": "1.6.0",
-          "updates": 5933
+          "updates": 6131
         },
         {
           "created": "2026-02-11T23:57:21Z",
@@ -4125,7 +4146,7 @@
       "author": "Capypara",
       "created": "2023-08-16T07:53:40Z",
       "description": "Plugin for managing Syncthing to synchronize files with other devices. Not officially affiliated with the Syncthing project.",
-      "downloads": 34526,
+      "downloads": 34539,
       "id": 64,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Syncthing-3e29af4598a6ba655f4c69e6f1a4a720f40501ba2667703db66a8c5b00db2eda.png",
       "name": "Syncthing",
@@ -4138,14 +4159,14 @@
         "syncthing"
       ],
       "updated": "2026-02-06T23:54:58Z",
-      "updates": 26867,
+      "updates": 26869,
       "versions": [
         {
           "created": "2026-02-06T23:54:58Z",
-          "downloads": 9412,
+          "downloads": 9425,
           "hash": "27e47379c280c92253d5533435f57c33b332b215f866d2ac4493daf18ec0d1c4",
           "name": "0.2.7",
-          "updates": 8341
+          "updates": 8343
         },
         {
           "created": "2025-09-17T18:31:13Z",
@@ -4196,7 +4217,7 @@
       "author": "Alex4386",
       "created": "2023-08-17T21:45:54Z",
       "description": "Your terminal is going places. The decky plugin that adds terminal emulator plugin for \"game mode\"",
-      "downloads": 41967,
+      "downloads": 41974,
       "id": 65,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Terminal.png",
       "name": "Decky Terminal",
@@ -4204,14 +4225,14 @@
         "terminal"
       ],
       "updated": "2025-07-02T13:58:39Z",
-      "updates": 21524,
+      "updates": 21525,
       "versions": [
         {
           "created": "2025-07-02T13:58:39Z",
-          "downloads": 14692,
+          "downloads": 14699,
           "hash": "7bd8765ca57663a24178b05687acb52c3723518ac9eac1c14419a87904c0a872",
           "name": "0.5.3",
-          "updates": 12824
+          "updates": 12825
         },
         {
           "created": "2025-06-01T15:20:01Z",
@@ -4262,7 +4283,7 @@
       "author": "ma3a, Kernel Panic, ynhhoJ",
       "created": "2023-08-21T20:34:41Z",
       "description": "Track time you spend gaming \u2014 whether it's Steam titles or non-Steam games. Daily, weekly, and all-time stats.",
-      "downloads": 146467,
+      "downloads": 146491,
       "id": 66,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/PlayTime-b91df930175ccdfdf8e9651cdbbb9ef75e980d7e4320d18eff19ef79a257a4b7.png",
       "name": "PlayTime",
@@ -4272,14 +4293,14 @@
         "utility"
       ],
       "updated": "2026-04-17T22:20:38Z",
-      "updates": 177982,
+      "updates": 177993,
       "versions": [
         {
           "created": "2026-04-17T22:20:38Z",
-          "downloads": 23034,
+          "downloads": 23058,
           "hash": "10fc3beea48991c77cb02867e919b618d4cd6d5e9c6a6d0ccd5266c13214039f",
           "name": "3.2.5",
-          "updates": 46572
+          "updates": 46583
         },
         {
           "created": "2025-12-31T23:02:34Z",
@@ -4337,7 +4358,7 @@
       "author": "Jariullah Safi",
       "created": "2023-08-25T00:35:37Z",
       "description": "Battery tracker plugin",
-      "downloads": 114994,
+      "downloads": 115008,
       "id": 67,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Battery%20Tracker-7f96c2176e20d1dba4a107e78430aa477662a98c722465556aebf89aab916450.png",
       "name": "Battery Tracker",
@@ -4350,7 +4371,7 @@
       "versions": [
         {
           "created": "2024-03-17T18:14:15Z",
-          "downloads": 100742,
+          "downloads": 100756,
           "hash": "91c388d3c1b52079314045b79671ad55c767510658b6193f6936ed6cad383b94",
           "name": "0.2.0",
           "updates": 7178
@@ -4376,7 +4397,7 @@
       "author": "FlashyReese",
       "created": "2023-08-29T06:21:15Z",
       "description": "A decky plugin to manage Steam Play compatibility tools",
-      "downloads": 248210,
+      "downloads": 248246,
       "id": 68,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Wine%20Cellar-5f72d6d282580c2a798932b92dc43aadb52d89a04a697081ed69a7d2483ec423.png",
       "name": "Wine Cellar",
@@ -4388,14 +4409,14 @@
         "wine"
       ],
       "updated": "2025-11-30T15:04:29Z",
-      "updates": 79432,
+      "updates": 79435,
       "versions": [
         {
           "created": "2025-11-30T15:04:29Z",
-          "downloads": 74414,
+          "downloads": 74450,
           "hash": "30569b3bceb91f8eddc58b745c3eb0623b3f68868d0f3e95db3cd473c31da740",
           "name": "0.1.7",
-          "updates": 35444
+          "updates": 35447
         },
         {
           "created": "2024-10-22T18:46:22Z",
@@ -4453,7 +4474,7 @@
       "author": "CEbbinghaus",
       "created": "2023-10-23T02:16:26Z",
       "description": "A plugin to manage MicroSD cards.",
-      "downloads": 56090,
+      "downloads": 56099,
       "id": 70,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/MicroSDeck-09cc927e7e90010f5d0e0dc8b000fe34d045b74d281bee5aaceb320a61d43789.png",
       "name": "MicroSDeck",
@@ -4463,14 +4484,14 @@
         "sdcard"
       ],
       "updated": "2026-03-27T16:11:22Z",
-      "updates": 28647,
+      "updates": 28651,
       "versions": [
         {
           "created": "2026-03-27T16:11:22Z",
-          "downloads": 8777,
+          "downloads": 8786,
           "hash": "adec614a26864f6747245bd78b45c7e4b2fa46200b5e7aa5f55f610d2daad870",
           "name": "0.11.2",
-          "updates": 9949
+          "updates": 9953
         },
         {
           "created": "2026-01-07T02:43:38Z",
@@ -4514,7 +4535,7 @@
       "author": "CodeHz",
       "created": "2023-11-14T20:44:12Z",
       "description": "Screenshot auto uploader because valve don't do it. Upload screenshots to cloud when screenshot is taken.",
-      "downloads": 26471,
+      "downloads": 26475,
       "id": 72,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/ScreenshotUploader-0edc34053b80433d346e524d3052bc9ce74cc24164c61420ea6bd36fa84b109b.png",
       "name": "ScreenshotUploader",
@@ -4527,7 +4548,7 @@
       "versions": [
         {
           "created": "2024-05-21T13:54:14Z",
-          "downloads": 20638,
+          "downloads": 20642,
           "hash": "60152ca9a49b3a7c4fe1ac89a2ccb3bada8c84de2c1869591e6e573165d9dd6d",
           "name": "0.0.3",
           "updates": 1804
@@ -4553,7 +4574,7 @@
       "author": "EmuDeck - dragoonDorise",
       "created": "2023-12-09T04:25:58Z",
       "description": "Official EmuDeck Decky plugin",
-      "downloads": 559525,
+      "downloads": 559622,
       "id": 73,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/EmuDecky-4cbb20adfdb066cb40577bdb80311154bda4b01409cd668d967911bb80fad991.png",
       "name": "EmuDecky",
@@ -4561,14 +4582,14 @@
         "EmuDeck"
       ],
       "updated": "2024-01-20T03:59:16Z",
-      "updates": 141837,
+      "updates": 141854,
       "versions": [
         {
           "created": "2024-01-20T03:59:16Z",
-          "downloads": 536120,
+          "downloads": 536217,
           "hash": "ff19cac1cab713e7f56bd5b850d5986cef4f2f9933303432e9c66de19868a3ce",
           "name": "1.0.2-1",
-          "updates": 127574
+          "updates": 127591
         },
         {
           "created": "2023-12-09T04:25:58Z",
@@ -4584,7 +4605,7 @@
       "author": "Jariullah Safi",
       "created": "2023-12-18T04:56:53Z",
       "description": "A plugin for running KDE Connect in gamemode",
-      "downloads": 58184,
+      "downloads": 58195,
       "id": 74,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/KDE%20Connect-d57d8e3140a96ef20c874172fd19b16375e7b4605b4aa06da33042b5225395f8.png",
       "name": "KDE Connect",
@@ -4596,7 +4617,7 @@
       "versions": [
         {
           "created": "2024-03-20T20:17:22Z",
-          "downloads": 50197,
+          "downloads": 50208,
           "hash": "5f7decb4de48290f8eec15937486c9611aec0d25256515c97f98cf7ba30c79a4",
           "name": "0.1.0-1",
           "updates": 4384
@@ -4629,7 +4650,7 @@
       "author": "Jariullah Safi",
       "created": "2023-12-19T00:04:04Z",
       "description": "A plugin for loading reshade shaders on steam deck",
-      "downloads": 77575,
+      "downloads": 77583,
       "id": 75,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Reshadeck-b4ed95dec3c0c2be6a898ce6bacbbf4da3c7eac45aefe690e618dd05752afaf5.png",
       "name": "Reshadeck",
@@ -4641,7 +4662,7 @@
       "versions": [
         {
           "created": "2024-05-13T18:14:38Z",
-          "downloads": 59652,
+          "downloads": 59660,
           "hash": "f7f79c3f5d12d92d14adfdebad62053d6e10982fb7b662b6777cb06945dc4281",
           "name": "0.2.0",
           "updates": 11808
@@ -4667,7 +4688,7 @@
       "author": "SheffeyG",
       "created": "2023-12-24T18:03:14Z",
       "description": "A launch options manager allows you to run games with cheats and trainers.",
-      "downloads": 211573,
+      "downloads": 211619,
       "id": 76,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/CheatDeck-51bc4968c7a667d554750fa0e56e028a9ebff87d05d85c5e3ab941eb14e86d50.jpg",
       "name": "CheatDeck",
@@ -4676,21 +4697,21 @@
         "trainer"
       ],
       "updated": "2026-01-06T20:58:09Z",
-      "updates": 135202,
+      "updates": 135234,
       "versions": [
         {
           "created": "2026-01-06T20:58:09Z",
-          "downloads": 81828,
+          "downloads": 81874,
           "hash": "6dfe1f821b0cfe2a61c95e49efd6cb2587d79ff3d1e101e14fa80c12c7f6d89f",
           "name": "1.1.6",
-          "updates": 70783
+          "updates": 70813
         },
         {
           "created": "2024-11-25T00:51:46Z",
           "downloads": 106489,
           "hash": "10cef9bfbf87516f614f0b3c6ab5c7bc1c23e011b6ebb81517d33e806e1def8d",
           "name": "0.4.1",
-          "updates": 59163
+          "updates": 59165
         },
         {
           "created": "2024-10-13T18:08:28Z",
@@ -4741,7 +4762,7 @@
       "author": "FineWolf",
       "created": "2024-01-25T22:32:37Z",
       "description": "Allows to selectively disable and/or enable Wake-on-Bluetooth capabilities for your Bluetooth devices.",
-      "downloads": 61339,
+      "downloads": 61348,
       "id": 77,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/BT%20Wake%20Control-1747cad9085bc03d478b5468ace90c4554cd40f20538969ba35399b9a9244820.png",
       "name": "BT Wake Control",
@@ -4751,14 +4772,14 @@
         "wake"
       ],
       "updated": "2025-07-13T20:09:02Z",
-      "updates": 10657,
+      "updates": 10660,
       "versions": [
         {
           "created": "2025-07-13T20:09:02Z",
-          "downloads": 23515,
+          "downloads": 23524,
           "hash": "baed8ba21589fec8cbeff6c31a83f010664ea3bbeac3d8e71d64e9a9f63fd346",
           "name": "1.2.0",
-          "updates": 8587
+          "updates": 8590
         },
         {
           "created": "2024-05-23T16:14:00Z",
@@ -4788,7 +4809,7 @@
       "author": "rasitayaz",
       "created": "2024-03-17T18:06:28Z",
       "description": "Displays a customizable brightness bar when the brightness is changed with 'STEAM/QAM + LS up/down' shortcuts.",
-      "downloads": 69675,
+      "downloads": 69691,
       "id": 78,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Brightness%20Bar-454e29e38632fda558035fe5e042c5520fc896b83b3609d020772c1cb303a89d.jpg",
       "name": "Brightness Bar",
@@ -4801,7 +4822,7 @@
       "versions": [
         {
           "created": "2025-11-13T15:44:56Z",
-          "downloads": 17870,
+          "downloads": 17886,
           "hash": "d7aaf6481a24c32c847aa1cd64cf23ba6fe73c5dc166587a2303494a42ae0486",
           "name": "1.0.4",
           "updates": 2228
@@ -4841,7 +4862,7 @@
       "author": "f1remoon",
       "created": "2024-03-17T18:11:03Z",
       "description": "Receive notifications from smartphone using KDE Connect Protocol",
-      "downloads": 13995,
+      "downloads": 13997,
       "id": 79,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Notifications.png",
       "name": "Decky Notifications",
@@ -4854,7 +4875,7 @@
       "versions": [
         {
           "created": "2025-07-11T15:45:15Z",
-          "downloads": 5299,
+          "downloads": 5301,
           "hash": "3b22dc337209615f91da566ceb968793dc163b2e509de8535fb5d0fc55817312",
           "name": "1.0.1",
           "updates": 2858
@@ -4873,7 +4894,7 @@
       "author": "Aleksandr Maslov",
       "created": "2024-03-20T20:05:14Z",
       "description": "Overlays the screen with black color, emulating the screen being turned off on the Steam Deck OLED.",
-      "downloads": 124128,
+      "downloads": 124146,
       "id": 80,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/MagicBlack-4b5253f504d7318087c5368d8ab177538fbed92d7c3c0f178763e5f3955f70da.png",
       "name": "MagicBlack",
@@ -4885,15 +4906,22 @@
         "screen",
         "shortcut"
       ],
-      "updated": "2025-12-10T17:28:59Z",
-      "updates": 45070,
+      "updated": "2026-10-19T23:41:45Z",
+      "updates": 45511,
       "versions": [
         {
+          "created": "2026-10-19T23:41:45Z",
+          "downloads": 9,
+          "hash": "7177850f8a818783525430b9f2fc4b63f49b9e665a63df2bd8c0abb660d9baad",
+          "name": "2.0.2",
+          "updates": 440
+        },
+        {
           "created": "2025-12-10T17:28:59Z",
-          "downloads": 29649,
+          "downloads": 29658,
           "hash": "597cac32892c34bc6de41282052b5e83f36bf58caf3cc7dd5cbfc8dd1328574e",
           "name": "2.0.0",
-          "updates": 13592
+          "updates": 13593
         },
         {
           "created": "2025-10-07T11:10:43Z",
@@ -4937,7 +4965,7 @@
       "author": "JtdeGraaf",
       "created": "2024-04-19T09:01:50Z",
       "description": "Shows IsThereAnyDeal data on a game's store page",
-      "downloads": 171515,
+      "downloads": 171544,
       "id": 81,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/IsThereAnyDeal%20for%20Deck-0b997b64b394fd9ab01a7c8baaba452900a813bf3685d7ccfa794fe4e39d110d.png",
       "name": "IsThereAnyDeal for Deck",
@@ -4946,14 +4974,14 @@
         "IsThereAnyDeal"
       ],
       "updated": "2025-12-27T23:54:11Z",
-      "updates": 125003,
+      "updates": 125017,
       "versions": [
         {
           "created": "2025-12-27T23:54:11Z",
-          "downloads": 43699,
+          "downloads": 43728,
           "hash": "18e133b2e6203f16fd1ee2ed83b5a90bad34491515bef7ec1c82d525f0bfadef",
           "name": "1.1.1",
-          "updates": 34165
+          "updates": 34179
         },
         {
           "created": "2025-12-10T17:37:33Z",
@@ -5004,7 +5032,7 @@
       "author": "Aleksandr Maslov & Andrey Litvintsev",
       "created": "2024-04-22T18:45:15Z",
       "description": "Monitor the battery level of your AirPods, Beats and Galaxy Buds. Easily switch between noise cancellation modes and enjoy the magic.",
-      "downloads": 213634,
+      "downloads": 213661,
       "id": 82,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/MagicPods-783650993e1fa391dfd543270ca743efcd6bee3fed16580d4bf2a141f6a0c744.png",
       "name": "MagicPods",
@@ -5015,15 +5043,22 @@
         "bluetooth",
         "headphones"
       ],
-      "updated": "2026-09-10T13:20:11Z",
-      "updates": 201540,
+      "updated": "2026-10-19T23:45:16Z",
+      "updates": 202057,
       "versions": [
         {
+          "created": "2026-10-19T23:45:16Z",
+          "downloads": 18,
+          "hash": "abe2eef5788cb3ff6e73fcb9783e30a54b127e28c761a9bf99e64ab5fc4be9ab",
+          "name": "2.0.21",
+          "updates": 505
+        },
+        {
           "created": "2026-09-10T13:20:11Z",
-          "downloads": 5442,
+          "downloads": 5451,
           "hash": "24f7f668a293a672afde6eaaaa915023f56d57205a594344263b8c54560d6a9f",
           "name": "2.0.17",
-          "updates": 18527
+          "updates": 18539
         },
         {
           "created": "2026-05-13T22:32:23Z",
@@ -5116,7 +5151,7 @@
       "author": "Eben Bruyns",
       "created": "2024-04-29T15:10:24Z",
       "description": "Transform your gaming experience with Junk-Store - the ultimate solution for seamlessly integrating non-Steam games into your Steam Deck library. Say goodbye to clunky work arounds and hello to a world of endless gaming possibilities. Get ready to elevate your gaming to the next level with Junk-Store!",
-      "downloads": 372584,
+      "downloads": 372630,
       "id": 84,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Junk-Store-5eeb67c7f0d176323ad2edc1a474956830cf1a4a87a8ca320aabfd430efb1b6e.jpg",
       "name": "Junk-Store",
@@ -5126,14 +5161,14 @@
         "Launcher"
       ],
       "updated": "2026-01-19T14:02:48Z",
-      "updates": 179428,
+      "updates": 179437,
       "versions": [
         {
           "created": "2026-01-19T14:02:48Z",
-          "downloads": 61932,
+          "downloads": 61978,
           "hash": "f7ad2a0103c85bf308929b2e96ec9aeeb0d76bcc6ae97eb1e4b5f31ffba0cbb1",
           "name": "1.1.13",
-          "updates": 49610
+          "updates": 49619
         },
         {
           "created": "2026-01-08T16:23:41Z",
@@ -5219,7 +5254,7 @@
       "author": "BakaDestroyer",
       "created": "2024-08-07T03:42:48Z",
       "description": "A simple plugin that is using ryzenadj to apply Curve Optimizer to CPU.",
-      "downloads": 49595,
+      "downloads": 49598,
       "id": 85,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky-Undervolt-acd3843c29940946c267589b05074e7b8d0c6f1489052c89786576edb2ff35ba.jpg",
       "name": "Decky-Undervolt",
@@ -5233,14 +5268,14 @@
         "undervolt"
       ],
       "updated": "2025-01-13T16:56:36Z",
-      "updates": 7490,
+      "updates": 7491,
       "versions": [
         {
           "created": "2025-01-13T16:56:36Z",
-          "downloads": 36928,
+          "downloads": 36931,
           "hash": "2df6f8095acf2c6c71724dbbce8ebd34180880a3411f1a236b5b2143863dbc42",
           "name": "1.0.8",
-          "updates": 6881
+          "updates": 6882
         },
         {
           "created": "2024-08-08T03:22:25Z",
@@ -5263,7 +5298,7 @@
       "author": "xfangfang",
       "created": "2024-09-13T20:54:42Z",
       "description": "Inhibit screensaver during video playback.",
-      "downloads": 11017,
+      "downloads": 11020,
       "id": 87,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/ScreenSaver-3a76929daa4ada55cf09bcb9402484b9a6ea3468d769b412c45cc005a6ef5b50.png",
       "name": "ScreenSaver",
@@ -5276,7 +5311,7 @@
       "versions": [
         {
           "created": "2025-12-17T18:46:30Z",
-          "downloads": 3041,
+          "downloads": 3044,
           "hash": "5e61f20d53e244c55a0375d6299b16cdb9701c222519c7fecd726f1926091822",
           "name": "1.1.2",
           "updates": 1845
@@ -5302,7 +5337,7 @@
       "author": "William Goyette",
       "created": "2024-09-14T00:42:34Z",
       "description": "A plugin that lets you disable the steamdeck gamepad to prevent bugs with in game controller order and emulators not picking up the right controller.",
-      "downloads": 37170,
+      "downloads": 37174,
       "id": 88,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/steamdeck-input-disabler.png",
       "name": "steamdeck-input-disabler",
@@ -5314,14 +5349,14 @@
         "utility"
       ],
       "updated": "2024-09-14T00:42:34Z",
-      "updates": 3321,
+      "updates": 3323,
       "versions": [
         {
           "created": "2024-09-14T00:42:34Z",
-          "downloads": 37170,
+          "downloads": 37174,
           "hash": "321426191c123a354d66d5db57dc2a42eb7f3516bab24a294516b606baf94703",
           "name": "1.0.2",
-          "updates": 3321
+          "updates": 3323
         }
       ],
       "visible": true
@@ -5330,7 +5365,7 @@
       "author": "SErAphLi",
       "created": "2024-10-29T23:06:35Z",
       "description": "Spy on system information.",
-      "downloads": 8656,
+      "downloads": 8657,
       "id": 89,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/DeckySpy-51c612d591d74fc33cf7bf76d54f68f66e0c6bd1b2c5ece1e6acc68d55e19dbc.png",
       "name": "DeckySpy",
@@ -5342,7 +5377,7 @@
       "versions": [
         {
           "created": "2024-10-29T23:06:35Z",
-          "downloads": 8656,
+          "downloads": 8657,
           "hash": "2d431a89826ed5cf3fd37258373eb3b46c841c39795aa8b25f83e59f4eee87c7",
           "name": "0.6.7",
           "updates": 720
@@ -5354,7 +5389,7 @@
       "author": "Ross Squires",
       "created": "2025-01-14T19:37:27Z",
       "description": "Watch your favorite stream while you game!",
-      "downloads": 75148,
+      "downloads": 75170,
       "id": 90,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Picture%20in%20Picture-ef7800ad764271d506297ca45a9213aa67b8dc5367468dbc44a7b5dd552ba236.jpg",
       "name": "Picture in Picture",
@@ -5366,14 +5401,14 @@
         "web"
       ],
       "updated": "2025-01-14T19:37:27Z",
-      "updates": 6580,
+      "updates": 6581,
       "versions": [
         {
           "created": "2025-01-14T19:37:27Z",
-          "downloads": 75148,
+          "downloads": 75170,
           "hash": "e0115148305cd216e50bcfec8851fe3d1c6f3d36ae2f92113c199fc1bb2388e3",
           "name": "1.0.0",
-          "updates": 6580
+          "updates": 6581
         }
       ],
       "visible": true
@@ -5382,7 +5417,7 @@
       "author": "itsOwen",
       "created": "2025-01-14T19:42:25Z",
       "description": "A Steam Deck plugin that shows current player counts for your steam games.",
-      "downloads": 159026,
+      "downloads": 159068,
       "id": 91,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/PlayCount-64b375d7e4220bfd83569060e5fd8c10b70dbbb99f0a5058eb30487886fed579.png",
       "name": "PlayCount",
@@ -5393,14 +5428,14 @@
         "SteamDB"
       ],
       "updated": "2026-02-04T19:55:21Z",
-      "updates": 65193,
+      "updates": 65207,
       "versions": [
         {
           "created": "2026-02-04T19:55:21Z",
-          "downloads": 48296,
+          "downloads": 48338,
           "hash": "d53d0b406d275312e9b6b586815b622c77a6657dfb75256441ba82337c4039b6",
           "name": "1.7",
-          "updates": 43518
+          "updates": 43532
         },
         {
           "created": "2025-03-16T00:00:07Z",
@@ -5430,7 +5465,7 @@
       "author": "JSON Derulo",
       "created": "2025-01-16T18:24:55Z",
       "description": "Repurpose the performance overlay into a customizable crosshair.",
-      "downloads": 20367,
+      "downloads": 20375,
       "id": 92,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Crosshair-e284542fdaf2820f1b38ab3f203a94b134482872bb08ce291c57f73b41f6bb31.jpg",
       "name": "Crosshair",
@@ -5445,7 +5480,7 @@
       "versions": [
         {
           "created": "2025-06-29T19:22:28Z",
-          "downloads": 12934,
+          "downloads": 12942,
           "hash": "19544af369622dac243874de99bc30485d1d8a27241fb05ca299b2d1dd39b2e0",
           "name": "1.1.0",
           "updates": 3808
@@ -5464,7 +5499,7 @@
       "author": "Josh.5",
       "created": "2025-01-25T20:28:03Z",
       "description": "Fetch and display community-driven game compatibility, settings, and configuration reports.",
-      "downloads": 130638,
+      "downloads": 130678,
       "id": 93,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Deck%20Settings-6f664f0c6452c28db7e68e9d438f22f5648d40b7028f6160046e3072d19e2e66.jpg",
       "name": "Deck Settings",
@@ -5477,14 +5512,14 @@
         "verified"
       ],
       "updated": "2025-12-10T17:23:20Z",
-      "updates": 85688,
+      "updates": 85693,
       "versions": [
         {
           "created": "2025-12-10T17:23:20Z",
-          "downloads": 56264,
+          "downloads": 56304,
           "hash": "23c2a933a6883e2622f0184c33a76ce4a4e88c0a7dcd730f9bab71b8c3702132",
           "name": "1.2.6",
-          "updates": 23957
+          "updates": 23962
         },
         {
           "created": "2025-10-15T18:20:12Z",
@@ -5547,7 +5582,7 @@
       "author": "OHaiiBuzzle",
       "created": "2025-02-05T23:20:36Z",
       "description": "An anti-censorship plugin for Decky Loader. This plugin is a wrapper around SpoofDPI for Game Mode",
-      "downloads": 8576,
+      "downloads": 8577,
       "id": 95,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky-SpoofDPI-886d4c30973f1de2fe5f46532747581e12c30f4dec9d60010e9e360d198b8361.jpg",
       "name": "Decky-SpoofDPI",
@@ -5561,7 +5596,7 @@
       "versions": [
         {
           "created": "2025-02-05T23:20:36Z",
-          "downloads": 8576,
+          "downloads": 8577,
           "hash": "e37d613ffab3096517aeafd176ab04d86e9c97ea42d32b9eacd6ba1d2bf873ab",
           "name": "0.12.0",
           "updates": 706
@@ -5573,7 +5608,7 @@
       "author": "decktools.xyz",
       "created": "2025-02-07T03:40:01Z",
       "description": "Set a timer that will remind you when your session should end.",
-      "downloads": 22510,
+      "downloads": 22512,
       "id": 96,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Simple%20Timer-632be1dce826f97242e70ba3bff7afef15fb3f2cdc6b462db8fdfdf1ad0efc54.jpg",
       "name": "Simple Timer",
@@ -5587,7 +5622,7 @@
       "versions": [
         {
           "created": "2025-02-07T03:40:01Z",
-          "downloads": 22510,
+          "downloads": 22512,
           "hash": "973d927e9d9a1feec04679c564af7e389a729b6735d2a988ffc2cb46ce4eb312",
           "name": "1.0.0",
           "updates": 1474
@@ -5599,7 +5634,7 @@
       "author": "Kurt Himebauch",
       "created": "2025-02-14T19:22:28Z",
       "description": "This plugin installs and manages OptiScaler, a tool that enhances upscaling and enables frame generation in a range of DirectX 12 games.",
-      "downloads": 376470,
+      "downloads": 376598,
       "id": 97,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky-Framegen-627abe5182296e0328eff27567543dab8cb5e0ca8bb5ffebfcdd9d90bc7a71c2.png",
       "name": "Decky-Framegen",
@@ -5610,14 +5645,14 @@
         "upscaling"
       ],
       "updated": "2025-09-19T15:50:34Z",
-      "updates": 186774,
+      "updates": 186793,
       "versions": [
         {
           "created": "2025-09-19T15:50:34Z",
-          "downloads": 228661,
+          "downloads": 228789,
           "hash": "14015d5a652c78b2041fd9668685573840530c306e414aabc0d3cebf95be0642",
           "name": "0.11.15",
-          "updates": 100737
+          "updates": 100756
         },
         {
           "created": "2025-08-10T21:17:39Z",
@@ -5640,7 +5675,7 @@
       "author": "JSON Derulo",
       "created": "2025-02-15T17:11:31Z",
       "description": "A plugin to quickly access useful sites for the running game.",
-      "downloads": 27715,
+      "downloads": 27719,
       "id": 98,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky-Lookup-f262ab2b5afa2bc985ab3079393a96a08c4a3c33051e0a3ce2c5443d8224a025.jpg",
       "name": "Decky-Lookup",
@@ -5655,7 +5690,7 @@
       "versions": [
         {
           "created": "2025-02-15T17:11:31Z",
-          "downloads": 27715,
+          "downloads": 27719,
           "hash": "49309a02fa028d26c77230cc9f70fec9bcce91d59e887bfe8f9d3e42f8a19139",
           "name": "0.1.0",
           "updates": 2527
@@ -5667,7 +5702,7 @@
       "author": "Hyacz",
       "created": "2025-03-04T00:37:10Z",
       "description": "A Decky plugin for Zerotier",
-      "downloads": 6491,
+      "downloads": 6493,
       "id": 99,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Zerotier-33b98e814cd56a08700771c7108c0473d914e68265fe5ed815bb72e7af237e57.jpg",
       "name": "Decky Zerotier",
@@ -5680,7 +5715,7 @@
       "versions": [
         {
           "created": "2025-03-04T00:37:10Z",
-          "downloads": 6491,
+          "downloads": 6493,
           "hash": "4cacfcf96b11b423af41ec57cea915e26a0dac42fc03432dad1fcded135781a2",
           "name": "0.3.1",
           "updates": 1197
@@ -5692,7 +5727,7 @@
       "author": "Josh.5",
       "created": "2025-03-05T17:45:52Z",
       "description": "Create a virtual surround sound audio sink that converts 7.1 surround audio into immersive binaural output for headphones via HRIR processing with multiple presets (Atmos, DTS, Steam, Razer, etc.).",
-      "downloads": 50753,
+      "downloads": 50757,
       "id": 100,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Virtual%20Surround%20Sound-5c99433c2709e36c15f2d204136d6c550271dcabb0cd62571ea2f79927f0d4ed.jpg",
       "name": "Virtual Surround Sound",
@@ -5712,7 +5747,7 @@
       "versions": [
         {
           "created": "2025-03-23T23:27:11Z",
-          "downloads": 49128,
+          "downloads": 49132,
           "hash": "b6c514d147cc46bad5331ca9da36628eb9c330976e13735687499a4a9f17f6d4",
           "name": "0.0.5",
           "updates": 5019
@@ -5731,7 +5766,7 @@
       "author": "shingonati0n",
       "created": "2025-03-14T01:39:22Z",
       "description": "Latency Mitigator for the Critically Acclaimed MMORPG Final Fantasy XIV - based on XivMitmLatencyMitigator, XivAlexander and XivMitmDocker.",
-      "downloads": 5944,
+      "downloads": 5945,
       "id": 101,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/XIVOmega-18ea0d26366bb2617c446f3b06aa5e7049c568c07a35a3f4e90fac24da99ec1e.jpg",
       "name": "XIVOmega",
@@ -5747,7 +5782,7 @@
       "versions": [
         {
           "created": "2025-08-19T23:33:38Z",
-          "downloads": 3428,
+          "downloads": 3429,
           "hash": "d2638cd2943eabd2c449234855acc91e92990826cae8516dbb6a624f99b57c81",
           "name": "1.0.2",
           "updates": 1312
@@ -5773,7 +5808,7 @@
       "author": "Jesse Bofill",
       "created": "2025-03-17T20:05:42Z",
       "description": "Full audio effects DSP. EQ, Reverb and much more. Per-game settings possible.",
-      "downloads": 32687,
+      "downloads": 32694,
       "id": 102,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/DeckSP-d0c966999f4b4f1845909287e0c5995ecdfeded46166f75cafd864f0a7d995ef.png",
       "name": "DeckSP",
@@ -5789,14 +5824,14 @@
         "sound"
       ],
       "updated": "2026-01-02T16:15:36Z",
-      "updates": 14965,
+      "updates": 14967,
       "versions": [
         {
           "created": "2026-01-02T16:15:36Z",
-          "downloads": 15579,
+          "downloads": 15586,
           "hash": "d6cbedcd64430e1f94a2b12caf936ba270f1ceafe77c6252808ff39c88640b40",
           "name": "1.1.3",
-          "updates": 6420
+          "updates": 6422
         },
         {
           "created": "2025-11-28T03:11:55Z",
@@ -5833,7 +5868,7 @@
       "author": "GedasFX",
       "created": "2025-03-23T15:03:39Z",
       "description": "Ludusavi for Decky. Backup, restore, and keep multiple versions of your save files with ease! Requires Ludusavi installation on the device.",
-      "downloads": 17899,
+      "downloads": 17913,
       "id": 103,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Ludusavi-c4f70e9bcb2ba5f25c239953f2ab6e734304d3880ffa5cc42ff4cc6e050c620d.png",
       "name": "Decky Ludusavi",
@@ -5844,14 +5879,14 @@
         "sync"
       ],
       "updated": "2025-08-24T15:24:59Z",
-      "updates": 4801,
+      "updates": 4803,
       "versions": [
         {
           "created": "2025-08-24T15:24:59Z",
-          "downloads": 12688,
+          "downloads": 12702,
           "hash": "8a69f45aadce763406b5c27bfef194761006d5e01c5e8841badeb13a27dd0d88",
           "name": "1.2.2",
-          "updates": 3845
+          "updates": 3847
         },
         {
           "created": "2025-04-09T11:45:28Z",
@@ -5874,7 +5909,7 @@
       "author": "Renn",
       "created": "2025-04-14T12:55:52Z",
       "description": "A fork of Decky Cloud Save that manages cloud saves and mods for games",
-      "downloads": 16005,
+      "downloads": 16013,
       "id": 104,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Game%20Sync-99fa26d4642fc1d8e0a35193c8c2db5a0e7fb1f49c7407e8457783a9f3a7b5ff.png",
       "name": "Game Sync",
@@ -5888,7 +5923,7 @@
       "versions": [
         {
           "created": "2026-05-01T00:14:21Z",
-          "downloads": 2540,
+          "downloads": 2548,
           "hash": "65e021ebb37d2ebfbfbe3dbc8af95aef9556cf484730362c6b26c4ecc3e62ccd",
           "name": "1.0.4",
           "updates": 1965
@@ -5928,7 +5963,7 @@
       "author": "felipejfc",
       "created": "2025-05-17T23:21:13Z",
       "description": "Lock WiFi to a specific access point to prevent background scanning.",
-      "downloads": 27787,
+      "downloads": 27791,
       "id": 105,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/WiFi%20Locker-a434fff4f4063905db646cefdd177444a143620f2bf16a72020b94f5ee1ca3de.png",
       "name": "WiFi Locker",
@@ -5938,14 +5973,14 @@
         "wifi"
       ],
       "updated": "2025-05-17T23:21:13Z",
-      "updates": 4960,
+      "updates": 4962,
       "versions": [
         {
           "created": "2025-05-17T23:21:13Z",
-          "downloads": 27787,
+          "downloads": 27791,
           "hash": "4d892785ea5ebdc61e0584eb6c2a594344efd3ce657bbd1f000ba54971a080b6",
           "name": "1.0.2",
-          "updates": 4960
+          "updates": 4962
         }
       ],
       "visible": true
@@ -5954,7 +5989,7 @@
       "author": "itsOwen",
       "created": "2025-06-09T13:17:50Z",
       "description": "ReShade plugin for Steam Deck - Enhanced version with improved shader and game management.",
-      "downloads": 47565,
+      "downloads": 47581,
       "id": 106,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/LetMeReShade-3776b51a5333d9cb2b0e107c5eff9be30e09c1a9375b24b438dab77be8090703.jpg",
       "name": "LetMeReShade",
@@ -5965,14 +6000,14 @@
         "shaders"
       ],
       "updated": "2025-09-16T21:19:29Z",
-      "updates": 20622,
+      "updates": 20623,
       "versions": [
         {
           "created": "2025-09-16T21:19:29Z",
-          "downloads": 34722,
+          "downloads": 34738,
           "hash": "ae9cf06bb59aa5694409503828d341ae635bde5429a77c766b7256156c1ccc4f",
           "name": "1.8",
-          "updates": 13668
+          "updates": 13669
         },
         {
           "created": "2025-07-02T00:25:38Z",
@@ -5995,7 +6030,7 @@
       "author": "s0t7x",
       "created": "2025-06-10T22:40:25Z",
       "description": "Stream your Steam Deck screen to another device with minimal effort.",
-      "downloads": 36287,
+      "downloads": 36305,
       "id": 107,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Sunshine-7c08989f90cb8734350b364929e4dca9cd195f66fa10e2ed19cac081f6541590.png",
       "name": "Decky Sunshine",
@@ -6007,14 +6042,14 @@
         "sunshine"
       ],
       "updated": "2025-11-27T16:56:04Z",
-      "updates": 10671,
+      "updates": 10676,
       "versions": [
         {
           "created": "2025-11-27T16:56:04Z",
-          "downloads": 28214,
+          "downloads": 28232,
           "hash": "335285d75df623492a04bb1955f6f802075623de985f426d9baaaf0b100ed437",
           "name": "2025.10.27-dddf365",
-          "updates": 7768
+          "updates": 7773
         },
         {
           "created": "2025-06-10T22:40:25Z",
@@ -6030,7 +6065,7 @@
       "author": "honjow",
       "created": "2025-06-22T15:36:38Z",
       "description": "LED controller for non-Steam Deck gaming handhelds running SteamOS.",
-      "downloads": 82042,
+      "downloads": 82087,
       "id": 108,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/HueSync-948e46730bc3a43d99d24e5b45cbc4a5df88c57806f49fe85f0a3b595d40c72e.jpg",
       "name": "HueSync",
@@ -6038,28 +6073,28 @@
         "root"
       ],
       "updated": "2026-03-26T00:14:38Z",
-      "updates": 26428,
+      "updates": 26462,
       "versions": [
         {
           "created": "2026-03-26T00:14:38Z",
-          "downloads": 35240,
+          "downloads": 35285,
           "hash": "96f8400be987d0a080e399eb108f773108eb662fe4875fcb95009dd265c1fb9c",
           "name": "3.8.0",
-          "updates": 12591
+          "updates": 12621
         },
         {
           "created": "2025-10-05T23:53:36Z",
           "downloads": 29585,
           "hash": "8a9cb1631b246a0438c4c2083b2829d6f9c195499a14f52c116ba695a92b21d0",
           "name": "2.3.0",
-          "updates": 9346
+          "updates": 9349
         },
         {
           "created": "2025-06-22T15:36:38Z",
           "downloads": 17217,
           "hash": "d651b78fcaa689ee9ca56203f984d4360955e610cddc3e869e380c2bfae03a9b",
           "name": "2.2.3",
-          "updates": 4491
+          "updates": 4492
         }
       ],
       "visible": true
@@ -6068,7 +6103,7 @@
       "author": "Moonveil Kanata - RenvyRere",
       "created": "2025-08-07T00:59:09Z",
       "description": "Adaptive mura correction, gamma correction, and dithering to fix mura effect ONLY FOR defective Samsung Panel for Steam Deck OLED.",
-      "downloads": 17763,
+      "downloads": 17768,
       "id": 109,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/MuraDeck-d9ac23169200a46104800d3747761dfd6fb4897b03c3d9aaa2c0de54993eea79.jpg",
       "name": "MuraDeck",
@@ -6082,14 +6117,14 @@
         "samsung"
       ],
       "updated": "2025-12-10T17:32:19Z",
-      "updates": 2484,
+      "updates": 2485,
       "versions": [
         {
           "created": "2025-12-10T17:32:19Z",
-          "downloads": 6137,
+          "downloads": 6142,
           "hash": "7957de906e9b6721631fc0cd9a48e9524c1d7bb4371dfb183c391dfdf6d416d4",
           "name": "2.1.4",
-          "updates": 1079
+          "updates": 1080
         },
         {
           "created": "2025-08-07T00:59:09Z",
@@ -6105,7 +6140,7 @@
       "author": "Chenx Dust",
       "created": "2025-10-13T23:20:46Z",
       "description": "Make your brightness even dimmer.",
-      "downloads": 20958,
+      "downloads": 20965,
       "id": 110,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Dimmer%20Deck-f1fd245cf60fbe923e63650171faf95f450208a9bc39a56c4d39d6d7f04b288f.png",
       "name": "Dimmer Deck",
@@ -6114,14 +6149,14 @@
         "utility"
       ],
       "updated": "2025-10-13T23:20:46Z",
-      "updates": 1785,
+      "updates": 1787,
       "versions": [
         {
           "created": "2025-10-13T23:20:46Z",
-          "downloads": 20958,
+          "downloads": 20965,
           "hash": "cb4d9091e0e28277c9e79625323f0898481cb5590d0a7ab58f4d80696225a4fc",
           "name": "0.0.4",
-          "updates": 1785
+          "updates": 1787
         }
       ],
       "visible": true
@@ -6130,7 +6165,7 @@
       "author": "MartinPL",
       "created": "2025-10-21T15:35:03Z",
       "description": "Quick access for media player controls in game mode.",
-      "downloads": 37794,
+      "downloads": 37811,
       "id": 111,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Music%20Control-d48fd63af4abfc35b9acd75e907d3c081538f4726d5ef95b35c00b035c540b25.png",
       "name": "Music Control",
@@ -6140,14 +6175,14 @@
         "music"
       ],
       "updated": "2025-10-21T15:35:03Z",
-      "updates": 3490,
+      "updates": 3491,
       "versions": [
         {
           "created": "2025-10-21T15:35:03Z",
-          "downloads": 37794,
+          "downloads": 37811,
           "hash": "3f56a3f56034b277ea74a2c37cc84133b69e382aa6bcb0b43876776aac737ed9",
           "name": "1.1.7",
-          "updates": 3490
+          "updates": 3491
         }
       ],
       "visible": true
@@ -6156,7 +6191,7 @@
       "author": "Chenx Dust",
       "created": "2025-10-22T15:45:57Z",
       "description": "Better experience for physical keyboard users.",
-      "downloads": 29256,
+      "downloads": 29270,
       "id": 112,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Better%20Keyboard-fe0345ec80756a44cd8b919018b509e0c0b0118deb51df49b0da39f8363d4987.png",
       "name": "Better Keyboard",
@@ -6165,14 +6200,14 @@
         "utility"
       ],
       "updated": "2026-03-18T22:17:01Z",
-      "updates": 9466,
+      "updates": 9467,
       "versions": [
         {
           "created": "2026-03-18T22:17:01Z",
-          "downloads": 16387,
+          "downloads": 16401,
           "hash": "8e065d37b5c9d7f37203cb2ec9bc6cb54c136b901c998650c7c6ffb30aee8d46",
           "name": "0.3.4",
-          "updates": 5371
+          "updates": 5372
         },
         {
           "created": "2025-12-10T17:36:27Z",
@@ -6202,7 +6237,7 @@
       "author": "Kurt Himebauch (xXJSONDeruloXx)",
       "created": "2025-11-27T16:51:06Z",
       "description": "Enable lossless scaling frame generation on the Steam Deck using lsfg-vk compatibility layer.",
-      "downloads": 350530,
+      "downloads": 350691,
       "id": 113,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20LSFG-VK-0eb2389b3e320eff1a595d9b61ce3e47c507a97226549dfbe192cdeec9a7bb77.png",
       "name": "Decky LSFG-VK",
@@ -6215,14 +6250,14 @@
         "vulkan"
       ],
       "updated": "2025-11-27T16:51:06Z",
-      "updates": 207348,
+      "updates": 207391,
       "versions": [
         {
           "created": "2025-11-27T16:51:06Z",
-          "downloads": 350530,
+          "downloads": 350691,
           "hash": "ec59fc8aceb4e1abe2066b3a0707ed6313cabc4421b7c17765397903e2f8fd26",
           "name": "0.12.2",
-          "updates": 207348
+          "updates": 207391
         }
       ],
       "visible": true
@@ -6231,7 +6266,7 @@
       "author": "Krish",
       "created": "2025-11-27T16:56:21Z",
       "description": "Monitor network quality and track connection performance with live ping display, latency graphs, and network history tracking.",
-      "downloads": 15930,
+      "downloads": 15935,
       "id": 114,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Network%20Sentinel-a04af418bad4f7b486f1fa9257c5f893608e8b1cb99dc85c255c322974748f2c.jpg",
       "name": "Network Sentinel",
@@ -6242,14 +6277,14 @@
         "performance"
       ],
       "updated": "2026-01-11T00:02:23Z",
-      "updates": 5622,
+      "updates": 5623,
       "versions": [
         {
           "created": "2026-01-11T00:02:23Z",
-          "downloads": 8277,
+          "downloads": 8282,
           "hash": "d3e07f40a0c800e72d15594e03c8c61e9bf3092524a578a0260520e735b971a5",
           "name": "1.0.4",
-          "updates": 5219
+          "updates": 5220
         },
         {
           "created": "2025-11-27T16:56:21Z",
@@ -6265,7 +6300,7 @@
       "author": "Chenx Dust",
       "created": "2025-12-14T19:37:10Z",
       "description": "Light-weight Clash/Mihomo proxy client for Steam OS.",
-      "downloads": 11908,
+      "downloads": 11916,
       "id": 115,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Clash-cd080e812a1c7371f5e5069bbb0d830f606e3d5063c6699f5c825678fb7bad5d.png",
       "name": "Decky Clash",
@@ -6273,15 +6308,22 @@
         "network",
         "root"
       ],
-      "updated": "2026-02-22T16:36:20Z",
-      "updates": 10245,
+      "updated": "2026-10-19T23:41:24Z",
+      "updates": 10334,
       "versions": [
         {
+          "created": "2026-10-19T23:41:24Z",
+          "downloads": 6,
+          "hash": "2b96cc96ad3780a51fa794c250e821e15b3716851f4c96cb3d0a1e2f38890424",
+          "name": "1.3.0",
+          "updates": 86
+        },
+        {
           "created": "2026-02-22T16:36:20Z",
-          "downloads": 9235,
+          "downloads": 9237,
           "hash": "c7e246a6ffb104ed16d6a859069659c069ef233ffc2684a4c48151f53e13fcac",
           "name": "1.2.1",
-          "updates": 7856
+          "updates": 7859
         },
         {
           "created": "2026-01-05T15:37:04Z",
@@ -6304,7 +6346,7 @@
       "author": "Jenomorph/WTLNetwork",
       "created": "2025-12-26T23:49:42Z",
       "description": "Ad-hoc WiFi networking plugin for Decky.",
-      "downloads": 5796,
+      "downloads": 5805,
       "id": 116,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Muon-a9cdb155b41357ef5583665733bfb5f3f8d415fef6f1c4e632cc3666df6c7770.png",
       "name": "Muon",
@@ -6316,14 +6358,14 @@
         "wifi"
       ],
       "updated": "2025-12-26T23:49:42Z",
-      "updates": 994,
+      "updates": 999,
       "versions": [
         {
           "created": "2025-12-26T23:49:42Z",
-          "downloads": 5796,
+          "downloads": 5805,
           "hash": "a7659c79b74110476cc4458cb10530cdcb2539fa11bc8c759038a080eaa81049",
           "name": "0.2.1",
-          "updates": 994
+          "updates": 999
         }
       ],
       "visible": true
@@ -6332,7 +6374,7 @@
       "author": "miku",
       "created": "2026-01-06T19:38:20Z",
       "description": "Manage the deck's filesystem from a web browser via Copyparty!",
-      "downloads": 6745,
+      "downloads": 6748,
       "id": 117,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/DeckyParty%20File%20Manager-dc65af11a52fca64fa1eb79c1b51606d7bd136aa39adc19904c1753693f1b29c.jpg",
       "name": "DeckyParty File Manager",
@@ -6349,7 +6391,7 @@
       "versions": [
         {
           "created": "2026-01-11T00:18:14Z",
-          "downloads": 6410,
+          "downloads": 6413,
           "hash": "193fb3aa0446fbc3c6bae0ae15700b5f04acebfa917b8e1791988c6ce832dddf",
           "name": "1.0.0",
           "updates": 890
@@ -6368,7 +6410,7 @@
       "author": "Chris Garson",
       "created": "2026-01-06T19:38:43Z",
       "description": "Run internet speed tests directly from your Steam Deck Game Mode using Cloudflare's global network.",
-      "downloads": 29159,
+      "downloads": 29181,
       "id": 118,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Speed%20Test-2c1844c12bee3f51f95ce0597ca77b589ffa5c72d98281ec8c2d427dab0b4d62.jpg",
       "name": "Speed Test",
@@ -6378,14 +6420,14 @@
         "utility"
       ],
       "updated": "2026-01-23T23:37:30Z",
-      "updates": 4124,
+      "updates": 4127,
       "versions": [
         {
           "created": "2026-01-23T23:37:30Z",
-          "downloads": 26634,
+          "downloads": 26656,
           "hash": "8b1ee429aece9330b83ea3fc2e7e27d007ac61a737169f20bda3f1a19ab95508",
           "name": "1.0.2",
-          "updates": 3354
+          "updates": 3357
         },
         {
           "created": "2026-01-12T17:14:49Z",
@@ -6408,7 +6450,7 @@
       "author": "Torther",
       "created": "2026-01-19T14:04:37Z",
       "description": "Share clipboard between Steam Deck and other devices via web interface.",
-      "downloads": 4906,
+      "downloads": 4909,
       "id": 119,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Clipboard-709da867188bf3c2567eae030eb111705758d5190cc96116ba66831e2ac408a1.jpg",
       "name": "Decky Clipboard",
@@ -6422,7 +6464,7 @@
       "versions": [
         {
           "created": "2026-01-19T14:04:37Z",
-          "downloads": 4906,
+          "downloads": 4909,
           "hash": "d283bd9a5c35b3fac3788391736a6763f3e8c4615831a7c560c9fa6e6c0950ac",
           "name": "1.0.1",
           "updates": 377
@@ -6434,7 +6476,7 @@
       "author": "Kayon",
       "created": "2026-01-30T21:21:43Z",
       "description": "A high-performance memory scanning plugin for the Steam Deck. [WARNING: Strictly for offline/single-player use only. Use at your own risk.]",
-      "downloads": 7678,
+      "downloads": 7687,
       "id": 120,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Reroll-558e0e03aa4c5d083a9b67f138fc1fa106262541d638560bb47cc2add10e0998.png",
       "name": "Reroll",
@@ -6445,14 +6487,14 @@
         "utility"
       ],
       "updated": "2026-01-30T21:21:43Z",
-      "updates": 967,
+      "updates": 968,
       "versions": [
         {
           "created": "2026-01-30T21:21:43Z",
-          "downloads": 7678,
+          "downloads": 7687,
           "hash": "fb573890f5f87553893c08d6cb2fd8eaf87d54ce54383365e65e545634c55b3c",
           "name": "0.2.1",
-          "updates": 967
+          "updates": 968
         }
       ],
       "visible": true
@@ -6486,34 +6528,10 @@
       "visible": true
     },
     {
-      "author": "Nezreka",
-      "created": "2026-02-12T00:01:24Z",
-      "description": "A Decky Loader plugin for Steam Deck to play tracks from Plex, Jellyfin, Emby, Navidrome, and Subsonic.",
-      "downloads": 5008,
-      "id": 122,
-      "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Museck-96455c41d986da4a6cee329bbd9bdd051c0ccd44978a029077299d01460be839.png",
-      "name": "Museck",
-      "tags": [
-        "utility"
-      ],
-      "updated": "2026-02-12T00:01:24Z",
-      "updates": 482,
-      "versions": [
-        {
-          "created": "2026-02-12T00:01:24Z",
-          "downloads": 5008,
-          "hash": "1bd8063a08a4e6439239fd44bf96851fdcce740ab3bf6293e295ee64a8768112",
-          "name": "0.0.1",
-          "updates": 482
-        }
-      ],
-      "visible": true
-    },
-    {
       "author": "Schelstraete Bart",
       "created": "2026-02-14T21:32:43Z",
       "description": "Display Steam Service status, player counts, and service health",
-      "downloads": 12338,
+      "downloads": 12350,
       "id": 123,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Steam%20Status-9f694ea9a44950e85dd6256bf50a87ec17749a2ccc4f69d3b2179745168322a1.png",
       "name": "Steam Status",
@@ -6527,7 +6545,7 @@
       "versions": [
         {
           "created": "2026-02-14T21:32:43Z",
-          "downloads": 12338,
+          "downloads": 12350,
           "hash": "9053308e04a74f44745b45b9f4f50af3673348d367e7b14bacc5677de707ac4e",
           "name": "1.2.3",
           "updates": 706
@@ -6539,7 +6557,7 @@
       "author": "Guilherme Lemos",
       "created": "2026-02-14T21:37:29Z",
       "description": "Advanced alarm and timer with snooze, recurring alarms, Pomodoro mode, and persistent notifications.",
-      "downloads": 11111,
+      "downloads": 11116,
       "id": 124,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/AlarMe-084a40ef18e4cfcda80fed5da9ec42f98d947a4fc1a971562649d7c390622ea9.png",
       "name": "AlarMe",
@@ -6552,14 +6570,14 @@
         "timer"
       ],
       "updated": "2026-03-18T22:23:10Z",
-      "updates": 1955,
+      "updates": 1957,
       "versions": [
         {
           "created": "2026-03-18T22:23:10Z",
-          "downloads": 9716,
+          "downloads": 9721,
           "hash": "17d4166a9e98979df5fdb07c7eae42317acd54a453d3b82757508f971193c0fe",
           "name": "1.6.3",
-          "updates": 1447
+          "updates": 1449
         },
         {
           "created": "2026-03-06T17:28:37Z",
@@ -6582,7 +6600,7 @@
       "author": "MoeMagicMango",
       "created": "2026-02-18T21:33:51Z",
       "description": "Use Localsend in gaming mode, including fast copy & paste screenshot and text by using LocalSend Client.",
-      "downloads": 7965,
+      "downloads": 7974,
       "id": 125,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Localsend-fe50eccd502758132381fc8a3cdadfd469bb050754e4f8d27bcb76ffe61d15bd.jpg",
       "name": "Decky Localsend",
@@ -6594,14 +6612,14 @@
         "transfer"
       ],
       "updated": "2026-02-18T21:33:51Z",
-      "updates": 573,
+      "updates": 574,
       "versions": [
         {
           "created": "2026-02-18T21:33:51Z",
-          "downloads": 7965,
+          "downloads": 7974,
           "hash": "e271ccb55eb23f918b99a69f79aec905df4c9b2ef7b23bbf4ec1c2d1a6f0c6b7",
           "name": "0.4.5",
-          "updates": 573
+          "updates": 574
         }
       ],
       "visible": true
@@ -6610,7 +6628,7 @@
       "author": "Wurielle",
       "created": "2026-02-22T16:32:29Z",
       "description": "Manage launch options for your games with ease.",
-      "downloads": 21164,
+      "downloads": 21179,
       "id": 126,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Launch%20Options-5a34cc61f06d25a49f304d48f74a47f4422d232812dc77810e007489d3bedcf9.png",
       "name": "Launch Options",
@@ -6619,14 +6637,14 @@
         "quality of life"
       ],
       "updated": "2026-04-22T22:22:07Z",
-      "updates": 5058,
+      "updates": 5060,
       "versions": [
         {
           "created": "2026-04-22T22:22:07Z",
-          "downloads": 12450,
+          "downloads": 12465,
           "hash": "381ac8b915402176cf768d1ccc1bc29a6b82ea9255675f0a30c0c81ea5427225",
           "name": "1.9.2",
-          "updates": 4400
+          "updates": 4402
         },
         {
           "created": "2026-02-22T16:32:29Z",
@@ -6642,7 +6660,7 @@
       "author": "cat-in-a-box",
       "created": "2026-02-27T16:43:03Z",
       "description": "Translate anything on your screen to your language",
-      "downloads": 17645,
+      "downloads": 17659,
       "id": 127,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Translator-7499f82628f3cc449677e4a45294e90362a9c239d08d882401db39c6cad6355b.png",
       "name": "Decky Translator",
@@ -6650,14 +6668,14 @@
         "Translation"
       ],
       "updated": "2026-02-27T16:43:03Z",
-      "updates": 4117,
+      "updates": 4119,
       "versions": [
         {
           "created": "2026-02-27T16:43:03Z",
-          "downloads": 17645,
+          "downloads": 17659,
           "hash": "f7eb253db60633edef22f7a92f1ca3456a355cb035f859dd5336e21731046136",
           "name": "0.8.0",
-          "updates": 4117
+          "updates": 4119
         }
       ],
       "visible": true
@@ -6666,7 +6684,7 @@
       "author": "nikitaclicks",
       "created": "2026-03-09T21:11:56Z",
       "description": "Quickly switch between Steam accounts without navigating through menus. Simplifies multi-user Steam Deck usage by allowing instant account switching from the Quick Access Menu.",
-      "downloads": 2585,
+      "downloads": 2587,
       "id": 128,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Quick%20User%20Switcher.png",
       "name": "Quick User Switcher",
@@ -6679,7 +6697,7 @@
       "versions": [
         {
           "created": "2026-03-09T21:11:56Z",
-          "downloads": 2585,
+          "downloads": 2587,
           "hash": "187871a139862fc21d70286d8c1b2c2f0f7609604f88fc16415da71c4e56cef9",
           "name": "1.0.0",
           "updates": 184
@@ -6718,7 +6736,7 @@
       "author": "Saad Alareqi",
       "created": "2026-03-20T23:01:17Z",
       "description": "Manage Steam Deck Prefixes, delete orphans, and backup data.",
-      "downloads": 6393,
+      "downloads": 6406,
       "id": 130,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Games%20Prefix%20Manager-3c6c78adc121381e0aa108b0bee670bdac4d16779b4b575a6c220171edd923d9.jpg",
       "name": "Games Prefix Manager",
@@ -6726,14 +6744,14 @@
         "utilities"
       ],
       "updated": "2026-03-20T23:01:17Z",
-      "updates": 563,
+      "updates": 564,
       "versions": [
         {
           "created": "2026-03-20T23:01:17Z",
-          "downloads": 6393,
+          "downloads": 6406,
           "hash": "ef8c727943188cad04c63fae7e4e620b8080c07f35dec0c144e99c6166307473",
           "name": "1.0.1",
-          "updates": 563
+          "updates": 564
         }
       ],
       "visible": true
@@ -6742,7 +6760,7 @@
       "author": "ben.temple",
       "created": "2026-03-28T21:44:17Z",
       "description": "Download All - A plugin that let's the user immediately queue all scheduled downloads to immediately download.",
-      "downloads": 12148,
+      "downloads": 12168,
       "id": 131,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Download%20All-8004bb65ffd88097c2392f2dfc40d910fc5250d5d6bd7e8e58b379c9ac3992f0.png",
       "name": "Download All",
@@ -6755,7 +6773,7 @@
       "versions": [
         {
           "created": "2026-05-21T20:24:49Z",
-          "downloads": 8459,
+          "downloads": 8479,
           "hash": "0641231eec139e3231e7b5369d0dbacefd686b52e3f2fffb39384876881408da",
           "name": "1.1.0",
           "updates": 2863
@@ -6774,7 +6792,7 @@
       "author": "Guilherme Lemos",
       "created": "2026-04-17T22:20:44Z",
       "description": "Smart game suggestion from your Steam library, native to Steam Deck.",
-      "downloads": 9991,
+      "downloads": 10007,
       "id": 132,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/SuggestMe-5e0cd9635223baf57ace082a0e2cc47d174d10fdecdf7449b259392bbb100c11.png",
       "name": "SuggestMe",
@@ -6789,7 +6807,7 @@
       "versions": [
         {
           "created": "2026-04-17T22:20:44Z",
-          "downloads": 9991,
+          "downloads": 10007,
           "hash": "248294b5d6b9d5a5d635ce35f4b5185ce59d4e4fd59353e24df4b29d74c2ade4",
           "name": "1.5.3",
           "updates": 600
@@ -6801,7 +6819,7 @@
       "author": "sebet",
       "created": "2026-04-20T22:34:06Z",
       "description": "A Decky plugin that helps identifying non-Steam games using themed badges",
-      "downloads": 23054,
+      "downloads": 23088,
       "id": 133,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Non-Steam%20Badges-de29602c17a9037218f4f7be9e826bc75f060da803173f9038dcda58f6519117.jpg",
       "name": "Non-Steam Badges",
@@ -6813,14 +6831,14 @@
         "utility"
       ],
       "updated": "2026-04-20T22:34:06Z",
-      "updates": 1810,
+      "updates": 1811,
       "versions": [
         {
           "created": "2026-04-20T22:34:06Z",
-          "downloads": 23054,
+          "downloads": 23088,
           "hash": "9c12b21fd02da12f4c37f9aab68d75172a11787d09c3478f15b4fc97e01df131",
           "name": "0.1.0",
-          "updates": 1810
+          "updates": 1811
         }
       ],
       "visible": true
@@ -6829,7 +6847,7 @@
       "author": "Maron",
       "created": "2026-04-23T15:50:49Z",
       "description": "Automatic game tagging based on achievements, playtime, and completion time. Track your progress with visual badges in the Steam library. Features 5 intelligent tags: Mastered, Completed, Dropped, In Progress, and Backlog.",
-      "downloads": 16504,
+      "downloads": 16528,
       "id": 134,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Deck%20Progress%20Tracker-385a5da545552b02c794ee73d45d2f8d68eb9abc75d22ead83dd94f2e1ad623a.png",
       "name": "Deck Progress Tracker",
@@ -6841,14 +6859,14 @@
         "statistics"
       ],
       "updated": "2026-04-23T15:50:49Z",
-      "updates": 999,
+      "updates": 1000,
       "versions": [
         {
           "created": "2026-04-23T15:50:49Z",
-          "downloads": 16504,
+          "downloads": 16528,
           "hash": "784c59e7e2a344eb6803d00e341c7d5f10d42cea7b60cc4332f4c3687db14fb3",
           "name": "1.3.6",
-          "updates": 999
+          "updates": 1000
         }
       ],
       "visible": true
@@ -6857,7 +6875,7 @@
       "author": "Jonathan Santos",
       "created": "2026-05-06T21:50:20Z",
       "description": "Inject configurable shelves (Collections / Tabs / Filters) into the Steam Deck Home (library/home).",
-      "downloads": 22140,
+      "downloads": 22165,
       "id": 135,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Deck%20Shelves-c8e1831549d31d1b9a9fa8b62505db2bf659cb2f74c1fdf0dad43a7df0a65438.png",
       "name": "Deck Shelves",
@@ -6871,14 +6889,14 @@
         "tabs"
       ],
       "updated": "2026-05-06T21:50:20Z",
-      "updates": 2111,
+      "updates": 2113,
       "versions": [
         {
           "created": "2026-05-06T21:50:20Z",
-          "downloads": 22140,
+          "downloads": 22165,
           "hash": "b566280ad38fd3ecd584b5b46a855f301539eb9a86063834c64b7045f7063f91",
           "name": "2.0.0",
-          "updates": 2111
+          "updates": 2113
         }
       ],
       "visible": true
@@ -6887,20 +6905,20 @@
       "author": "Managor",
       "created": "2026-05-13T22:06:59Z",
       "description": "Record your screen even when a game is not running.",
-      "downloads": 2863,
+      "downloads": 2866,
       "id": 136,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky-Clipper-754ffbe978c882e5a3a2a1feb8e19a55091ba6edefc8c98650214e372ab50240.jpg",
       "name": "Decky-Clipper",
       "tags": [],
       "updated": "2026-05-13T22:06:59Z",
-      "updates": 282,
+      "updates": 283,
       "versions": [
         {
           "created": "2026-05-13T22:06:59Z",
-          "downloads": 2863,
+          "downloads": 2866,
           "hash": "31d4d66032eb778140b96c0b27e53cb5e969395bca6ffc288b1fa283ecfb2401",
           "name": "1.0.2",
-          "updates": 282
+          "updates": 283
         }
       ],
       "visible": true
@@ -6909,7 +6927,7 @@
       "author": "moi952",
       "created": "2026-05-13T22:21:52Z",
       "description": "Manage Steam game launch options from Gaming Mode. Set Proton environment variables like PROTON_FSR4_UPGRADE=1 or PROTON_DLSS4_UPGRADE=1 and add wrappers such as MangoHud or GameScope.",
-      "downloads": 23447,
+      "downloads": 23469,
       "id": 137,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Proton%20Launch-d33f0e4efdd3e5bac366ddacb82fe61283c47386f91ac61ad0d48a00c867465b.jpg",
       "name": "Decky Proton Launch",
@@ -6919,14 +6937,42 @@
         "proton"
       ],
       "updated": "2026-05-13T22:21:52Z",
-      "updates": 2078,
+      "updates": 2082,
       "versions": [
         {
           "created": "2026-05-13T22:21:52Z",
-          "downloads": 23447,
+          "downloads": 23469,
           "hash": "e7b98a7ca8817ef08584ed0828eee8702631af33daccc229075a012eca91f731",
           "name": "0.9.0",
-          "updates": 2078
+          "updates": 2082
+        }
+      ],
+      "visible": true
+    },
+    {
+      "author": "datbird",
+      "created": "2026-10-19T23:43:32Z",
+      "description": "Steam Deck automation: run Tasks \u2192 Actions \u2192 Modes on triggers (dock/undock, AC power, controller connect, resume, startup). Built-in fixes for docked audio, controller order, composition/stretch, and TDP, plus full Sunshine streaming control (integrated or via decky-sunshine).",
+      "downloads": 16,
+      "id": 138,
+      "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Docky-354ab78d19055680b9a38bd6dfcdb369b1ee4bb53370076dc981088f6ba2fa80.png",
+      "name": "Docky",
+      "tags": [
+        "automation",
+        "dock",
+        "streaming",
+        "sunshine",
+        "triggers"
+      ],
+      "updated": "2026-10-19T23:43:32Z",
+      "updates": 2,
+      "versions": [
+        {
+          "created": "2026-10-19T23:43:32Z",
+          "downloads": 16,
+          "hash": "c4f9760724bfdae0581a64252a9504c225f0f9a7fc378b2ade1891e2755aae01",
+          "name": "1.4.13",
+          "updates": 2
         }
       ],
       "visible": true
@@ -6976,7 +7022,7 @@
       "author": "Aleksandr Maslov & Andrey Litvintsev",
       "created": "2025-02-10T21:40:27Z",
       "description": "Monitor the battery level of your AirPods, Beats and Galaxy Buds. Easily switch between noise cancellation modes and enjoy the magic.",
-      "downloads": 4899,
+      "downloads": 4901,
       "id": 343,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/MagicPods-783650993e1fa391dfd543270ca743efcd6bee3fed16580d4bf2a141f6a0c744.png",
       "name": "MagicPods",
@@ -6988,14 +7034,14 @@
         "headphones"
       ],
       "updated": "2026-10-05T17:09:54Z",
-      "updates": 9878,
+      "updates": 9886,
       "versions": [
         {
           "created": "2026-10-05T17:09:54Z",
-          "downloads": 109,
+          "downloads": 111,
           "hash": "07799dfc67edc5c99959f254f6efae372d93848e93cb40796d42c56a9951d972",
           "name": "2.0.21-eba7c6e",
-          "updates": 1014
+          "updates": 1022
         },
         {
           "created": "2026-09-06T07:08:22Z",
@@ -7290,14 +7336,14 @@
         "streaming"
       ],
       "updated": "2026-09-14T18:46:20Z",
-      "updates": 8536,
+      "updates": 8537,
       "versions": [
         {
           "created": "2026-09-14T18:46:20Z",
           "downloads": 179,
           "hash": "f395cc7cdb39f04e400172785de0e8f2325f363c17d3757445dbe104b1e560b5",
           "name": "1.12.1-a0f43ca",
-          "updates": 783
+          "updates": 784
         },
         {
           "created": "2026-09-05T19:05:33Z",
@@ -7397,7 +7443,7 @@
       "author": "Jesse Bofill",
       "created": "2025-02-22T23:33:57Z",
       "description": "Full audio effects DSP. EQ, Reverb and much more. Per-game settings possible.",
-      "downloads": 2409,
+      "downloads": 2410,
       "id": 374,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/DeckSP-d0c966999f4b4f1845909287e0c5995ecdfeded46166f75cafd864f0a7d995ef.png",
       "name": "DeckSP",
@@ -7417,7 +7463,7 @@
       "versions": [
         {
           "created": "2025-12-31T23:05:17Z",
-          "downloads": 1008,
+          "downloads": 1009,
           "hash": "c13c0c968fe7466e5b0c903269b2179aadebf825b461e9cf99d3e7bd5d5ef2bf",
           "name": "1.1.3-db8ff18",
           "updates": 460
@@ -7583,7 +7629,7 @@
       "author": "Kernel Panic",
       "created": "2025-03-01T18:47:40Z",
       "description": "Plugin for viewing RetroAchievements progress. Part of the EmuDeck Project",
-      "downloads": 3281,
+      "downloads": 3282,
       "id": 377,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Emuchievements.png",
       "name": "Emuchievements",
@@ -7592,21 +7638,21 @@
         "retroachievements"
       ],
       "updated": "2025-07-10T18:52:06Z",
-      "updates": 4134,
+      "updates": 4136,
       "versions": [
         {
           "created": "2025-07-10T18:52:06Z",
-          "downloads": 2586,
+          "downloads": 2587,
           "hash": "c8c0eb59aaf65e877a3bde795958667d6f2a777a7fac0b65d76486384377ed47",
           "name": "2.0.5-f3d8621",
-          "updates": 2032
+          "updates": 2033
         },
         {
           "created": "2025-03-01T18:47:40Z",
           "downloads": 695,
           "hash": "a0c66de7a2b639cde5fcc1eebe8a688fe4a7479e30e9fc39ba5dea2061bf3999",
           "name": "2.0.5-18e959a",
-          "updates": 2102
+          "updates": 2103
         }
       ],
       "visible": true
@@ -7615,7 +7661,7 @@
       "author": "davocarli",
       "created": "2025-03-02T17:15:15Z",
       "description": "Official plugin from Steam Deck HQ. Allows you to browse game reviews and recommended settings.",
-      "downloads": 9049,
+      "downloads": 9054,
       "id": 378,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Steam%20Deck%20HQ-0b8a4ad29019af9b72a87f220689ab1842765f88eb92b482e7de7fe7ad8d1a3b.jpg",
       "name": "Steam Deck HQ",
@@ -7623,14 +7669,14 @@
         "sdhq"
       ],
       "updated": "2025-03-08T15:59:45Z",
-      "updates": 2739,
+      "updates": 2742,
       "versions": [
         {
           "created": "2025-03-08T15:59:45Z",
-          "downloads": 8765,
+          "downloads": 8770,
           "hash": "f4648fcdb97555bb9cfa18d8f63b0f7cdb4a0fdeea1c88bf2ff3e72ed8213e81",
           "name": "1.0-0338b3d",
-          "updates": 2321
+          "updates": 2324
         },
         {
           "created": "2025-03-02T17:15:15Z",
@@ -7646,7 +7692,7 @@
       "author": "Josh.5",
       "created": "2025-03-05T17:44:17Z",
       "description": "Fetch and display community-driven game compatibility, settings, and configuration reports.",
-      "downloads": 8010,
+      "downloads": 8012,
       "id": 379,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Deck%20Settings-6f664f0c6452c28db7e68e9d438f22f5648d40b7028f6160046e3072d19e2e66.jpg",
       "name": "Deck Settings",
@@ -7663,7 +7709,7 @@
       "versions": [
         {
           "created": "2025-12-06T15:33:33Z",
-          "downloads": 3544,
+          "downloads": 3546,
           "hash": "00ea450090b23c8cdc5d1b94b1715a8df1096208524bd857909836ec0dbeba83",
           "name": "1.2.6-cbba017",
           "updates": 1620
@@ -7717,7 +7763,7 @@
       "author": "Witherking25 'Kernel Panic'",
       "created": "2025-03-05T22:51:17Z",
       "description": "Plugin for viewing metadata for non steam games from IGDB. Part of the EmuDeck Project",
-      "downloads": 4806,
+      "downloads": 4807,
       "id": 380,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/MetaDeck-2a77861dad5cf2adba79ff87f34abe1986be9a0b74753c141dc64ba47692edb6.png",
       "name": "MetaDeck",
@@ -7726,11 +7772,11 @@
         "IGDB"
       ],
       "updated": "2025-03-06T04:34:49Z",
-      "updates": 2353,
+      "updates": 2354,
       "versions": [
         {
           "created": "2025-03-06T04:34:49Z",
-          "downloads": 4726,
+          "downloads": 4727,
           "hash": "31911f68e95d44d6af83389ac2ab5e8720a98b08e4a7a7e998f5f44adf2662a3",
           "name": "3.0.1-bfec326",
           "updates": 2162
@@ -7740,7 +7786,7 @@
           "downloads": 80,
           "hash": "1afa7a9cfce605c8b53a9933224dd697d2a167ee02735f422f73fcec5721f74a",
           "name": "3.0.1-af2ae3e",
-          "updates": 191
+          "updates": 192
         }
       ],
       "visible": true
@@ -7749,7 +7795,7 @@
       "author": "Eben Bruyns",
       "created": "2025-03-13T20:22:59Z",
       "description": "Transform your gaming experience with Junk-Store - the ultimate solution for seamlessly integrating non-Steam games into your Steam Deck library. Say goodbye to clunky work arounds and hello to a world of endless gaming possibilities. Get ready to elevate your gaming to the next level with Junk-Store!",
-      "downloads": 7402,
+      "downloads": 7404,
       "id": 381,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Junk-Store-5eeb67c7f0d176323ad2edc1a474956830cf1a4a87a8ca320aabfd430efb1b6e.jpg",
       "name": "Junk-Store",
@@ -7763,7 +7809,7 @@
       "versions": [
         {
           "created": "2026-01-16T16:30:35Z",
-          "downloads": 2740,
+          "downloads": 2742,
           "hash": "6d226c8a2b87b9da09ca7caf2e20a9cb0b08fafb95470b7d150bed02b7bc57c4",
           "name": "1.1.13-929595f",
           "updates": 3001
@@ -7879,7 +7925,7 @@
       "author": "Jesse Bofill",
       "created": "2025-03-16T00:03:19Z",
       "description": "A web browser with multiple features including tabs!, limited gamepad support, favorites and a multifunction search/url bar.",
-      "downloads": 4029,
+      "downloads": 4032,
       "id": 383,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Web%20Browser-ecbc735316cf6dd27394d34a15fb88ae06992583b059362d694fde544427533c.png",
       "name": "Web Browser",
@@ -7893,7 +7939,7 @@
       "versions": [
         {
           "created": "2025-12-31T23:03:52Z",
-          "downloads": 1867,
+          "downloads": 1870,
           "hash": "eed561c350ddb1d73e29d5a1266c8eb9c761c02cc0eb3878440120c38d645577",
           "name": "1.4.3-8b2fa0d",
           "updates": 1020
@@ -7974,7 +8020,7 @@
       "author": "GedasFX",
       "created": "2025-03-17T20:07:32Z",
       "description": "Ludusavi for Decky. Backup, restore, and keep multiple versions of your save files with ease! Requires Ludusavi installation on the device.",
-      "downloads": 1232,
+      "downloads": 1233,
       "id": 385,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Ludusavi-c4f70e9bcb2ba5f25c239953f2ab6e734304d3880ffa5cc42ff4cc6e050c620d.png",
       "name": "Decky Ludusavi",
@@ -7989,7 +8035,7 @@
       "versions": [
         {
           "created": "2025-08-07T00:33:51Z",
-          "downloads": 900,
+          "downloads": 901,
           "hash": "99de9257f630f498f723e9e753482e406b5084eddff9cc18f2e97ad57fc59e54",
           "name": "1.2.2-1c704d6",
           "updates": 287
@@ -8022,108 +8068,115 @@
       "author": "Renn",
       "created": "2025-03-18T22:29:51Z",
       "description": "A fork of Decky Cloud Save that manages cloud saves and mods for games",
-      "downloads": 1245,
+      "downloads": 0,
       "id": 386,
-      "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Game%20Sync-294e4ef9b5796c826a5624fa2dc35be4dec7522924f0f54e54f11eec56ba5266.png",
+      "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Game%20Sync.png",
       "name": "Game Sync",
       "tags": [
         "backup",
         "cloud",
         "rclone"
       ],
-      "updated": "2026-09-05T19:07:29Z",
-      "updates": 1196,
+      "updated": "2026-10-20T00:56:30Z",
+      "updates": 5,
       "versions": [
         {
+          "created": "2026-10-20T00:56:30Z",
+          "downloads": 0,
+          "hash": "09f11b0330b3d9455cc50bffc44b18fe9cc1f0e3cc91c37756b3ea098867e680",
+          "name": "1.1.4-270594c",
+          "updates": 5
+        },
+        {
           "created": "2026-09-05T19:07:29Z",
-          "downloads": 51,
+          "downloads": 0,
           "hash": "389e29e7cdf8e8b2c70c28f9c9ce5052f96a606e5aac347fbf5a031a615fb67c",
           "name": "1.1.3-eb7000e",
-          "updates": 176
+          "updates": 0
         },
         {
           "created": "2026-05-25T17:01:19Z",
-          "downloads": 136,
+          "downloads": 0,
           "hash": "7bc4eb269db431c3685466a3fac456ed2e530854715d76d3111ecd65d22276cf",
           "name": "1.1.2-32e0fb9",
-          "updates": 290
+          "updates": 0
         },
         {
           "created": "2026-04-22T22:39:17Z",
-          "downloads": 51,
+          "downloads": 0,
           "hash": "e197831b7f9e829f1041338b85e72d8f7f2eb7778356c3be6b53794fc10999f0",
           "name": "1.0.4-e127e22",
-          "updates": 142
+          "updates": 0
         },
         {
           "created": "2026-03-04T21:25:50Z",
-          "downloads": 82,
+          "downloads": 0,
           "hash": "5199a9c1c206fa68be09dcf4355ce163214979df6d66229ba287acf6c75ec81d",
           "name": "1.0.3-851434e",
-          "updates": 155
+          "updates": 0
         },
         {
           "created": "2025-11-28T03:10:40Z",
-          "downloads": 221,
+          "downloads": 0,
           "hash": "979c589c36ef677d03ee355a607bd687e209547872c29b0a84f476c964fcd2b6",
           "name": "1.0.2-4c23be0",
-          "updates": 110
+          "updates": 0
         },
         {
           "created": "2025-11-27T16:44:57Z",
-          "downloads": 8,
+          "downloads": 0,
           "hash": "4a8b58c0e1e73fc37d0cf86fb5584ad46e615a8cdea5e76cbfa393933be29a1d",
           "name": "1.0.2-2535441",
-          "updates": 11
+          "updates": 0
         },
         {
           "created": "2025-07-13T14:22:45Z",
-          "downloads": 336,
+          "downloads": 0,
           "hash": "b0166bd4bee3862c0657cebc98b9676183305c8a961dc7c30ecbf7b4d7a5011c",
           "name": "1.0.1-77b39ba",
-          "updates": 115
+          "updates": 0
         },
         {
           "created": "2025-06-26T03:44:09Z",
-          "downloads": 35,
+          "downloads": 0,
           "hash": "d6b8b68bf69cb6cf14e7cc8c2b232bb5d85513490d33f026f29c79c28a4df0be",
           "name": "1.0.1-cdd40b9",
-          "updates": 86
+          "updates": 0
         },
         {
           "created": "2025-04-08T15:18:50Z",
-          "downloads": 176,
+          "downloads": 0,
           "hash": "1b505f69430069aa3b7704774e32e6c9bfc957c511fe60fe7ae506cb10be041f",
           "name": "1.0.0-6dde5db",
-          "updates": 41
+          "updates": 0
         },
         {
           "created": "2025-03-31T00:31:26Z",
-          "downloads": 46,
+          "downloads": 0,
           "hash": "c4698aef36c0a03609b2cf8a20f4e9df76d015c8acdfaed5e20bac22eb3bce30",
           "name": "1.0.0-641455d",
-          "updates": 24
+          "updates": 0
         },
         {
           "created": "2025-03-23T20:59:43Z",
-          "downloads": 49,
+          "downloads": 0,
           "hash": "c0e128a134bb49369d85e532079b574ca7e6d9e0e155bb2776840132e6214180",
           "name": "1.0.0-859a91b",
-          "updates": 12
+          "updates": 0
         },
         {
           "created": "2025-03-23T15:00:38Z",
           "downloads": 0,
           "hash": "38992445a3af5e97df3784ac6bfa43591803821a08c657945b130eecc20cc89e",
           "name": "1.0.0-b2cf955",
-          "updates": 2
+          "updates": 0
         },
         {
           "created": "2025-03-18T22:29:51Z",
-          "downloads": 54,
+          "downloads": 0,
           "hash": "391fd76e7786f28555438f2b18f1687bc9aabef1a32c1e9eaf8864e3a2d27662",
           "name": "1.0.0-e1322ce",
-          "updates": 32
+          "updates": 0
         }
       ],
       "visible": true
@@ -8162,7 +8215,7 @@
       "author": "felipejfc",
       "created": "2025-04-05T15:39:14Z",
       "description": "Lock WiFi to a specific access point to prevent background scanning.",
-      "downloads": 1782,
+      "downloads": 1784,
       "id": 388,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/WiFi%20Locker-a434fff4f4063905db646cefdd177444a143620f2bf16a72020b94f5ee1ca3de.png",
       "name": "WiFi Locker",
@@ -8172,14 +8225,14 @@
         "wifi"
       ],
       "updated": "2025-10-26T21:55:59Z",
-      "updates": 1765,
+      "updates": 1766,
       "versions": [
         {
           "created": "2025-10-26T21:55:59Z",
-          "downloads": 937,
+          "downloads": 939,
           "hash": "78057888ceac36b7e24fb0a213a901d2a5a11100d72a0d56bcdd80476bfff160",
           "name": "1.0.5-337f9db",
-          "updates": 1443
+          "updates": 1444
         },
         {
           "created": "2025-05-05T15:39:23Z",
@@ -8225,9 +8278,16 @@
         "Library",
         "Tabs"
       ],
-      "updated": "2026-03-13T19:16:22Z",
-      "updates": 15210,
+      "updated": "2026-10-19T22:28:02Z",
+      "updates": 15282,
       "versions": [
+        {
+          "created": "2026-10-19T22:28:02Z",
+          "downloads": 0,
+          "hash": "9299505d1eec6dc84578b23367b6d8036e73ea865d3135ed6b444276db138464",
+          "name": "3.0.1-1a124d2",
+          "updates": 72
+        },
         {
           "created": "2026-03-13T19:16:22Z",
           "downloads": 1941,
@@ -8299,14 +8359,14 @@
         "tailscale"
       ],
       "updated": "2025-04-28T18:31:06Z",
-      "updates": 1253,
+      "updates": 1254,
       "versions": [
         {
           "created": "2025-04-28T18:31:06Z",
           "downloads": 795,
           "hash": "79539c78d53544b19faa08d1ba2ffdd87bef383d87933ebe8a8461a968f7785f",
           "name": "0.1.4-3e1f103",
-          "updates": 1253
+          "updates": 1254
         }
       ],
       "visible": true
@@ -8474,7 +8534,7 @@
       "author": "Alex4386",
       "created": "2025-05-07T21:37:13Z",
       "description": "Your terminal is going places. The decky plugin that adds terminal emulator plugin for \"game mode\"",
-      "downloads": 1041,
+      "downloads": 1043,
       "id": 393,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Terminal.png",
       "name": "Decky Terminal",
@@ -8486,7 +8546,7 @@
       "versions": [
         {
           "created": "2025-07-02T13:56:22Z",
-          "downloads": 918,
+          "downloads": 920,
           "hash": "b542f305abb03af109ceea7d02f30f4000f308f0d0c30ec3fc2dd13ec1b63a94",
           "name": "0.5.3-3f5bf40",
           "updates": 549
@@ -8517,14 +8577,14 @@
         "sunshine"
       ],
       "updated": "2025-11-18T22:49:21Z",
-      "updates": 1906,
+      "updates": 1907,
       "versions": [
         {
           "created": "2025-11-18T22:49:21Z",
           "downloads": 1746,
           "hash": "f04d2b7d244fcf2ebbd16cffd6647085b2124d116d543deb1a4024b0c69a4d36",
           "name": "2025.10.27-dddf365-cf7a1f0",
-          "updates": 1610
+          "updates": 1611
         },
         {
           "created": "2025-06-06T22:39:43Z",
@@ -8547,7 +8607,7 @@
       "author": "itsOwen",
       "created": "2025-06-05T14:51:43Z",
       "description": "ReShade plugin for Steam Deck - Enhanced version with improved shader and game management.",
-      "downloads": 3086,
+      "downloads": 3087,
       "id": 395,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/LetMeReShade-3776b51a5333d9cb2b0e107c5eff9be30e09c1a9375b24b438dab77be8090703.jpg",
       "name": "LetMeReShade",
@@ -8562,7 +8622,7 @@
       "versions": [
         {
           "created": "2025-06-25T04:12:18Z",
-          "downloads": 2820,
+          "downloads": 2821,
           "hash": "bf67efc1330cd2288bc2dd01285df798ad15ab07fc08cf7f34b6d8fce1b0269f",
           "name": "1.7-b15f6ad",
           "updates": 704
@@ -8609,7 +8669,7 @@
       "author": "jwhitlow45",
       "created": "2025-06-08T14:59:15Z",
       "description": "Notifications for free games on Steam, GOG, Epic Games, and Itch.io!",
-      "downloads": 3212,
+      "downloads": 3213,
       "id": 396,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Free%20Loader-532ae8cf47ec0b98f004bb879879db5b13f6767d9e047157c976490362372027.png",
       "name": "Free Loader",
@@ -8628,14 +8688,14 @@
         "store"
       ],
       "updated": "2026-10-05T08:40:40Z",
-      "updates": 6451,
+      "updates": 6458,
       "versions": [
         {
           "created": "2026-10-05T08:40:40Z",
-          "downloads": 71,
+          "downloads": 72,
           "hash": "f51a0cd4906d0360862f47f102a31adaccf61910b1e55c573b4fbab7bc53effd",
           "name": "1.6.0-1cb17c9",
-          "updates": 1056
+          "updates": 1063
         },
         {
           "created": "2026-02-02T19:05:08Z",
@@ -8686,7 +8746,7 @@
       "author": "honjow",
       "created": "2025-06-09T21:08:58Z",
       "description": "LED controller for non-Steam Deck gaming handhelds running SteamOS.",
-      "downloads": 3242,
+      "downloads": 3245,
       "id": 397,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/HueSync-948e46730bc3a43d99d24e5b45cbc4a5df88c57806f49fe85f0a3b595d40c72e.jpg",
       "name": "HueSync",
@@ -8694,14 +8754,14 @@
         "root"
       ],
       "updated": "2026-03-20T23:10:41Z",
-      "updates": 3471,
+      "updates": 3473,
       "versions": [
         {
           "created": "2026-03-20T23:10:41Z",
-          "downloads": 1456,
+          "downloads": 1459,
           "hash": "109131e8ca68923d3a1b812a6e1a6ca2ae9c5c2d076740bee169f7d3df683fc6",
           "name": "3.8.0-1c33a52",
-          "updates": 1020
+          "updates": 1022
         },
         {
           "created": "2025-10-14T00:50:51Z",
@@ -8786,7 +8846,7 @@
       "author": "SteamGridDB",
       "created": "2025-07-04T06:26:10Z",
       "description": "Customize your library with user-submitted images or local files, and other style tweaks like square capsules, uniform sizing, and more!",
-      "downloads": 14506,
+      "downloads": 14509,
       "id": 400,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/SteamGridDB-1a938447c46d3d7816c87181c20b96ca438840cbdbb556c13c37cf1f923b3512.png",
       "name": "SteamGridDB",
@@ -8795,14 +8855,14 @@
         "sgdb"
       ],
       "updated": "2026-10-04T21:59:30Z",
-      "updates": 41158,
+      "updates": 41201,
       "versions": [
         {
           "created": "2026-10-04T21:59:30Z",
-          "downloads": 1063,
+          "downloads": 1066,
           "hash": "69dedfc4bf6221d4245540b0a3cfc1e5af3449e4dce376a1a06a58b83a5c3a60",
           "name": "1.8.1-88b52c1",
-          "updates": 6859
+          "updates": 6902
         },
         {
           "created": "2026-10-04T14:25:37Z",
@@ -8846,7 +8906,7 @@
       "author": "Aleksandr Maslov",
       "created": "2025-07-04T15:54:32Z",
       "description": "Overlays the screen with black color, emulating the screen being turned off on the Steam Deck OLED.",
-      "downloads": 6,
+      "downloads": 7,
       "id": 401,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/MagicBlack-4b5253f504d7318087c5368d8ab177538fbed92d7c3c0f178763e5f3955f70da.png",
       "name": "MagicBlack",
@@ -8859,14 +8919,14 @@
         "shortcut"
       ],
       "updated": "2026-10-17T19:50:10Z",
-      "updates": 24,
+      "updates": 30,
       "versions": [
         {
           "created": "2026-10-17T19:50:10Z",
-          "downloads": 6,
+          "downloads": 7,
           "hash": "04df170abdf6f1eccbb6c465af1f413c6aff210d732f76cfc4f9478e881897c1",
           "name": "2.0.2-d9376bc",
-          "updates": 24
+          "updates": 30
         },
         {
           "created": "2026-09-06T07:09:35Z",
@@ -8970,14 +9030,14 @@
         "Notifications"
       ],
       "updated": "2026-09-10T13:11:20Z",
-      "updates": 305,
+      "updates": 307,
       "versions": [
         {
           "created": "2026-09-10T13:11:20Z",
           "downloads": 27,
           "hash": "e441ae2e15ecf1e2d19697d53c7160ef5a136ea9f8dc896c9a680774e111f18f",
           "name": "1.0.2-80b665b",
-          "updates": 149
+          "updates": 151
         },
         {
           "created": "2025-07-11T15:43:21Z",
@@ -9049,14 +9109,14 @@
         "wifi"
       ],
       "updated": "2025-11-28T18:27:28Z",
-      "updates": 300,
+      "updates": 301,
       "versions": [
         {
           "created": "2025-11-28T18:27:28Z",
           "downloads": 391,
           "hash": "90c53baade1afe642ea4031513215d2aac8016868f1b7ab219e75fb2d5fe578c",
           "name": "0.2.1-bca4fe0",
-          "updates": 116
+          "updates": 117
         },
         {
           "created": "2025-08-22T19:42:20Z",
@@ -9111,7 +9171,7 @@
       "author": "SheffeyG",
       "created": "2025-09-17T18:48:10Z",
       "description": "A launch options manager allows you to run games with cheats and trainers.",
-      "downloads": 29161,
+      "downloads": 29163,
       "id": 408,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/CheatDeck-51bc4968c7a667d554750fa0e56e028a9ebff87d05d85c5e3ab941eb14e86d50.jpg",
       "name": "CheatDeck",
@@ -9120,14 +9180,14 @@
         "trainer"
       ],
       "updated": "2026-03-27T15:46:45Z",
-      "updates": 37643,
+      "updates": 37649,
       "versions": [
         {
           "created": "2026-03-27T15:46:45Z",
-          "downloads": 13442,
+          "downloads": 13444,
           "hash": "b98640dd0f6dbb57c40a75a11ef91799948554c885fef69ff9cb32aab48c6b62",
           "name": "1.2.1-ffa3314",
-          "updates": 20835
+          "updates": 20841
         },
         {
           "created": "2025-12-31T22:59:36Z",
@@ -9207,7 +9267,7 @@
       "author": "EMERALD0874 & Beebles",
       "created": "2025-10-03T16:39:16Z",
       "description": "Replaces Steam UI sound effects with custom sounds and adds music to menus.",
-      "downloads": 4413,
+      "downloads": 4414,
       "id": 410,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Audio%20Loader.png",
       "name": "Audio Loader",
@@ -9217,14 +9277,14 @@
         "style"
       ],
       "updated": "2025-10-03T16:39:16Z",
-      "updates": 3598,
+      "updates": 3599,
       "versions": [
         {
           "created": "2025-10-03T16:39:16Z",
-          "downloads": 4413,
+          "downloads": 4414,
           "hash": "da5e1948eaee0eb71249c618960a1cf6403dbafeecaa9c7e37a97f45cb9f8fa5",
           "name": "1.6.1-a683513",
-          "updates": 3598
+          "updates": 3599
         }
       ],
       "visible": true
@@ -9233,7 +9293,7 @@
       "author": "ma3a, Kernel Panic, ynhhoJ",
       "created": "2025-10-03T16:46:54Z",
       "description": "Track time you spend gaming \u2014 whether it's Steam titles or non-Steam games. Daily, weekly, and all-time stats.",
-      "downloads": 2655,
+      "downloads": 0,
       "id": 411,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/PlayTime-b91df930175ccdfdf8e9651cdbbb9ef75e980d7e4320d18eff19ef79a257a4b7.png",
       "name": "PlayTime",
@@ -9242,64 +9302,71 @@
         "time-tracking",
         "utility"
       ],
-      "updated": "2026-04-01T18:49:48Z",
-      "updates": 10885,
+      "updated": "2026-10-20T01:00:15Z",
+      "updates": 35,
       "versions": [
         {
+          "created": "2026-10-20T01:00:15Z",
+          "downloads": 0,
+          "hash": "63ac6f11f78306ae0deca78b5bcd2a9743b057535b5ea55232fa006d5e9eda2c",
+          "name": "3.3.2-9342d50",
+          "updates": 35
+        },
+        {
           "created": "2026-04-01T18:49:48Z",
-          "downloads": 948,
+          "downloads": 0,
           "hash": "30bca632feeafdf762be57fa29412e605816001505cc0b81c9ef5f1dd8b89a4e",
           "name": "3.2.5-fd4bec6",
-          "updates": 3112
+          "updates": 0
         },
         {
           "created": "2025-12-26T23:52:10Z",
-          "downloads": 563,
+          "downloads": 0,
           "hash": "2e82e4991411c587d769703d400ffa2baa3b77aa90c7a7be4fc531fda354e1df",
           "name": "3.1.4-9546ae3",
-          "updates": 2038
+          "updates": 0
         },
         {
           "created": "2025-12-17T14:57:55Z",
-          "downloads": 85,
+          "downloads": 0,
           "hash": "2a8d7e0308b28c57c68efd6bd2809a4d6051fac058c83c749835c9b67c3f47ae",
           "name": "3.1.3-21ea08d",
-          "updates": 1112
+          "updates": 0
         },
         {
           "created": "2025-12-14T19:37:41Z",
-          "downloads": 21,
+          "downloads": 0,
           "hash": "742400af7a12c387bc54eb87c0857a1d804991308c7a264b451709f8b3f6ecb2",
           "name": "3.1.2-ff54aec",
-          "updates": 540
+          "updates": 0
         },
         {
           "created": "2025-12-10T15:34:02Z",
-          "downloads": 35,
+          "downloads": 0,
           "hash": "2c4947b78d87c56f97a37fe51b4297e2c7bf8d68ce0c7a9b61c7f1d92611f574",
           "name": "3.1.1-965a979",
-          "updates": 810
+          "updates": 0
         },
         {
           "created": "2025-10-08T14:47:58Z",
-          "downloads": 723,
+          "downloads": 0,
           "hash": "cb766adcb591b7e204fd3822fdfe536bdb0b547fcee7a7ee004b20f8291f9812",
           "name": "3.0.6-c772dfc",
-          "updates": 2052
+          "updates": 0
         },
         {
           "created": "2025-10-04T22:24:17Z",
-          "downloads": 182,
+          "downloads": 0,
           "hash": "96d6d3d887aebe2aec27664ac49349217623920d6f0e90886d5e6f834fa28111",
           "name": "3.0.5-0e96fa0",
-          "updates": 690
+          "updates": 0
         },
         {
           "created": "2025-10-03T16:46:54Z",
-          "downloads": 98,
+          "downloads": 0,
           "hash": "aaf9b542d6914b905c85c12bde416182fbd01b1d5799f5928eca7532604e52dd",
           "name": "3.0.5-6237145",
-          "updates": 531
+          "updates": 0
         }
       ],
       "visible": true
@@ -9354,7 +9421,7 @@
       "author": "popsUlfr & wynn1212 & AkazaRenn",
       "created": "2025-10-05T16:08:00Z",
       "description": "Pause/Resume games to redirect resources and even play/stop apps that don't natively have an immediate option to do so.",
-      "downloads": 2032,
+      "downloads": 2033,
       "id": 413,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Pause%20Games-14da87b69a6682d5cee6644f03daa6e4b13655ef96061f097d963ac84a5ef9af.jpg",
       "name": "Pause Games",
@@ -9369,9 +9436,16 @@
         "stop",
         "suspend"
       ],
-      "updated": "2025-10-05T16:08:00Z",
-      "updates": 2006,
+      "updated": "2026-10-19T22:13:41Z",
+      "updates": 2052,
       "versions": [
+        {
+          "created": "2026-10-19T22:13:41Z",
+          "downloads": 1,
+          "hash": "ecd082237ed699c21ea2d07dc640241f51d33d91fd9be231e3004ef1224c19db",
+          "name": "1.0.3-9a94545",
+          "updates": 46
+        },
         {
           "created": "2025-10-05T16:08:00Z",
           "downloads": 2032,
@@ -9386,7 +9460,7 @@
       "author": "OMGDuke, MegalonVII",
       "created": "2025-10-13T23:31:54Z",
       "description": "Play theme songs on your game pages",
-      "downloads": 4471,
+      "downloads": 4473,
       "id": 414,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Game%20Theme%20Music-dce63e3764f8114afd8e21ae8288bb54c09077d8202baa7dab572b352cb12512.png",
       "name": "Game Theme Music",
@@ -9398,7 +9472,7 @@
       "versions": [
         {
           "created": "2025-10-26T21:54:26Z",
-          "downloads": 4141,
+          "downloads": 4143,
           "hash": "cf9fbcdb31e59e6055b273e8c065f1b6fdd822e9ca06e4fcfd4e60ce075b35ad",
           "name": "1.7.1-1-4621abd",
           "updates": 3232
@@ -9489,7 +9563,7 @@
       "author": "Chenx Dust",
       "created": "2025-10-21T15:34:40Z",
       "description": "Better experience for physical keyboard users.",
-      "downloads": 1812,
+      "downloads": 1814,
       "id": 417,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Better%20Keyboard-fe0345ec80756a44cd8b919018b509e0c0b0118deb51df49b0da39f8363d4987.png",
       "name": "Better Keyboard",
@@ -9502,7 +9576,7 @@
       "versions": [
         {
           "created": "2026-03-04T21:24:25Z",
-          "downloads": 909,
+          "downloads": 911,
           "hash": "07f743ab891e0cf41f958055f41524835eecc09dedccd66c2d4981bdc9fcf271",
           "name": "0.3.4-991961d",
           "updates": 446
@@ -9632,7 +9706,7 @@
       "author": "Kurt Himebauch (xXJSONDeruloXx)",
       "created": "2025-11-18T22:51:18Z",
       "description": "Enables hibernation on Steam Deck for near-zero power drain when not in use. Immediate hibernate & suspend-then-hibernate.",
-      "downloads": 1452,
+      "downloads": 1453,
       "id": 421,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Hibernado-32baf7749c67b6b54066732fe28326502abda032f85d370bec9e652c251e43ca.jpg",
       "name": "Hibernado",
@@ -9645,11 +9719,11 @@
         "suspend"
       ],
       "updated": "2025-12-26T23:47:26Z",
-      "updates": 389,
+      "updates": 390,
       "versions": [
         {
           "created": "2025-12-26T23:47:26Z",
-          "downloads": 1124,
+          "downloads": 1125,
           "hash": "280567bd0e31e68b7bb05c3f09dbfa3bc3d93d539cfe9478c73f423a0825d4e2",
           "name": "1.4.3-ea03769",
           "updates": 247
@@ -9659,7 +9733,7 @@
           "downloads": 121,
           "hash": "242c121ee9f3a2114ba7292afdec298087f23be5a3c786714b00ca7a608ed892",
           "name": "1.4.2-cb25329",
-          "updates": 79
+          "updates": 80
         },
         {
           "created": "2025-11-28T02:38:54Z",
@@ -9682,7 +9756,7 @@
       "author": "Kurt Himebauch (xXJSONDeruloXx)",
       "created": "2025-11-18T22:57:51Z",
       "description": "Enable lossless scaling frame generation on the Steam Deck using lsfg-vk compatibility layer.",
-      "downloads": 17006,
+      "downloads": 17010,
       "id": 422,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20LSFG-VK-0eb2389b3e320eff1a595d9b61ce3e47c507a97226549dfbe192cdeec9a7bb77.png",
       "name": "Decky LSFG-VK",
@@ -9695,14 +9769,14 @@
         "vulkan"
       ],
       "updated": "2025-11-18T22:57:51Z",
-      "updates": 12504,
+      "updates": 12505,
       "versions": [
         {
           "created": "2025-11-18T22:57:51Z",
-          "downloads": 17006,
+          "downloads": 17010,
           "hash": "bf9c7e5d80b538b83af2a70b3ad107e56520c63cfbcce0462bdd11bb09e0f835",
           "name": "0.12.2-781ab64",
-          "updates": 12504
+          "updates": 12505
         }
       ],
       "visible": true
@@ -9711,7 +9785,7 @@
       "author": "contributors and morwy",
       "created": "2025-11-23T17:41:46Z",
       "description": "A plugin to show you game lengths according to How Long To Beat",
-      "downloads": 4644,
+      "downloads": 4647,
       "id": 423,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/HLTB%20for%20Deck-b407060820a5928d859fba7510b21733ebd6b77a1ae6ec47d6b8dba01aa5d4e9.png",
       "name": "HLTB for Deck",
@@ -9721,14 +9795,14 @@
         "utility"
       ],
       "updated": "2026-10-08T15:30:28Z",
-      "updates": 21060,
+      "updates": 21081,
       "versions": [
         {
           "created": "2026-10-08T15:30:28Z",
-          "downloads": 294,
+          "downloads": 297,
           "hash": "792fdb7be1b44a66f2a158b40d597e6eb417d530c4b9080a48b6246599e9bc1c",
           "name": "2.0.12-800f649",
-          "updates": 2690
+          "updates": 2711
         },
         {
           "created": "2026-09-08T17:37:26Z",
@@ -9831,9 +9905,16 @@
         "proton-ge",
         "wine"
       ],
-      "updated": "2025-11-27T16:44:49Z",
-      "updates": 2359,
+      "updated": "2026-10-19T23:19:16Z",
+      "updates": 2414,
       "versions": [
+        {
+          "created": "2026-10-19T23:19:16Z",
+          "downloads": 0,
+          "hash": "8a8b090a5deb8075b8ab0354e64161e6347b2418b08e1fa5f2312a955bae9e16",
+          "name": "0.2.1-ac918b7",
+          "updates": 55
+        },
         {
           "created": "2025-11-27T16:44:49Z",
           "downloads": 3148,
@@ -9915,14 +9996,14 @@
         "root"
       ],
       "updated": "2026-09-08T17:40:25Z",
-      "updates": 2287,
+      "updates": 2289,
       "versions": [
         {
           "created": "2026-09-08T17:40:25Z",
           "downloads": 140,
           "hash": "ea82b10bdec234821f948ecd080a137ce23b16b4ed8b15470df25b268d1bf3de",
           "name": "1.3.0-5407b72",
-          "updates": 694
+          "updates": 696
         },
         {
           "created": "2026-02-18T21:34:36Z",
@@ -9995,7 +10076,7 @@
       "author": "Schelstraete Bart",
       "created": "2026-01-05T04:59:32Z",
       "description": "Display tappable ProtonDB badges on your game pages",
-      "downloads": 4848,
+      "downloads": 4853,
       "id": 430,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/ProtonDB%20Badges-aa57ab7fbf2d1fcbd51e8d671c7e702405df674aeac6de039f77a135c8c7586a.png",
       "name": "ProtonDB Badges",
@@ -10003,14 +10084,14 @@
         "protondb"
       ],
       "updated": "2026-09-15T15:01:07Z",
-      "updates": 15784,
+      "updates": 15809,
       "versions": [
         {
           "created": "2026-09-15T15:01:07Z",
-          "downloads": 890,
+          "downloads": 895,
           "hash": "617b62778732190a389898461d62285d14b893f18d9fb9d9a5ca54b0ee3cbc74",
           "name": "1.3.4-809751c",
-          "updates": 7700
+          "updates": 7725
         },
         {
           "created": "2026-01-05T04:59:32Z",
@@ -10126,7 +10207,7 @@
       "author": "Keith Baker",
       "created": "2026-01-12T15:44:30Z",
       "description": "A comprehensive control center for the ASUS ROG Ally - RGB lighting, battery health, device info, performance profiles, and screen control.",
-      "downloads": 3700,
+      "downloads": 3704,
       "id": 434,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Ally%20Center-565ee974f21f4f58c70afc8b07150e645566ffdd087294a8c28c1905df6df901.png",
       "name": "Ally Center",
@@ -10139,14 +10220,14 @@
         "rog-ally"
       ],
       "updated": "2026-01-12T15:44:30Z",
-      "updates": 345,
+      "updates": 346,
       "versions": [
         {
           "created": "2026-01-12T15:44:30Z",
-          "downloads": 3700,
+          "downloads": 3704,
           "hash": "fd4d22908a4587a51acc9cc87ee1967f5240b26fb276ecb6192c0ec348674d2b",
           "name": "1.1.0-805dd99",
-          "updates": 345
+          "updates": 346
         }
       ],
       "visible": true
@@ -10371,7 +10452,7 @@
       "author": "MoeMagicMango",
       "created": "2026-02-06T23:55:01Z",
       "description": "Use Localsend in gaming mode, including fast copy & paste screenshot and text by using LocalSend Client.",
-      "downloads": 544,
+      "downloads": 545,
       "id": 441,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Localsend-fe50eccd502758132381fc8a3cdadfd469bb050754e4f8d27bcb76ffe61d15bd.jpg",
       "name": "Decky Localsend",
@@ -10387,7 +10468,7 @@
       "versions": [
         {
           "created": "2026-02-14T21:34:18Z",
-          "downloads": 496,
+          "downloads": 497,
           "hash": "dc45083681ad8698f4f5c2196e81d2fd31102841ceccc74010d50660352e6c6b",
           "name": "0.4.5-0553268",
           "updates": 54
@@ -10405,37 +10486,6 @@
           "hash": "bc01a80dd5488b4839ee252c4aa8b8b85ab0b2f2c95b411566d294b87aa84422",
           "name": "0.3.7-1a47753",
           "updates": 3
-        }
-      ],
-      "visible": true
-    },
-    {
-      "author": "Nezreka",
-      "created": "2026-02-07T00:01:14Z",
-      "description": "A Decky Loader plugin for Steam Deck to play tracks from Plex, Jellyfin, Emby, Navidrome, and Subsonic.",
-      "downloads": 368,
-      "id": 442,
-      "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Museck-96455c41d986da4a6cee329bbd9bdd051c0ccd44978a029077299d01460be839.png",
-      "name": "Museck",
-      "tags": [
-        "utility"
-      ],
-      "updated": "2026-02-07T19:13:18Z",
-      "updates": 43,
-      "versions": [
-        {
-          "created": "2026-02-07T19:13:18Z",
-          "downloads": 355,
-          "hash": "ed09fa22a2ddb736787db34af4e41d9da1ddec90422b1f634c1b99e9c2b8faf0",
-          "name": "0.0.1-4ad30d8",
-          "updates": 36
-        },
-        {
-          "created": "2026-02-07T00:01:14Z",
-          "downloads": 13,
-          "hash": "55b90c70c597c34a7fc1d9b8c27623247c8856ffc23ad1849a58fcf40ee309f0",
-          "name": "0.0.1-52b3db0",
-          "updates": 7
         }
       ],
       "visible": true
@@ -10481,14 +10531,14 @@
         "quality of life"
       ],
       "updated": "2026-04-22T22:17:52Z",
-      "updates": 969,
+      "updates": 970,
       "versions": [
         {
           "created": "2026-04-22T22:17:52Z",
           "downloads": 962,
           "hash": "b3ef9bb050223dac6373e0cea0c2757c9c3c3b857a81884d4d540a24ce0fc6f5",
           "name": "1.9.2-85fcd45",
-          "updates": 372
+          "updates": 373
         },
         {
           "created": "2026-03-27T16:08:32Z",
@@ -10572,16 +10622,23 @@
       "author": "cat-in-a-box",
       "created": "2026-02-22T16:40:35Z",
       "description": "Translate anything on your screen to your language",
-      "downloads": 1214,
+      "downloads": 1215,
       "id": 446,
-      "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Translator-5f6fdd53d38491810df872c59543ded1ea680fddef61897c1719ef94a7ae7820.png",
+      "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Decky%20Translator-7499f82628f3cc449677e4a45294e90362a9c239d08d882401db39c6cad6355b.png",
       "name": "Decky Translator",
       "tags": [
         "Translation"
       ],
-      "updated": "2026-02-22T20:25:32Z",
-      "updates": 383,
+      "updated": "2026-10-19T22:52:19Z",
+      "updates": 395,
       "versions": [
+        {
+          "created": "2026-10-19T22:52:19Z",
+          "downloads": 1,
+          "hash": "6f93f9d0b2c2bea75769dccf900323822c2f689f5d71a07876838748876efcd2",
+          "name": "0.9.0-dbce968",
+          "updates": 12
+        },
         {
           "created": "2026-02-22T20:25:32Z",
           "downloads": 1200,
@@ -10695,7 +10752,7 @@
       "author": "ben.temple",
       "created": "2026-03-27T19:52:36Z",
       "description": "Download All - A plugin that let's the user immediately queue all scheduled downloads to immediately download.",
-      "downloads": 878,
+      "downloads": 880,
       "id": 450,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Download%20All-8004bb65ffd88097c2392f2dfc40d910fc5250d5d6bd7e8e58b379c9ac3992f0.png",
       "name": "Download All",
@@ -10704,14 +10761,14 @@
         "queue"
       ],
       "updated": "2026-04-17T22:38:36Z",
-      "updates": 397,
+      "updates": 398,
       "versions": [
         {
           "created": "2026-04-17T22:38:36Z",
-          "downloads": 692,
+          "downloads": 694,
           "hash": "0be3efe8d6b99f38821cf65a8f9b474d2db04e00901b8a1f2a8bfc312f4f7eb2",
           "name": "1.1.0-9a591e3",
-          "updates": 286
+          "updates": 287
         },
         {
           "created": "2026-04-12T14:57:39Z",
@@ -10835,7 +10892,7 @@
       "author": "SteamInputDB",
       "created": "2026-04-23T16:08:51Z",
       "description": "SteamInputDB-Buddy Decky plugin. The Decky plugin serves as alternative installation method of the official SteamInputDB-Buddy app and provides a direct integration of SteamInputDB into the Steam client.",
-      "downloads": 864,
+      "downloads": 866,
       "id": 454,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/SteamInputDB-Buddy-06a4e2101fbe879da2c9572d007c157c69200844563053e40d2ca62165b101c0.png",
       "name": "SteamInputDB-Buddy",
@@ -10845,14 +10902,14 @@
         "utility"
       ],
       "updated": "2026-04-24T14:18:49Z",
-      "updates": 102,
+      "updates": 103,
       "versions": [
         {
           "created": "2026-04-24T14:18:49Z",
-          "downloads": 845,
+          "downloads": 847,
           "hash": "45925e6c9121d00382c17f1f43874e884da205633b752c78227794434bc21c59",
           "name": "0.1.7-4945f10",
-          "updates": 99
+          "updates": 100
         },
         {
           "created": "2026-04-23T16:08:51Z",
@@ -10944,7 +11001,7 @@
       "author": "Kirill Nikiforov",
       "created": "2026-05-03T15:57:59Z",
       "description": "Controls the volume of your applications",
-      "downloads": 637,
+      "downloads": 639,
       "id": 458,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Mixer-1884f50e1338b2da9fb9bb0deecb8e309033ad237826e9765eb6067e1bda5826.jpg",
       "name": "Mixer",
@@ -10958,7 +11015,7 @@
       "versions": [
         {
           "created": "2026-05-13T21:53:29Z",
-          "downloads": 575,
+          "downloads": 577,
           "hash": "c685646fb8ac5d0f6f7a13e0226776a96798e98796f0c6b28528450d646dfe25",
           "name": "0.1.0-3bf361a",
           "updates": 46
@@ -10977,7 +11034,7 @@
       "author": "Kirill Nikiforov",
       "created": "2026-05-03T16:07:17Z",
       "description": "Opens desktop apps without adding to Steam",
-      "downloads": 1625,
+      "downloads": 1626,
       "id": 459,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Desktop%20Apps-2e8207670a216a80790a8414db254ded4015a84d03195b141ef7c32b4179db97.png",
       "name": "Desktop Apps",
@@ -10992,7 +11049,7 @@
       "versions": [
         {
           "created": "2026-05-03T16:07:17Z",
-          "downloads": 1625,
+          "downloads": 1626,
           "hash": "d40bb039da390926e8e63d463a90368d6527a83b5668eab59cb4606ccb45cca4",
           "name": "0.1.0-f7740f4",
           "updates": 77
@@ -11037,7 +11094,7 @@
       "author": "Outpox",
       "created": "2026-05-06T22:18:09Z",
       "description": "Quickly connect to your already paired bluetooth devices.",
-      "downloads": 1612,
+      "downloads": 1613,
       "id": 461,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Bluetooth-c04d77cc7911ae2ed69cf648dc7066b0c27b150c3fe1043ca7d0956338464826.png",
       "name": "Bluetooth",
@@ -11050,7 +11107,7 @@
       "versions": [
         {
           "created": "2026-05-06T22:18:09Z",
-          "downloads": 1612,
+          "downloads": 1613,
           "hash": "195a5e525728350b7c336a324b5d04bc2a3afedbdc6f177cc1c755400f05324f",
           "name": "2.3.1-7b6d030",
           "updates": 2063
@@ -11062,7 +11119,7 @@
       "author": "zarif98",
       "created": "2026-09-21T14:31:09Z",
       "description": "See the cheapest price available right now across ~30 stores on any Steam store page, and get notified when a wishlisted game goes on sale anywhere - not just on Steam. Forked from Deckdeals by ebdevag.",
-      "downloads": 261,
+      "downloads": 264,
       "id": 462,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/DeckySales-9cd8c4b8a9651ebe0da17585531963f2e4bac2d7bb1280ea03d1f8a21003d62e.jpg",
       "name": "DeckySales",
@@ -11077,7 +11134,7 @@
       "versions": [
         {
           "created": "2026-09-21T14:31:09Z",
-          "downloads": 261,
+          "downloads": 264,
           "hash": "40d94c6300515c184d054cd8bc7b2a0c4f6e742f6d672a59712e7934ad138d74",
           "name": "1.2.3-27791ad",
           "updates": 11
@@ -11089,7 +11146,7 @@
       "author": "Nilesh Chakraborty",
       "created": "2026-09-21T15:10:45Z",
       "description": "Restart once into Windows on a configured dual-boot system.",
-      "downloads": 45,
+      "downloads": 46,
       "id": 463,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Restart%20to%20Windows-f2d0d0ae6e2b7769d4402a4a669097a7be16e008c059c3458a9a03c5445902eb.png",
       "name": "Restart to Windows",
@@ -11101,7 +11158,7 @@
       "versions": [
         {
           "created": "2026-09-21T15:10:45Z",
-          "downloads": 45,
+          "downloads": 46,
           "hash": "63c1ab40d8b2ba759ff92452c9b81a6dce4b6b20a60fc15b842536b0b7e18243",
           "name": "0.1.0-c14f944",
           "updates": 1
@@ -11113,7 +11170,7 @@
       "author": "datbird",
       "created": "2026-09-21T15:10:56Z",
       "description": "Steam Deck automation: run Tasks \u2192 Actions \u2192 Modes on triggers (dock/undock, AC power, controller connect, resume, startup). Built-in fixes for docked audio, controller order, composition/stretch, and TDP, plus full Sunshine streaming control (integrated or via decky-sunshine).",
-      "downloads": 221,
+      "downloads": 222,
       "id": 464,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Docky-354ab78d19055680b9a38bd6dfcdb369b1ee4bb53370076dc981088f6ba2fa80.png",
       "name": "Docky",
@@ -11124,9 +11181,16 @@
         "sunshine",
         "triggers"
       ],
-      "updated": "2026-09-21T15:10:56Z",
-      "updates": 11,
+      "updated": "2026-10-19T23:28:11Z",
+      "updates": 12,
       "versions": [
+        {
+          "created": "2026-10-19T23:28:11Z",
+          "downloads": 1,
+          "hash": "a4b745f3fa5896f399662cd12a672af3ecd28e89d27386d25568796e7e7933e6",
+          "name": "1.4.13-ba6663d",
+          "updates": 1
+        },
         {
           "created": "2026-09-21T15:10:56Z",
           "downloads": 221,
@@ -11139,25 +11203,33 @@
     },
     {
       "author": "Jaccident",
-      "created": null,
+      "created": "2026-10-19T22:30:38Z",
       "description": "Manually set the system date and time",
-      "downloads": null,
+      "downloads": 0,
       "id": 465,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/DeckyClocker-215df83b161949350622dd631824cb73982024f36f213dd659f48d71f22b0dcd.png",
       "name": "DeckyClocker",
       "tags": [
         "utility"
       ],
-      "updated": null,
-      "updates": null,
-      "versions": [],
+      "updated": "2026-10-19T22:30:38Z",
+      "updates": 0,
+      "versions": [
+        {
+          "created": "2026-10-19T22:30:38Z",
+          "downloads": 0,
+          "hash": "cc9c337a0426753070c21ab9c684d02abe83a162bb715c1769aad7bddbb0b111",
+          "name": "1.0.0-58c6ba4",
+          "updates": 0
+        }
+      ],
       "visible": true
     },
     {
       "author": "zomars",
       "created": "2026-10-19T20:20:56Z",
       "description": "Switch the default audio output device from the Quick Access Menu \u2014 for docks, TVs, headsets and DACs, without going through Settings \u2192 Audio. Lists the outputs Steam exposes, switches with one tap, and moves already-playing streams over so audio follows immediately. A handheld with nothing attached has only one output to pick.",
-      "downloads": 0,
+      "downloads": 1,
       "id": 466,
       "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Audio%20Output%20Switcher-1227940cbed00dc4de294e3c05cd5b5c6bdcdc4905b361df6702a1e1dba00e9d.png",
       "name": "Audio Output Switcher",
@@ -11170,9 +11242,92 @@
       "versions": [
         {
           "created": "2026-10-19T20:20:56Z",
-          "downloads": 0,
+          "downloads": 1,
           "hash": "9957535c9c2f0793e2ebbd33c8c05af9af1f776e265451464b5920b5ddd999f6",
           "name": "1.4.0-10323d2",
+          "updates": 0
+        }
+      ],
+      "visible": true
+    },
+    {
+      "author": "joeatethebeans",
+      "created": "2026-10-19T22:46:40Z",
+      "description": "Switch Steam Gaming Mode's display and audio outputs from the Quick Access Menu.",
+      "downloads": 1,
+      "id": 467,
+      "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Output%20Manager-f2eaa66294939d5d62cdd6def0bcb2cf2907e0da902674f1ce015dce6c47b6f0.png",
+      "name": "Output Manager",
+      "tags": [
+        "audio",
+        "display",
+        "outputs",
+        "utility"
+      ],
+      "updated": "2026-10-19T22:46:40Z",
+      "updates": 0,
+      "versions": [
+        {
+          "created": "2026-10-19T22:46:40Z",
+          "downloads": 1,
+          "hash": "2ce2439fb9f0f0ef971f4a016bdc9b49f4db622a59d4ed11a7af3aed73f6bdd2",
+          "name": "1.4.0-9059092",
+          "updates": 0
+        }
+      ],
+      "visible": true
+    },
+    {
+      "author": "DeckThemes",
+      "created": "2026-10-19T23:06:50Z",
+      "description": "Dynamically loads themes developed with CSS into the Steam UI. For more information, visit deckthemes.com.",
+      "downloads": 6,
+      "id": 468,
+      "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/CSS%20Loader-521e6e0b59bd89ba3632f15b7a1463cb96127a8a43449d487a4e49b1f1cbafe2.png",
+      "name": "CSS Loader",
+      "tags": [
+        "style"
+      ],
+      "updated": "2026-10-19T23:06:50Z",
+      "updates": 193,
+      "versions": [
+        {
+          "created": "2026-10-19T23:06:50Z",
+          "downloads": 6,
+          "hash": "12eadd59a02a208490a91b4353e55ddb33ef963d862bdb7745dd1a2ff5405292",
+          "name": "2.1.3-f191788",
+          "updates": 193
+        }
+      ],
+      "visible": true
+    },
+    {
+      "author": "Phill Moon",
+      "created": "2026-10-19T23:26:02Z",
+      "description": "Monitor battery and control ANC for your Google Pixel Buds Pro on Steam Deck.",
+      "downloads": 1,
+      "id": 469,
+      "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/Pixel%20Buddy-31e6b25deaff4a4bf1dbeb9c4dea5e4260af89cde15e47a8545c985e5d60818b.jpg",
+      "name": "Pixel Buddy",
+      "tags": [
+        "anc",
+        "battery",
+        "bluetooth",
+        "buds",
+        "control",
+        "google",
+        "headphones",
+        "monitor",
+        "pixel"
+      ],
+      "updated": "2026-10-19T23:26:02Z",
+      "updates": 0,
+      "versions": [
+        {
+          "created": "2026-10-19T23:26:02Z",
+          "downloads": 1,
+          "hash": "e05df683b533a8fae188bfb5ec098b841644f0b7654d544f5f4109376b87afd2",
+          "name": "1.0.0-1ac4c36",
           "updates": 0
         }
       ],

@@ -132,6 +132,9 @@
   "Discord Status": [
     "https://github.com/andrewburgess/steamdeck-discord-status"
   ],
+  "Docky": [
+    "https://github.com/datbird/docky"
+  ],
   "Download All": [
     "https://github.com/bentemple/decky-download-all"
   ],
@@ -203,9 +206,6 @@
   ],
   "MuraDeck": [
     "https://github.com/moonveil-kanata/muradeck"
-  ],
-  "Museck": [
-    "https://github.com/nezreka/museck"
   ],
   "Music Control": [
     "https://github.com/martinpl/musiccontrol"

@@ -14,6 +14,7 @@ https://github.com/cat-in-a-box/decky-translator
 https://github.com/chenx-dust/betterkeyboard
 https://github.com/chenx-dust/deckyclash
 https://github.com/chenx-dust/dimmerdeck
+https://github.com/datbird/docky
 https://github.com/davocarli/deck-roulette
 https://github.com/decksettings/decky-game-settings
 https://github.com/decksettings/decky-virtual-surround-sound
