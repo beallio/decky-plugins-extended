@@ -29,6 +29,7 @@ https://github.com/hyacz/decky-zerotier
 https://github.com/iladis/ts3-qs4sd
 https://github.com/isiah-lloyd/volumemixer-decky
 https://github.com/itsowen/playcount-decky
+https://github.com/joeatethebeans/outputmanager
 https://github.com/jurassicplayer/decky-autoflatpaks
 https://github.com/jurassicplayer/decky-autosuspend
 https://github.com/kayon/decky-reroll
@@ -50,6 +51,7 @@ https://github.com/saad-alareqi/gamesprefixmanager
 https://github.com/sebet/decky-nonsteam-badges
 https://github.com/seraphli/decky-spy
 https://github.com/sheffeyg/cheatdeck
+https://github.com/spmzt/decky-ipv6
 https://github.com/steam3d/magicpodsdecky
 https://github.com/teppichseite/deckpass
 https://github.com/tikh-iv/shadowdeck

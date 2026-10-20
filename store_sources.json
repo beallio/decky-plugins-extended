@@ -117,6 +117,9 @@
   "Decky-Undervolt": [
     "https://github.com/totallynotbakadestroyer/decky-undervolt"
   ],
+  "DeckyClocker": [
+    "https://github.com/jaccident/deckyclocker"
+  ],
   "DeckyFileServer": [
     "https://github.com/grimkor/deckyfileserver"
   ],
@@ -167,6 +170,9 @@
   ],
   "HueSync": [
     "https://github.com/honjow/huesync"
+  ],
+  "IPv6 Enabler Plugin": [
+    "https://github.com/spmzt/decky-ipv6"
   ],
   "IsThereAnyDeal for Deck": [
     "https://github.com/jtdegraaf/isthereanydeal-deckyplugin"
@@ -221,6 +227,9 @@
   ],
   "Notebook": [
     "https://github.com/wynn1212/sdh-notebook"
+  ],
+  "Output Manager": [
+    "https://github.com/joeatethebeans/outputmanager"
   ],
   "Pause Games": [
     "https://github.com/wynn1212/sdh-pausegames"
