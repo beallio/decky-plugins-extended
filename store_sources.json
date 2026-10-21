@@ -129,6 +129,9 @@
   "DeckySpy": [
     "https://github.com/seraphli/decky-spy"
   ],
+  "Desktop Apps": [
+    "https://github.com/allmazz/decky-desktop-apps"
+  ],
   "Dimmer Deck": [
     "https://github.com/chenx-dust/dimmerdeck"
   ],
@@ -218,6 +221,9 @@
   ],
   "musiccontrol": [
     "https://github.com/martinpl/musiccontrol"
+  ],
+  "MuteOnSleep": [
+    "https://github.com/genc-v/mute-on-sleep"
   ],
   "Network Sentinel": [
     "https://github.com/krishgaur1354/network-sentinel"
