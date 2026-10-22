@@ -204,6 +204,9 @@
   "MicroSDeck": [
     "https://github.com/cebbinghaus/microsdeck"
   ],
+  "Mixer": [
+    "https://github.com/allmazz/decky-volume-mixer"
+  ],
   "MoonDeck": [
     "https://github.com/frogthefrog/moondeck"
   ],
