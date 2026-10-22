@@ -63,6 +63,13 @@
     "1.3.4",
     "1.3.4-809751c"
   ],
+  "https://github.com/cat-in-a-box/decky-translator": [
+    "0.8.0",
+    "0.8.0-85564bf",
+    "0.8.0-ab81138",
+    "0.9.0",
+    "0.9.0-dbce968"
+  ],
   "https://github.com/chenx-dust/betterkeyboard": [
     "0.2.2",
     "0.2.2-a9d393f",
@@ -101,6 +108,20 @@
     "1.1.6-08b59a1",
     "1.1.6-b5e6ebb",
     "1.1.6-d0eea04"
+  ],
+  "https://github.com/decksettings/decky-game-settings": [
+    "0.0.1",
+    "1.0.0-8d4d692",
+    "1.1.0-994d863",
+    "1.1.0-e22c057",
+    "1.1.1",
+    "1.1.1-6cf8b31",
+    "1.1.2",
+    "1.1.2-583e865",
+    "1.2.5",
+    "1.2.5-976d6fb",
+    "1.2.6",
+    "1.2.6-cbba017"
   ],
   "https://github.com/decksettings/decky-virtual-surround-sound": [
     "0.0.3",
@@ -141,6 +162,10 @@
     "2.1.2",
     "2.1.3",
     "2.1.3-f191788"
+  ],
+  "https://github.com/emudeck/emudecky": [
+    "1.0.2",
+    "1.0.2-1"
   ],
   "https://github.com/felipejfc/decky-wifi-locker": [
     "1.0.0-d5abbf7",
@@ -221,6 +246,17 @@
     "1.9.1",
     "1.9.1-3c43c27"
   ],
+  "https://github.com/gedasfx/decky-cloud-save": [
+    "1.1.1",
+    "1.2.1",
+    "1.2.1-1",
+    "1.3.1",
+    "1.3.1-1",
+    "1.3.3",
+    "1.3.4",
+    "1.3.5",
+    "1.4.2"
+  ],
   "https://github.com/gedasfx/decky-ludusavi": [
     "1.0.0",
     "1.0.0-046e29b",
@@ -229,6 +265,26 @@
     "1.1.0-dea4ea8",
     "1.2.2",
     "1.2.2-1c704d6"
+  ],
+  "https://github.com/hard/varta-decky": [
+    "1.0.20-2c3d688",
+    "1.0.21",
+    "1.0.21-1a853d2"
+  ],
+  "https://github.com/honjow/huesync": [
+    "2.2.3",
+    "2.2.3-dd7d3f4",
+    "2.3.0",
+    "2.3.0-32db8b6",
+    "2.8.0-f66ef32",
+    "3.8.0",
+    "3.8.0-1c33a52"
+  ],
+  "https://github.com/hyacz/decky-zerotier": [
+    "0.3.1",
+    "0.3.1-3bcc0d4",
+    "0.3.1-902d5f5",
+    "0.3.2-d9f5dad"
   ],
   "https://github.com/iladis/ts3-qs4sd": [
     "1.1.0",
@@ -256,6 +312,22 @@
   "https://github.com/joeatethebeans/outputmanager": [
     "1.4.0",
     "1.4.0-9059092"
+  ],
+  "https://github.com/jurassicplayer/decky-autoflatpaks": [
+    "1.0.0",
+    "1.3.0",
+    "1.4.1",
+    "1.5.0",
+    "1.6.0",
+    "1.6.1",
+    "1.6.3",
+    "1.6.4",
+    "1.6.5",
+    "1.6.5-1",
+    "1.6.6",
+    "1.6.7",
+    "1.6.8",
+    "1.6.8-4c7ad65"
   ],
   "https://github.com/jurassicplayer/decky-autosuspend": [
     "1.0.0",
@@ -290,6 +362,14 @@
     "1.5.1-1607783",
     "1.5.3",
     "1.5.3-f1ca4cd"
+  ],
+  "https://github.com/managor/decky-clipper": [
+    "1.0.2",
+    "1.0.2-4b26f82"
+  ],
+  "https://github.com/maroun2/deck-progress-tracker": [
+    "1.3.6",
+    "1.3.6-4c8e218"
   ],
   "https://github.com/megalonvii/sdh-gamethememusic": [
     "1.3.2",
@@ -351,11 +431,20 @@
     "2.0.9",
     "2.0.9-4bd480d"
   ],
+  "https://github.com/moyoez/decky-localsend": [
+    "0.3.7-1a47753",
+    "0.4.5",
+    "0.4.5-0553268",
+    "0.4.5-963c075"
+  ],
   "https://github.com/nikitaclicks/decky-multi-user": [
     "1.0.0",
     "1.0.0-59e2058",
     "1.0.0-863f87d",
     "1.0.0-c2784cb"
+  ],
+  "https://github.com/ohaiibuzzle/decky-dot-dns": [
+    "0.0.2"
   ],
   "https://github.com/ohaiibuzzle/decky-spoof-dpi": [
     "0.12.0"
@@ -376,9 +465,22 @@
     "3.1.0",
     "3.1.0-0ab648e"
   ],
+  "https://github.com/s0t7x/decky-sunshine": [
+    "0.5.0",
+    "0.5.0-2228c42",
+    "0.5.0-a3db2cb",
+    "2025.10.27-dddf365",
+    "2025.10.27-dddf365-cf7a1f0"
+  ],
   "https://github.com/saad-alareqi/gamesprefixmanager": [
     "1.0.1",
     "1.0.1-eca3b21"
+  ],
+  "https://github.com/sebet/decky-nonsteam-badges": [
+    "0.1.0",
+    "0.1.0-7a03374",
+    "0.1.0-a23eb76",
+    "0.1.0-f05992f"
   ],
   "https://github.com/seraphli/decky-spy": [
     "0.6.7"
@@ -442,6 +544,48 @@
     "1.1.11-d03f404",
     "1.1.9-e9a17a0"
   ],
+  "https://github.com/tormak9970/tabmaster": [
+    "1.2.0",
+    "1.3.0",
+    "1.4.1",
+    "1.5.0",
+    "2.0.0",
+    "2.1.0",
+    "2.10.0",
+    "2.10.0-ea6ca30",
+    "2.10.1",
+    "2.10.1-88a9d24",
+    "2.11.0",
+    "2.11.0-1689863",
+    "2.11.2",
+    "2.11.2-a81500e",
+    "2.13.0",
+    "2.13.0-f2f75b0",
+    "2.15.0",
+    "2.15.0-8e1c353",
+    "2.15.1",
+    "2.4.0",
+    "2.4.0-1",
+    "2.4.1",
+    "2.5.0",
+    "2.5.4",
+    "2.5.5",
+    "2.7.0",
+    "2.7.2",
+    "2.7.3",
+    "2.8.0",
+    "2.9.0",
+    "2.9.0-b539235",
+    "2.9.1",
+    "2.9.1-07edf34",
+    "3.0.1-1a124d2"
+  ],
+  "https://github.com/totallynotbakadestroyer/decky-undervolt": [
+    "1.0.4",
+    "1.0.5",
+    "1.0.8",
+    "1.0.9-d88d2c3"
+  ],
   "https://github.com/wheaney/decky-xrgaming": [
     "0.11.1.5",
     "0.11.1.6",
@@ -482,6 +626,16 @@
     "0.1.7-71249f1",
     "0.2.1",
     "0.2.1-bca4fe0"
+  ],
+  "https://github.com/wurielle/decky-launch-options": [
+    "1.5.0-adaf3c1",
+    "1.7.0-a30f15e",
+    "1.8.0",
+    "1.8.0-e7ccbce",
+    "1.9.0-a35dc0e",
+    "1.9.2",
+    "1.9.2-12edf51",
+    "1.9.2-85fcd45"
   ],
   "https://github.com/wynn1212/sdh-pausegames": [
     "0.1.0",
