@@ -110,6 +110,10 @@ the source change is merged, start a new scheduled audit against that revision.
 Verdicts are repository-specific; audit the releases under the new URL instead
 of copying verdicts from the old repository.
 
+Remove unavailable repositories and release-less forks from the additional list
+when they are no longer intended sources. Removing a fork does not remove the
+official plugin source tracked separately in `store_plugins.txt`.
+
 Each repository must have:
 
 - A `plugin.json` file on its default branch with a `name` field. Decky

@@ -17,7 +17,7 @@ https://github.com/PixelAddictUnlocked/allycenter
 https://github.com/Kentronix57/Decky-Loader-XGMobile-Manager
 https://github.com/piyush-tyagi-13/ally-vibe-control
 https://github.com/DeckFilter/DeckyZone
-https://github.com/chillibeaver/DeckSMB
+https://github.com/bonorca/DeckSMB
 https://github.com/dawidmpunkt/RumbleDeck
 https://github.com/xXJSONDeruloXx/decky-lsfg-vk
 https://github.com/SavageCore/xone-decky-plugin
@@ -31,7 +31,6 @@ https://github.com/Teppichseite/RetroDECKY
 https://github.com/zany130/RSM-Decky
 https://github.com/Rayekkk/LeGoTDP
 https://github.com/Rayekkk/LeGo-Vibe-Control
-https://github.com/Rayekkk/LeGo2BrightnessFix
 https://github.com/cwtechshiz/nordvpn-decky
 https://github.com/Rayekkk/DeckyVibranceHDR
 https://github.com/parvagans/achievement-companion
@@ -41,7 +40,6 @@ https://github.com/flexlug/decky-controller
 https://github.com/santojon/Deck-Shelves
 https://github.com/LucifersCircle/Decky-Cheat-Engine-Launcher
 https://github.com/beallio/protondb-decky
-https://github.com/beallio/hltb-for-deck
 https://github.com/moi952/decky-quick-tab
 https://github.com/goooroooX/CE-Decky
 https://github.com/Alyenax/GabeCubeAura
