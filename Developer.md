@@ -127,6 +127,11 @@ Each repository must have:
 - At least one GitHub release.
 - Exactly one `.zip` asset on every release that should appear in the catalogs.
 
+When importing sources from another registry, check these requirements first.
+This project does not read that registry's asset filters or metadata subdirectory
+settings. A source with metadata only in a subdirectory or no single-ZIP release
+needs explicit support before it can be added here.
+
 Tags and the description come from `plugin.json`'s `publish` block, matching
 the official store; `package.json` `keywords` and `description` are only the
 fallback. A plugin that declares `"flags": ["root"]` also gets a `root` tag,
