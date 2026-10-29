@@ -50,3 +50,16 @@ https://github.com/michpalm/ambideck
 https://github.com/beallio/SDH-CssLoader
 https://github.com/JediRhymeTrix/decky-bluetooth-order
 https://github.com/Rayekkk/LegionGo2Companion
+https://github.com/danielcamilo1/decky-add-non-steam-games/
+https://github.com/OpenCloudGaming/OpenNOW
+https://github.com/eugeniosegala/MAKO
+https://github.com/Rannius/ControllerXbox
+https://github.com/ValentineBSAA/TitleDeck
+https://github.com/ValentineBSAA/Game-Theme-Music
+https://github.com/adv-inn/Deckify
+https://github.com/SavageCore/xone-decky-plugin
+https://github.com/danielcopper/romm-tender
+https://github.com/kromossomom-debug/decky-ps5-dashboard
+https://github.com/gillrajvir950-wq/deckyshare
+https://github.com/mazillka/deckyhub-plugin
+
