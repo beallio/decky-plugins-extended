@@ -151,6 +151,12 @@ repo), or whose image URL is gone falls back to the GitHub repository card at
 `https://opengraph.githubassets.com/1/<owner>/<repo>`. To give a plugin a proper
 image, get its author to set `publish.image` upstream.
 
+Artwork checks use a separate HTTP session with no automatic retries. A rate
+limit, server error, or network timeout keeps the configured image URL without
+waiting for `Retry-After`. A HEAD response of 403, 404, 405, or 410 is checked
+once with GET before deciding whether the image is gone. Release downloads and
+hash verification keep their existing retry and size policies.
+
 Release tags are reduced to the version they contain, so `Release-0.7.1` and
 `decky-romm-sync-v0.30.1` become `0.7.1` and `0.30.1`. Decky validates store
 versions as semver before offering an update and silently ignores anything

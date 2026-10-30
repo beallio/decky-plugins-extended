@@ -86,6 +86,8 @@ def get_anon_session():
 
 session = get_session()
 anon_session = get_anon_session()
+# Optional artwork must not wait out a host's Retry-After delay.
+_image_session = requests.Session()
 
 
 def fetch_json(url):
@@ -144,10 +146,10 @@ def image_is_usable(url):
     a 5xx, a timeout) is not proof, so keep the URL rather than flipping the
     catalog to the fallback on a bad build."""
     try:
-        resp = anon_session.head(url, timeout=15, allow_redirects=True)
-        if resp.status_code >= 400:
-            # Some hosts refuse HEAD; confirm with a GET before believing it.
-            resp = anon_session.get(url, timeout=15, stream=True)
+        resp = _image_session.head(url, timeout=15, allow_redirects=True)
+        if resp.status_code in (403, 404, 405, 410):
+            # Some hosts refuse HEAD; confirm a broken link with one GET.
+            resp = _image_session.get(url, timeout=15, stream=True)
             resp.close()
     except requests.RequestException as e:
         print(f"    Warning: could not check image {url} ({e}). Keeping it.")

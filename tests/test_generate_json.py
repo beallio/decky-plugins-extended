@@ -4,8 +4,10 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -284,6 +286,42 @@ class GenerateJsonTests(unittest.TestCase):
                 fallback,
             )
 
+    def test_rate_limited_image_does_not_delay_catalog_generation(self):
+        calls = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_HEAD(self):
+                calls.append(self.command)
+                self.send_response(429)
+                self.send_header("Retry-After", "3600")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            do_GET = do_HEAD
+
+            def log_message(self, *_args):
+                pass
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            url = f"http://127.0.0.1:{server.server_port}/image.png"
+            try:
+                with patch(
+                    "urllib3.util.retry.time.sleep",
+                    side_effect=AssertionError("Optional image probe must not retry"),
+                ):
+                    self.assertEqual(
+                        generate_json.resolve_image_url(
+                            {"publish": {"image": url}}, "owner", "repo"
+                        ),
+                        url,
+                    )
+                self.assertEqual(calls, ["HEAD"])
+            finally:
+                server.shutdown()
+                thread.join()
+
     def test_image_is_usable_distinguishes_dead_from_transient(self):
         class Response:
             def __init__(self, status_code, content_type="image/png"):
@@ -309,10 +347,10 @@ class GenerateJsonTests(unittest.TestCase):
             ):
                 with (
                     patch.object(
-                        generate_json.anon_session, "head", return_value=response
+                        generate_json._image_session, "head", return_value=response
                     ),
                     patch.object(
-                        generate_json.anon_session, "get", return_value=response
+                        generate_json._image_session, "get", return_value=response
                     ),
                 ):
                     self.assertIs(
@@ -322,7 +360,7 @@ class GenerateJsonTests(unittest.TestCase):
 
     def test_image_is_usable_keeps_url_on_network_error(self):
         with patch.object(
-            generate_json.anon_session,
+            generate_json._image_session,
             "head",
             side_effect=generate_json.requests.RequestException("boom"),
         ):
