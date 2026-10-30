@@ -235,4 +235,5 @@ https://github.com/qahtni/decky-fnv-settings
 https://github.com/RedHatter/sort-by-hltb
 https://github.com/VovasaeXranitel/decky-codex-remote
 https://github.com/YunGuiHe/freedeck-plugin-enhancements
+https://github.com/PrivateiFox/XMDeck
 
