@@ -124,7 +124,7 @@ jobs:
         id: scanner-package-cache-key
         run: |
           runner_os="${ImageOS:?}"
-          base_packages="wget apt-transport-https gnupg lsb-release clamav"
+          base_packages="wget apt-transport-https gnupg lsb-release clamav clamav-daemon"
           package_set_hash="$(printf '%s' "$base_packages" | sha256sum | cut -d' ' -f1)"
           bootstrap_hash="$(sha256sum scripts/install-security-scanners | cut -d' ' -f1)"
           echo "key=scanner-package-cache-v1-${runner_os}-${package_set_hash}-${bootstrap_hash}" >> "$GITHUB_OUTPUT"
@@ -158,6 +158,24 @@ jobs:
         with:
           path: .scanner-package-cache/apt-archives
           key: ${{ steps.scanner-package-cache-key.outputs.key }}
+
+      - name: Start ClamAV daemon
+        run: |
+          # clamscan reloads every signature per release (~8 s); one clamd loads them once per shard.
+          # Packaged units use distro clamd.conf limits; this config keeps ClamAV defaults like clamscan.
+          # Ubuntu's enforced clamd AppArmor profile only lets it create files under /tmp.
+          sudo -n systemctl stop clamav-daemon.socket clamav-daemon.service || true
+          clamd_dir="$(mktemp -d /tmp/clamd.XXXXXX)"
+          clamd_config="$clamd_dir/clamd.conf"
+          printf '%s\n' \
+            "LocalSocket $clamd_dir/clamd.sock" \
+            "PidFile $clamd_dir/clamd.pid" \
+            "DatabaseDirectory /var/lib/clamav" > "$clamd_config"
+          clamd --config-file="$clamd_config"
+          clamdscan --config-file="$clamd_config" --ping=30
+          clamdscan --config-file="$clamd_config" --version
+          echo "CLAMD_CONFIG_FILE=$clamd_config" >> "$GITHUB_ENV"
+        timeout-minutes: 5
 
       - name: Run audit on all configured repositories
         id: audit

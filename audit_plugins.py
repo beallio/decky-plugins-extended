@@ -2472,20 +2472,24 @@ def run_clamav(
     if not _scanner_enabled(policy, "clamav"):
         return ScannerStatus(name="clamav", status="skipped"), []
 
-    if not shutil.which("clamscan"):
+    # Scheduled shards reuse one clamd so signatures load once, not per release.
+    clamd_config = os.environ.get("CLAMD_CONFIG_FILE")
+    command = (
+        ["clamdscan", f"--config-file={clamd_config}", "--no-summary", extract_dir]
+        if clamd_config
+        else ["clamscan", "-r", "--no-summary", extract_dir]
+    )
+    if not shutil.which(command[0]):
         return (
             ScannerStatus(
                 name="clamav",
                 status="unavailable",
-                detail="clamscan not found in PATH",
+                detail=f"{command[0]} not found in PATH",
             ),
             [],
         )
 
-    ok, stdout, stderr = _run_scanner(
-        ["clamscan", "-r", "--no-summary", extract_dir],
-        "clamav",
-    )
+    ok, stdout, stderr = _run_scanner(command, "clamav")
 
     findings: list[Finding] = []
     # Parse clamscan output: "path: Signature FOUND"
@@ -3235,8 +3239,14 @@ def _trivy_database_identity(version_payload: Any) -> Optional[dict[str, Any]]:
 
 def _scanner_runtime_identities(policy: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Return executable/version and database freshness identities for scanners."""
+    clamd_config = os.environ.get("CLAMD_CONFIG_FILE")
     commands = {
-        "clamav": ("clamscan", ["--version"]),
+        # clamdscan --version reports the signature database the daemon loaded.
+        "clamav": (
+            ("clamdscan", [f"--config-file={clamd_config}", "--version"])
+            if clamd_config
+            else ("clamscan", ["--version"])
+        ),
         "trivy": ("trivy", ["--version"]),
         "semgrep": ("semgrep", ["--version"]),
     }

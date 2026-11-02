@@ -212,7 +212,9 @@ class WorkflowSecurityTests(unittest.TestCase):
             ("plugin-security-audit.yml", "smoke-audit"),
             ("scheduled-security-audit.yml", "scheduled-audit"),
         )
-        base_packages = "wget apt-transport-https gnupg lsb-release clamav"
+        base_packages = (
+            "wget apt-transport-https gnupg lsb-release clamav clamav-daemon"
+        )
         for workflow_name, job_name in expected_jobs:
             workflow = (WORKFLOWS / workflow_name).read_text()
             job = self._job_body(workflow, job_name)

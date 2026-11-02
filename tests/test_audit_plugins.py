@@ -1535,6 +1535,36 @@ class TestScannerFailure(unittest.TestCase):
         # Status must not be 'passed' when scanner errored
         self.assertNotEqual(status.status, "passed")
 
+    def test_clamd_mode_scans_through_daemon_and_fails_closed_when_unreachable(self):
+        outcomes = iter(
+            [
+                (False, "/tmp/fake/evil.js: Eicar-Test-Signature FOUND\n", ""),
+                (False, "", "ERROR: Could not connect to clamd on LocalSocket"),
+            ]
+        )
+        commands = []
+
+        def fake_run(args, _name, timeout=120):
+            commands.append(args)
+            return next(outcomes)
+
+        with (
+            patch.dict(os.environ, {"CLAMD_CONFIG_FILE": "/run/clamd.conf"}),
+            patch("shutil.which", return_value="/usr/bin/clamdscan"),
+            patch.object(ap, "_run_scanner", side_effect=fake_run),
+        ):
+            found_status, found = ap.run_clamav("/tmp/fake", ap._default_policy())
+            down_status, down = ap.run_clamav("/tmp/fake", ap._default_policy())
+
+        self.assertEqual(
+            commands[0],
+            ["clamdscan", "--config-file=/run/clamd.conf", "--no-summary", "/tmp/fake"],
+        )
+        self.assertEqual(found_status.status, "found_issue")
+        self.assertEqual([f.classification for f in found], ["BLOCK"])
+        self.assertEqual(down_status.status, "failed")
+        self.assertEqual(down, [])
+
     def test_trivy_unavailable_returns_unavailable_status(self):
         with patch("shutil.which", return_value=None):
             status, findings = ap.run_trivy("/tmp/fake", ap._default_policy())

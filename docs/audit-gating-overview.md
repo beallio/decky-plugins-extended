@@ -49,8 +49,10 @@ the time those sub-plans landed. The current authoritative behavior is:
   non-empty `UpdatedAt`, not volatile `DownloadedAt` data; scheduled runs bypass
   report-cache hits when ClamAV or Trivy database freshness cannot be established.
 - Scheduled workers prefetch the Trivy database after scanner setup, with a
-  five-minute fail-closed step, then run the audit for up to 60 minutes inside a
-  90-minute job. Their split cache restores and saves both `.audit-cache` and
+  five-minute fail-closed step, and start one shard-local `clamd` so ClamAV
+  signatures load once instead of once per release. They then run the audit for
+  up to 60 minutes inside a 90-minute job. Their split cache restores and saves
+  both `.audit-cache` and
   atomic `security-reports` checkpoints by policy hash and shard, using a unique
   save key for each run attempt. Restored partial data remains unpublishable:
   the normal `publishable` gate and all manifest, identity, digest, size,

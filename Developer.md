@@ -690,8 +690,8 @@ the workspace-local `.scanner-package-cache/apt-archives` directory (or the
 `BASE_APT_ARCHIVE_DIR` override). The three scanner jobs restore that directory
 before setup and save it afterwards; its key includes the runner OS identity
 (rather than an image build that can vary between shards), the exact
-base-package set (`wget`, `apt-transport-https`, `gnupg`, `lsb-release`, and
-`clamav`), and the bootstrap script's SHA-256.
+base-package set (`wget`, `apt-transport-https`, `gnupg`, `lsb-release`,
+`clamav`, and `clamav-daemon`), and the bootstrap script's SHA-256.
 During a cold base-package install, the bootstrap tells APT to retain the
 downloaded archives in that directory, then removes APT's transient `lock`
 file and `partial/` working directory before the cache save. The install phase
@@ -730,6 +730,17 @@ is authorized.
 The scheduled audit clones and scans every configured repository on each run.
 That is the principal Actions-minutes cost; widen the cron interval if the
 six-hour cadence becomes too expensive.
+
+Each scheduled shard starts one `clamd` after scanner setup and exports
+`CLAMD_CONFIG_FILE`; `audit_plugins.py` then scans with `clamdscan` and takes the
+ClamAV identity from the daemon's loaded database. Without that variable it
+uses `clamscan`, which reloads every signature (about 8 seconds) per release.
+On 2026-11-01 that reload was about 70% of the per-release time. After the
+176-source import the corpus grew to about 203 releases per shard. Every shard
+then exceeded the 60-minute audit step. The daemon config sets only the
+socket, PID file, and database directory, so ClamAV's built-in scan limits
+match `clamscan`. An unreachable daemon gives a failed ClamAV status
+(`AUDIT_ERROR`), not a pass.
 
 For pull requests, a change only to `additional_plugins.txt` selects changed
 repositories. Any audit/generator/update/release-utility, policy, allowlist,
