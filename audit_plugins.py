@@ -73,6 +73,7 @@ DOWNLOAD_TIMEOUT = 120  # seconds for ZIP downloads
 MAX_RETRIES = 3
 RELEASE_DOWNLOAD_ATTEMPTS = 3
 RELEASE_DOWNLOAD_RETRY_SECONDS = 30
+STEP_SUMMARY_MAX_BYTES = 1024 * 1024
 EVIDENCE_MAX_LEN = 256
 SECRET_REDACT = "[REDACTED]"
 SLOW_RELEASE_SECONDS = 300.0
@@ -6550,6 +6551,26 @@ def _release_outcome_exit_code(
 # ---------------------------------------------------------------------------
 
 
+def build_step_summary(reports: list[AuditReport], verdicts: Any) -> str:
+    """Run summary plus as many per-release sections as fit GitHub's limit."""
+    # GitHub drops a step summary over 1 MiB and annotates the step as an error.
+    truncated_note = (
+        "\n_Per-release details truncated to fit the GitHub step summary "
+        "limit; see the security-report.md artifact._\n"
+    )
+    parts = [generate_run_summary(reports, verdicts=verdicts), "\n---\n\n"]
+    size = sum(len(part.encode("utf-8")) for part in parts)
+    budget = STEP_SUMMARY_MAX_BYTES - len(truncated_note.encode("utf-8"))
+    for report in reports:
+        section = generate_markdown_report(report) + "\n\n---\n\n"
+        size += len(section.encode("utf-8"))
+        if size > budget:
+            parts.append(truncated_note)
+            break
+        parts.append(section)
+    return "".join(parts)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     """CLI entry point.  Returns exit code."""
     logging.basicConfig(
@@ -7412,11 +7433,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if summary_file:
         try:
             with open(summary_file, "a", encoding="utf-8") as f:
-                f.write(generate_run_summary(reports, verdicts=verdict_snapshot))
-                f.write("\n---\n\n")
-                for report in reports:
-                    f.write(generate_markdown_report(report))
-                    f.write("\n\n---\n\n")
+                f.write(build_step_summary(reports, verdict_snapshot))
         except Exception as exc:
             log.warning("Could not write step summary: %s", exc)
 

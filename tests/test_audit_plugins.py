@@ -1586,6 +1586,19 @@ class TestScannerFailure(unittest.TestCase):
         self.assertEqual(down_status.status, "failed")
         self.assertEqual(down, [])
 
+    def test_step_summary_truncates_release_details_to_github_limit(self):
+        with (
+            patch.object(ap, "generate_run_summary", return_value="# Run\n"),
+            patch.object(ap, "generate_markdown_report", return_value="x" * 10_000),
+        ):
+            large = ap.build_step_summary(list(range(300)), verdicts=None)
+            small = ap.build_step_summary(list(range(3)), verdicts=None)
+
+        self.assertLessEqual(len(large.encode("utf-8")), ap.STEP_SUMMARY_MAX_BYTES)
+        self.assertIn("truncated", large)
+        self.assertEqual(small.count("x" * 10_000), 3)
+        self.assertNotIn("truncated", small)
+
     def test_trivy_unavailable_returns_unavailable_status(self):
         with patch("shutil.which", return_value=None):
             status, findings = ap.run_trivy("/tmp/fake", ap._default_policy())
