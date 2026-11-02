@@ -502,6 +502,28 @@ class TestZipInspection(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_setgid_directory_allowed_but_disguised_file_still_blocked(self):
+        def inspect(name):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                info = zipfile.ZipInfo(name)
+                info.external_attr = (0o2755 | stat.S_IFDIR) << 16
+                zf.writestr(info, b"")
+            path = _make_temp_zip(buf.getvalue())
+            try:
+                return ap.inspect_zip(path)
+            finally:
+                os.unlink(path)
+
+        stats, findings = inspect("plugin/src/")
+        self.assertTrue(stats.safe)
+        self.assertNotIn("ARCHIVE_SETUID_FILE", {f.rule_id for f in findings})
+
+        # Without the trailing slash zipfile extracts the entry as a regular file.
+        stats, findings = inspect("plugin/helper")
+        self.assertFalse(stats.safe)
+        self.assertIn("ARCHIVE_SETUID_FILE", {f.rule_id for f in findings})
+
     def test_device_file_blocked(self):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:

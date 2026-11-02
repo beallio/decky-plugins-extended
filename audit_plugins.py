@@ -1360,7 +1360,10 @@ def inspect_zip(
                 )
 
             # --- Setuid / setgid ---
-            if mode & (stat.S_ISUID | stat.S_ISGID):
+            # Directory setgid only sets group inheritance and directory setuid is
+            # ignored by Linux; neither grants privilege, so only non-directories block.
+            is_directory = file_type == stat.S_IFDIR and info.is_dir()
+            if mode & (stat.S_ISUID | stat.S_ISGID) and not is_directory:
                 stats.safe = False
                 findings.append(
                     Finding(

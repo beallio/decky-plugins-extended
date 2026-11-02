@@ -414,8 +414,9 @@ code.
 
 ## What is scanned
 
-- **Archive safety**: path traversal, zip bombs, setuid files, device files,
-  symlink escapes, duplicate paths, and oversized members.
+- **Archive safety**: path traversal, zip bombs, setuid/setgid files (directory
+  entries are exempt because those bits grant no privilege on a directory),
+  device files, symlink escapes, duplicate paths, and oversized members.
 - **Source vs artifact comparison**: unexpected files and differing file
   contents between the tagged repository source and the release ZIP, with
   generated build output excluded from comparison.
@@ -461,7 +462,7 @@ does not certify a plugin.
 | `PASS` | No blocking or review-required findings. Archive safe. No unexplained binaries. |
 | `PASS_WITH_WARNINGS` | Minor issues such as low/medium vulnerabilities, ordinary network usage, or an unavailable optional scanner. |
 | `MANUAL_REVIEW` | Root flag, sudo, native binaries, systemd changes, obfuscated code, or a high-severity dependency vulnerability. |
-| `BLOCK` | A structural artifact fact: a malware signature; archive traversal or an escaping symlink; a compression-ratio, total-size, file-count, or single-file-size archive bomb limit; a setuid/setgid member; a device file; or a named pipe. |
+| `BLOCK` | A structural artifact fact: a malware signature; archive traversal or an escaping symlink; a compression-ratio, total-size, file-count, or single-file-size archive bomb limit; a setuid/setgid non-directory member; a device file; or a named pipe. |
 | `AUDIT_ERROR` | This release attempt or repository worklist-preparation outcome could not reach a conclusion because of a bounded-download failure, corrupt ZIP, required-scanner failure, repository-local upstream failure, or other local error. |
 
 `BLOCK` is restricted by `security-policy.yml` to the structural facts listed
