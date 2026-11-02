@@ -401,7 +401,7 @@ validate_phase_budget_table
   exit 1
 }
 
-base_packages=(wget apt-transport-https gnupg lsb-release clamav clamav-daemon)
+base_packages=(wget apt-transport-https gnupg lsb-release clamav clamav-daemon clamdscan)
 missing_base_packages=()
 for package in "${base_packages[@]}"; do
   if ! dpkg-query -W -f='${db:Status-Status}\n' "$package" 2>/dev/null \

@@ -691,7 +691,7 @@ the workspace-local `.scanner-package-cache/apt-archives` directory (or the
 before setup and save it afterwards; its key includes the runner OS identity
 (rather than an image build that can vary between shards), the exact
 base-package set (`wget`, `apt-transport-https`, `gnupg`, `lsb-release`,
-`clamav`, and `clamav-daemon`), and the bootstrap script's SHA-256.
+`clamav`, `clamav-daemon`, and `clamdscan`), and the bootstrap script's SHA-256.
 During a cold base-package install, the bootstrap tells APT to retain the
 downloaded archives in that directory, then removes APT's transient `lock`
 file and `partial/` working directory before the cache save. The install phase
