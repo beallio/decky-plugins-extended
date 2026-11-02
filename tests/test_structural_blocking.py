@@ -160,7 +160,7 @@ def test_simulated_clamav_signature_still_blocks(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ap,
         "_run_scanner",
-        lambda _command, _name: (
+        lambda _command, _name, timeout=120: (
             False,
             f"{tmp_path}/eicar.txt: Eicar-Test-Signature FOUND\n",
             "",

@@ -2475,10 +2475,17 @@ def run_clamav(
     if not _scanner_enabled(policy, "clamav"):
         return ScannerStatus(name="clamav", status="skipped"), []
 
-    # Scheduled shards reuse one clamd so signatures load once, not per release.
+    # Audit shards reuse one clamd so signatures load once, not per release;
+    # --multiscan spreads a release's files over clamd's threads.
     clamd_config = os.environ.get("CLAMD_CONFIG_FILE")
     command = (
-        ["clamdscan", f"--config-file={clamd_config}", "--no-summary", extract_dir]
+        [
+            "clamdscan",
+            f"--config-file={clamd_config}",
+            "--multiscan",
+            "--no-summary",
+            extract_dir,
+        ]
         if clamd_config
         else ["clamscan", "-r", "--no-summary", extract_dir]
     )
@@ -2492,7 +2499,8 @@ def run_clamav(
             [],
         )
 
-    ok, stdout, stderr = _run_scanner(command, "clamav")
+    # Releases with ~150 MB of Windows DLLs took 80-131 s on hosted runners.
+    ok, stdout, stderr = _run_scanner(command, "clamav", timeout=300)
 
     findings: list[Finding] = []
     # Parse clamscan output: "path: Signature FOUND"

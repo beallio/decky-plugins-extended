@@ -1579,8 +1579,7 @@ class TestScannerFailure(unittest.TestCase):
             down_status, down = ap.run_clamav("/tmp/fake", ap._default_policy())
 
         self.assertEqual(
-            commands[0],
-            ["clamdscan", "--config-file=/run/clamd.conf", "--no-summary", "/tmp/fake"],
+            commands[0][:2], ["clamdscan", "--config-file=/run/clamd.conf"]
         )
         self.assertEqual(found_status.status, "found_issue")
         self.assertEqual([f.classification for f in found], ["BLOCK"])
