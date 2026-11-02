@@ -720,7 +720,9 @@ estimate, not against a sequential unsharded scan. The preserved 579-release
 snapshot assigns 30–52 releases per shard. A 161-release cold sample observed a
 14.797-second mean and 18.541-second p95 per release; including enumeration, the
 largest shard projects to 16.58 minutes at p95, leaving 5.42 minutes of headroom
-inside the PR audit step's unchanged 22-minute limit. Its 83-request-per-worker,
+inside the PR audit step's former 22-minute limit. That limit stopped being enough
+at the November 2026 corpus size (about 3,100 releases). The PR step now has the
+same 60-minute limit as the scheduled step. Its 83-request-per-worker,
 1,162-request repetition is historical capacity evidence for the prior design,
 not a measurement of the worklist data plane. Local tests prove topology,
 integrity, and bounded failure; hosted-runner quota behavior and resilience to
@@ -731,7 +733,8 @@ The scheduled audit clones and scans every configured repository on each run.
 That is the principal Actions-minutes cost; widen the cron interval if the
 six-hour cadence becomes too expensive.
 
-Each scheduled shard starts one `clamd` after scanner setup and exports
+Each scheduled and full-corpus PR shard runs `scripts/start-clamd` after scanner
+setup. The script starts one `clamd` and exports
 `CLAMD_CONFIG_FILE`; `audit_plugins.py` then scans with `clamdscan` and takes the
 ClamAV identity from the daemon's loaded database. Without that variable it
 uses `clamscan`, which reloads every signature (about 8 seconds) per release.

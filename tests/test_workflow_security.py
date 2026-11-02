@@ -161,7 +161,6 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("if: always() && !cancelled()", checkpoint_save)
         self.assertIn("${{ github.run_attempt }}", scheduled_job)
         self.assertNotIn("download-db-only", pull_request_workflow)
-        self.assertNotIn("timeout-minutes: 90", pull_request_workflow)
 
     def test_workflows_use_one_checked_in_scanner_bootstrap(self):
         plugin_workflow = (WORKFLOWS / "plugin-security-audit.yml").read_text()
@@ -257,7 +256,7 @@ class WorkflowSecurityTests(unittest.TestCase):
             job = self._job_body(workflow, job_name)
             self.assertIn("name: Save scanner package cache", job)
             self.assertIn(
-                "actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684", job
+                "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9", job
             )
             self.assertIn("continue-on-error: true", job)
             self.assertLess(

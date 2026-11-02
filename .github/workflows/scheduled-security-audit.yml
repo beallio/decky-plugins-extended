@@ -31,7 +31,7 @@ jobs:
       worklist_fingerprint: ${{ steps.prepare.outputs.worklist_fingerprint }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
@@ -62,7 +62,7 @@ jobs:
           echo "worklist_fingerprint=${producer_output#worklist_fingerprint=}" >> "$GITHUB_OUTPUT"
 
       - name: Upload prepared audit worklist
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: prepared-audit-worklist
           path: audit-worklist/worklist.json
@@ -83,7 +83,7 @@ jobs:
       AUDIT_SCHEDULED: "1"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -98,7 +98,7 @@ jobs:
           python-version-file: pyproject.toml
 
       - name: Download prepared audit worklist
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prepared-audit-worklist
           path: audit-worklist
@@ -111,7 +111,7 @@ jobs:
           echo "save_key=audit-cache-v2-${POLICY_HASH}-shard-${SHARD_INDEX}-of-14-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
       - name: Restore audit cache
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             .audit-cache
@@ -132,7 +132,7 @@ jobs:
 
       - name: Restore scanner package cache
         continue-on-error: true
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: .scanner-package-cache/apt-archives
           key: ${{ steps.scanner-package-cache-key.outputs.key }}
@@ -154,27 +154,13 @@ jobs:
       - name: Save scanner package cache
         if: success()
         continue-on-error: true
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: .scanner-package-cache/apt-archives
           key: ${{ steps.scanner-package-cache-key.outputs.key }}
 
       - name: Start ClamAV daemon
-        run: |
-          # clamscan reloads every signature per release (~8 s); one clamd loads them once per shard.
-          # Packaged units use distro clamd.conf limits; this config keeps ClamAV defaults like clamscan.
-          # Ubuntu's enforced clamd AppArmor profile only lets it create files under /tmp.
-          sudo -n systemctl stop clamav-daemon.socket clamav-daemon.service || true
-          clamd_dir="$(mktemp -d /tmp/clamd.XXXXXX)"
-          clamd_config="$clamd_dir/clamd.conf"
-          printf '%s\n' \
-            "LocalSocket $clamd_dir/clamd.sock" \
-            "PidFile $clamd_dir/clamd.pid" \
-            "DatabaseDirectory /var/lib/clamav" > "$clamd_config"
-          clamd --config-file="$clamd_config"
-          clamdscan --config-file="$clamd_config" --ping=30
-          clamdscan --config-file="$clamd_config" --version
-          echo "CLAMD_CONFIG_FILE=$clamd_config" >> "$GITHUB_ENV"
+        run: scripts/start-clamd
         timeout-minutes: 5
 
       - name: Run audit on all configured repositories
@@ -215,7 +201,7 @@ jobs:
 
       - name: Save audit cache
         if: always() && !cancelled()
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             .audit-cache
@@ -224,7 +210,7 @@ jobs:
 
       - name: Upload isolated scheduled evidence
         if: always() && steps.audit.outputs.publishable == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: scheduled-security-audit-shard-${{ matrix.shard_index }}-of-14
           path: security-reports
@@ -241,7 +227,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
@@ -261,13 +247,13 @@ jobs:
           }
 
       - name: Download prepared audit worklist
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prepared-audit-worklist
           path: audit-worklist
 
       - name: Download isolated scheduled evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: scheduled-security-audit-shard-*-of-14
           path: shard-artifacts
@@ -405,7 +391,7 @@ jobs:
 
       - name: Upload aggregate scheduled evidence
         if: always() && steps.aggregate.outputs.publishable == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: scheduled-security-audit-aggregate
           path: security-reports

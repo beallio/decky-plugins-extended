@@ -107,8 +107,10 @@ for ClamAV, Trivy, or exact Semgrep `1.132.0` setup failures.
   Semgrep 1.132.0, and checksummed actionlint 1.7.12.
 - Production capacity is measured against the largest fourteen-shard wall-time
   projection rather than sequential unsharded completion. The preserved
-  579-release snapshot projects the largest shard to 16.58 minutes at the
-  observed p95 rate, within the unchanged 22-minute PR audit-step limit. Its
+  579-release snapshot projected the largest shard to 16.58 minutes at the
+  observed p95 rate, within the former 22-minute PR audit-step limit. The
+  November 2026 corpus (about 3,100 releases) needs `clamd` and the 60-minute
+  step limit in both PR and scheduled shards. Its
   repeated-enumeration count is historical evidence, not a new-design result;
   hosted-runner quota behavior, concurrency, and external scanner-mirror
   resilience remain deferred.
