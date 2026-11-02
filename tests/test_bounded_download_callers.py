@@ -109,6 +109,52 @@ def test_worker_download_retries_a_transient_server_error(monkeypatch, tmp_path)
     assert destination.read_bytes() == payload
 
 
+def test_release_download_outlasts_session_retries_on_persistent_5xx(
+    monkeypatch, tmp_path
+):
+    """A 500 burst longer than urllib3's retry window still downloads later."""
+    payload = b"PK\x05\x06" + b"\x00" * 18
+
+    class Handler(BaseHTTPRequestHandler):
+        calls = 0
+
+        def do_GET(self):
+            type(self).calls += 1
+            # urllib3 makes MAX_RETRIES + 1 attempts per session call.
+            if type(self).calls <= ap.MAX_RETRIES + 1:
+                self.send_response(500)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, _format, *_args):
+            return
+
+    sleeps = []
+    monkeypatch.setattr("time.sleep", sleeps.append)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    destination = tmp_path / "release.zip"
+    monkeypatch.setattr(ap, "_gh_session", ap._make_github_session())
+    try:
+        digest = ap.download_zip(
+            f"http://127.0.0.1:{server.server_port}/plugin.zip",
+            str(destination),
+            policy=_download_policy("release-audit", len(payload)),
+        )
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+    assert digest == hashlib.sha256(payload).hexdigest()
+    assert ap.RELEASE_DOWNLOAD_RETRY_SECONDS in sleeps
+
+
 def _release():
     return {
         "id": 101,

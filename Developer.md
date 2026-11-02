@@ -595,7 +595,10 @@ provides its SHA-256 digest, the catalog can still publish that release without
 downloading it and the storefront labels it as a large, unaudited release. A
 large release without a digest is omitted from the catalog. Missing, incorrect,
 or changed size metadata can still cause a bounded worker download to fail
-closed; partial files are removed.
+closed; partial files are removed. A release download that still gets
+connection or HTTP errors after the session's urllib3 retries is tried up to
+three times in total, 30 seconds apart. GitHub release assets sometimes return
+HTTP 500 for longer than urllib3's about 14-second retry window.
 
 ## Why untrusted plugin code is never executed
 

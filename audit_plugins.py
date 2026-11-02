@@ -71,6 +71,8 @@ LEGACY_VERDICTS_FILE = "verdicts.json"
 REQUEST_TIMEOUT = 30  # seconds per HTTP request
 DOWNLOAD_TIMEOUT = 120  # seconds for ZIP downloads
 MAX_RETRIES = 3
+RELEASE_DOWNLOAD_ATTEMPTS = 3
+RELEASE_DOWNLOAD_RETRY_SECONDS = 30
 EVIDENCE_MAX_LEN = 256
 SECRET_REDACT = "[REDACTED]"
 SLOW_RELEASE_SECONDS = 300.0
@@ -4250,6 +4252,20 @@ def download_zip(
     url: str, dest_path: str, policy: Optional[dict[str, Any]] = None
 ) -> str:
     """Download a ZIP from url to dest_path.  Returns SHA-256 hex."""
+    # GitHub release assets sometimes return 500s for longer than the session's
+    # ~14 s urllib3 retry window, then download fine minutes later. Byte limits
+    # and digest checks still apply to every attempt.
+    for _ in range(RELEASE_DOWNLOAD_ATTEMPTS - 1):
+        try:
+            return _download_release_zip(url, dest_path, policy)
+        except requests.RequestException:
+            time.sleep(RELEASE_DOWNLOAD_RETRY_SECONDS)
+    return _download_release_zip(url, dest_path, policy)
+
+
+def _download_release_zip(
+    url: str, dest_path: str, policy: Optional[dict[str, Any]]
+) -> str:
     return plugin_release_utils.bounded_stream_download(
         url,
         dest_path,
