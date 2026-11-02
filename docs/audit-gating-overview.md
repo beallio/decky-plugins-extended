@@ -59,7 +59,10 @@ the time those sub-plans landed. The current authoritative behavior is:
   fingerprint, and fourteen-shard exact-coverage checks remain required.
 - Repository URLs and the complete tracked verdict schema are validated
   strictly. Release/source streams use the policy's 64 MiB/256 MiB limits,
-  10/60-second connect/read timeouts, and 1 MiB chunks.
+  10/60-second connect/read timeouts, and 1 MiB chunks. A tag source over the
+  source limit cannot be compared or Trivy-scanned. Its release ZIP is still
+  fully scanned, and the source checks are marked `unsupported`, so the release
+  is `MANUAL_REVIEW` (not `AUDIT_ERROR`) unless something else blocks or fails.
 - Preparation has an eight-minute shared monotonic API deadline inside a
   ten-minute job. It bounds every producer REST request, pagination step,
   retry, and rate-limit wait; workers use the prepared commit/source snapshot

@@ -2182,6 +2182,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
         semgrep_findings: list[ap.Finding] | None = None,
         zip_data_override: bytes | None = None,
         materialize_failure: str = "source snapshot failed",
+        materialize_error: Exception | None = None,
     ) -> tuple[ap.AuditReport, dict[str, int]]:
         zip_data = zip_data_override or _make_zip(
             [
@@ -2246,7 +2247,7 @@ class TestAuditRepositoryMocked(unittest.TestCase):
 
         def fake_materialize(*_args, **_kwargs):
             counts["materialize"] += 1
-            raise RuntimeError(materialize_failure)
+            raise materialize_error or RuntimeError(materialize_failure)
 
         def fake_compare(_extract_root, _source_snapshot, _ref):
             counts["compare"] += 1
@@ -2398,6 +2399,28 @@ class TestAuditRepositoryMocked(unittest.TestCase):
                 for status in report.scanner_statuses
             )
         )
+
+    def test_oversized_source_is_manual_review_unless_artifact_scan_failed(self):
+        too_large = pru.DownloadLimitError("Streamed response exceeds 268435456 bytes")
+        report, counts = self._source_preparation_failure_report(
+            trivy_required=True,
+            source_diff_required=True,
+            materialize_error=too_large,
+        )
+        self.assertEqual(report.final_classification, "MANUAL_REVIEW")
+        self.assertEqual(report.completion_status, "completed")
+        self.assertEqual(counts["clamav"], 1)
+        statuses = {s.name: s.status for s in report.scanner_statuses}
+        self.assertEqual(statuses["trivy"], "unsupported")
+        self.assertEqual(statuses["source-artifact-diff"], "unsupported")
+
+        report, _counts = self._source_preparation_failure_report(
+            trivy_required=True,
+            source_diff_required=True,
+            trivy_status=ap.ScannerStatus(name="trivy", status="failed"),
+            materialize_error=too_large,
+        )
+        self.assertEqual(report.final_classification, "AUDIT_ERROR")
 
     def test_source_preparation_failure_marks_source_diff_required_as_audit_error(self):
         report, counts = self._source_preparation_failure_report(

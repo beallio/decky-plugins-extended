@@ -5125,6 +5125,9 @@ def audit_release(
         # --- ZIP inspection ---
         source_snapshot: Optional[audit_source_snapshot.SourceSnapshot] = None
         source_preparation_error: Optional[str] = None
+        # Over the policy byte cap is a known limit, not a transient error: the
+        # artifact is still fully scanned and the release goes to MANUAL_REVIEW.
+        source_too_large = False
         try:
             source_snapshot = audit_source_snapshot.materialize_source_snapshot(
                 repo_url,
@@ -5139,6 +5142,7 @@ def audit_release(
                 package_meta_data = source_snapshot.package_json
         except Exception as exc:
             source_preparation_error = _redacted_exception_detail(exc)
+            source_too_large = isinstance(exc, plugin_release_utils.DownloadLimitError)
             report.findings.append(
                 Finding(
                     rule_id="SOURCE_ARTIFACT_PREPARATION_FAILED",
@@ -5308,7 +5312,12 @@ def audit_release(
             if source_preparation_error is not None and trivy_source_enabled:
                 trivy_status = ScannerStatus(
                     name="trivy",
-                    status="failed",
+                    status=(
+                        "unsupported"
+                        if source_too_large
+                        and trivy_status.status in ("passed", "found_issue")
+                        else "failed"
+                    ),
                     detail=_combine_scanner_detail(
                         trivy_status.detail,
                         source_preparation_error,
@@ -5340,7 +5349,7 @@ def audit_release(
                     diff_findings: list[Finding] = []
                     diff_status = ScannerStatus(
                         name="source-artifact-diff",
-                        status="failed",
+                        status="unsupported" if source_too_large else "failed",
                         detail=_combine_scanner_detail(
                             None
                             if source_preparation_error is not None

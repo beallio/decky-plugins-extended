@@ -28,8 +28,6 @@ https://github.com/rsore/decky-bootnext
 https://github.com/stevensnoeijen/decky-insignia
 https://github.com/Teppichseite/RetroDECKY
 https://github.com/zany130/RSM-Decky
-https://github.com/Rayekkk/LeGoTDP
-https://github.com/Rayekkk/LeGo-Vibe-Control
 https://github.com/cwtechshiz/nordvpn-decky
 https://github.com/Rayekkk/DeckyVibranceHDR
 https://github.com/parvagans/achievement-companion
@@ -54,7 +52,6 @@ https://github.com/OpenCloudGaming/OpenNOW
 https://github.com/Rannius/ControllerXbox
 https://github.com/ValentineBSAA/TitleDeck
 https://github.com/ValentineBSAA/Game-Theme-Music
-https://github.com/adv-inn/Deckify
 https://github.com/SavageCore/xone-decky-plugin
 https://github.com/kromossomom-debug/decky-ps5-dashboard
 https://github.com/gillrajvir950-wq/deckyshare

@@ -742,6 +742,13 @@ socket, PID file, and database directory, so ClamAV's built-in scan limits
 match `clamscan`. An unreachable daemon gives a failed ClamAV status
 (`AUDIT_ERROR`), not a pass.
 
+A tag source tarball over `downloads.source_max_bytes` (256 MiB) stops at the
+limit. The release ZIP is still fully scanned. The source Trivy scan and the
+source/artifact comparison are marked `unsupported`, and the release becomes
+`MANUAL_REVIEW`. If the ZIP's own Trivy scan fails, the release is still
+`AUDIT_ERROR`. Kaal31/benderthemes (ThemeHub) is the first source over the limit.
+Its tarball grew from 172 MiB to 602 MiB in October 2026.
+
 For pull requests, a change only to `additional_plugins.txt` selects changed
 repositories. Any audit/generator/update/release-utility, policy, allowlist,
 verdict, Semgrep-rule, dependency, selector, quality-gate, test, or audit-workflow
