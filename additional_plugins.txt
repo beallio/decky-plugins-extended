@@ -234,3 +234,12 @@ https://github.com/VovasaeXranitel/decky-codex-remote
 https://github.com/YunGuiHe/freedeck-plugin-enhancements
 https://github.com/PrivateiFox/XMDeck
 https://github.com/beallio/decky-storage-cleaner-rust
+https://github.com/JDLKMR/Decky-Launch-Manager
+https://github.com/JDLKMR/DateDeck
+https://github.com/JDLKMR/Emuchievements
+https://github.com/JDLKMR/playcount-decky
+https://github.com/JDLKMR/deck-roulette
+https://github.com/JDLKMR/Museck
+https://github.com/JDLKMR/Decky-GlucoDeck
+https://github.com/JDLKMR/Remove-Decky-Warnings
+https://github.com/JDLKMR/Decky-AppID-Lister
