@@ -51,7 +51,7 @@ the time those sub-plans landed. The current authoritative behavior is:
 - Scheduled workers prefetch the Trivy database after scanner setup, with a
   five-minute fail-closed step, and start one shard-local `clamd` so ClamAV
   signatures load once instead of once per release. They then run the audit for
-  up to 60 minutes inside a 90-minute job. Their split cache restores and saves
+  up to 100 minutes inside a 120-minute job. Their split cache restores and saves
   both `.audit-cache` and
   atomic `security-reports` checkpoints by policy hash and shard, using a unique
   save key for each run attempt. Restored partial data remains unpublishable:
@@ -109,7 +109,7 @@ for ClamAV, Trivy, or exact Semgrep `1.132.0` setup failures.
   projection rather than sequential unsharded completion. The preserved
   579-release snapshot projected the largest shard to 16.58 minutes at the
   observed p95 rate, within the former 22-minute PR audit-step limit. The
-  November 2026 corpus (about 3,100 releases) needs `clamd` and the 60-minute
+  November 2026 corpus (about 3,100 releases) needs `clamd` and the 100-minute
   step limit in both PR and scheduled shards. Its
   repeated-enumeration count is historical evidence, not a new-design result;
   hosted-runner quota behavior, concurrency, and external scanner-mirror

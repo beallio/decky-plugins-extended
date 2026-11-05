@@ -139,12 +139,12 @@ class WorkflowSecurityTests(unittest.TestCase):
             "      - name: Save audit cache\n", maxsplit=1
         )[1].split("\n      - name:", maxsplit=1)[0]
 
-        self.assertIn("\n    timeout-minutes: 90\n", scheduled_job)
+        self.assertIn("\n    timeout-minutes: 120\n", scheduled_job)
         self.assertIn("trivy image --download-db-only", prefetch)
         self.assertIn("timeout-minutes: 5", prefetch)
         self.assertNotIn("continue-on-error", prefetch)
         self.assertIn("::error::Trivy vulnerability database prefetch failed", prefetch)
-        self.assertIn("timeout-minutes: 60", audit)
+        self.assertIn("timeout-minutes: 100", audit)
         self.assertLess(
             scheduled_job.index("name: Install required security scanners"),
             scheduled_job.index("name: Prefetch Trivy vulnerability database"),
@@ -177,7 +177,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         )
         self.assertEqual(
             3,
-            (plugin_workflow + scheduled_workflow).count("timeout-minutes: 12"),
+            (plugin_workflow + scheduled_workflow).count("timeout-minutes: 12\n"),
         )
 
     def test_scanner_package_cache_is_restored_before_each_bootstrap(self):

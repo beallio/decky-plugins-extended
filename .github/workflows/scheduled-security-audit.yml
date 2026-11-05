@@ -72,7 +72,7 @@ jobs:
   scheduled-audit:
     name: Scheduled Audit (shard ${{ matrix.shard_index }}/14)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     needs: prepare-audit-worklist
     strategy:
       fail-fast: false
@@ -197,7 +197,7 @@ jobs:
               exit 1
               ;;
           esac
-        timeout-minutes: 60
+        timeout-minutes: 100
 
       - name: Save audit cache
         if: always() && !cancelled()

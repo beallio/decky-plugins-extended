@@ -667,7 +667,7 @@ automatically approve a finding.
 
 Scheduled workers prefetch the Trivy vulnerability database after scanner setup and
 before the audit. The prefetch has a five-minute fail-closed limit, the audit step
-has 60 minutes, and the worker job has 90 minutes so a completed checkpoint can be
+has 100 minutes, and the worker job has 120 minutes so a completed checkpoint can be
 saved after an audit failure or timeout. The scheduled cache restores and saves both
 `.audit-cache` and `security-reports`, keyed by policy hash and shard with an
 immutable run-attempt save key. Restore does not make partial evidence publishable:
@@ -726,7 +726,10 @@ snapshot assigns 30–52 releases per shard. A 161-release cold sample observed 
 largest shard projects to 16.58 minutes at p95, leaving 5.42 minutes of headroom
 inside the PR audit step's former 22-minute limit. That limit stopped being enough
 at the November 2026 corpus size (about 3,100 releases). The PR step now has the
-same 60-minute limit as the scheduled step. Its 83-request-per-worker,
+same 100-minute limit as the scheduled step. Normal scheduled shards take 25–52
+minutes; on 2026-11-05 every shard ran about twice as slow (with GitHub release
+download retries in the log) and five shards passed the former 60-minute limit.
+Its 83-request-per-worker,
 1,162-request repetition is historical capacity evidence for the prior design,
 not a measurement of the worklist data plane. Local tests prove topology,
 integrity, and bounded failure; hosted-runner quota behavior and resilience to

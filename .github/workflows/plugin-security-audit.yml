@@ -221,7 +221,7 @@ jobs:
   audit-shards:
     name: Security Audit (shard ${{ matrix.shard_index }}/14)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     needs: prepare-audit-worklist
     strategy:
       fail-fast: false
@@ -318,7 +318,7 @@ jobs:
               exit 1
               ;;
           esac
-        timeout-minutes: 60
+        timeout-minutes: 100
 
       - name: Upload isolated shard evidence
         if: always() && steps.audit.outputs.publishable == 'true'
