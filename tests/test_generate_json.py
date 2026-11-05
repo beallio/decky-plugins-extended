@@ -17,6 +17,9 @@ os.environ.setdefault("GITHUB_TOKEN", "test-token")
 
 import generate_json
 
+# conftest stubs this network lookup for catalog-loop tests.
+warn_package_version_mismatch = generate_json.warn_package_version_mismatch
+
 
 class GenerateJsonTests(unittest.TestCase):
     def test_build_version_object_requires_exactly_one_zip(self):
@@ -367,6 +370,37 @@ class GenerateJsonTests(unittest.TestCase):
             self.assertTrue(
                 generate_json.image_is_usable("https://example.invalid/x.png")
             )
+
+    def test_package_version_mismatch_warns_only_on_differing_version(self):
+        def response(version):
+            resp = Mock()
+            resp.json.return_value = {"version": version}
+            return resp
+
+        cases = [
+            (response("1.2.0"), "1.3.0", True),  # author did not bump package.json
+            (response("v1.3.0"), "1.3.0", False),
+            (generate_json.requests.ConnectionError("down"), "1.3.0", False),
+        ]
+        for outcome, catalog_version, warns in cases:
+            with self.subTest(outcome=outcome, catalog_version=catalog_version):
+                kwargs = (
+                    {"side_effect": outcome}
+                    if isinstance(outcome, Exception)
+                    else {"return_value": outcome}
+                )
+                with (
+                    patch.object(generate_json._image_session, "get", **kwargs) as get,
+                    patch("builtins.print") as printed,
+                ):
+                    warn_package_version_mismatch(
+                        "owner", "repo", "v1.3.0", catalog_version
+                    )
+                self.assertEqual(
+                    "https://raw.githubusercontent.com/owner/repo/v1.3.0/package.json",
+                    get.call_args.args[0],
+                )
+                self.assertEqual(warns, printed.called)
 
     def test_get_plugin_json_returns_none_when_absent(self):
         class Response:

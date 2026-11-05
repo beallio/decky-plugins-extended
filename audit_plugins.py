@@ -136,6 +136,7 @@ _NON_TABLE_RULE_IDS = {
     "MODIFIED_SOURCE_FILE",
     "NATIVE_BINARY",
     "OBFUSCATION_LARGE_BASE64",
+    "OBFUSCATION_JS_OBFUSCATOR",
     "PACKAGE_LIFECYCLE_SCRIPT",
     "ROOT_ACCESS",
     "SOURCE_ARTIFACT_DIFF_INCOMPLETE",
@@ -1870,6 +1871,11 @@ _IP_PATTERN = re.compile(
 _OBFUSCATION_BASE64 = re.compile(
     r"(?:[A-Za-z0-9+/]{60,}={0,2})",
 )
+# javascript-obfuscator (obfuscator.io) output: hex-renamed identifiers plus the
+# string-array rotation loop. Terser/esbuild minifiers emit neither.
+_OBFUSCATOR_IO_IDENTIFIER = re.compile(r"\b_0x[0-9a-f]{4,6}\b")
+_OBFUSCATOR_IO_ROTATION = re.compile(r"while\s*\(\s*!!\[\]\s*\)")
+_OBFUSCATOR_IO_MIN_IDENTIFIERS = 100
 _DOWNLOAD_CHMOD_EXEC = re.compile(
     r"(curl|wget)\s+[^\n]+\n[^\n]*(chmod\s+[+0-7]*x|chmod\s+777)[^\n]*\n[^\n]*(exec|subprocess|popen|\./)",
     re.DOTALL,
@@ -1971,6 +1977,27 @@ def scan_text_content(
                     scanner="decky-static-rules",
                 )
             )
+
+    rotation = _OBFUSCATOR_IO_ROTATION.search(content)
+    if rotation and (
+        sum(1 for _ in _OBFUSCATOR_IO_IDENTIFIER.finditer(content))
+        >= _OBFUSCATOR_IO_MIN_IDENTIFIERS
+    ):
+        start = max(0, rotation.start() - 40)
+        findings.append(
+            Finding(
+                rule_id="OBFUSCATION_JS_OBFUSCATOR",
+                severity="medium",
+                classification="MANUAL_REVIEW",
+                path=path,
+                line=content[: rotation.start()].count("\n") + 1,
+                message="JavaScript is obfuscated (javascript-obfuscator output), which hides its behaviour from review.",
+                evidence=redact_secrets(
+                    _truncate(content[start : rotation.end() + 40], EVIDENCE_MAX_LEN)
+                ),
+                scanner="decky-static-rules",
+            )
+        )
 
     return findings
 

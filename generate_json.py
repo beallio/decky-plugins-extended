@@ -5,6 +5,7 @@ import shutil
 import sys
 import tempfile
 import zipfile
+from urllib.parse import quote
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -86,7 +87,7 @@ def get_anon_session():
 
 session = get_session()
 anon_session = get_anon_session()
-# Optional artwork must not wait out a host's Retry-After delay.
+# Optional artwork and version checks must not wait out a host's Retry-After delay.
 _image_session = requests.Session()
 
 
@@ -124,6 +125,26 @@ def get_package_json(owner, repo, branch):
 
 def get_plugin_json(owner, repo, branch):
     return get_repo_json(owner, repo, branch, "plugin.json", required=False)
+
+
+def warn_package_version_mismatch(owner, repo, tag, version_name):
+    """Warn when the release tag's package.json version differs from the catalog name.
+
+    Decky offers an update when the catalog version is newer than the installed
+    package.json version, so a stale package.json repeats the update prompt.
+    """
+    url = f"https://raw.githubusercontent.com/{owner}/{repo}/{quote(tag)}/package.json"
+    try:
+        resp = _image_session.get(url, timeout=10)
+        resp.raise_for_status()
+        package_version = str(resp.json().get("version") or "").strip()
+    except (requests.RequestException, ValueError, AttributeError):
+        return
+    if package_version and normalize_version(package_version) != version_name:
+        print(
+            f"  Warning: package.json at {tag} has version {package_version!r}, "
+            f"but the catalog version is {version_name!r}."
+        )
 
 
 def resolve_plugin_name(plugin_json, pkg):
@@ -1164,6 +1185,7 @@ def main():
 
             stable_versions = []
             testing_versions = []
+            release_tags = {}
             blocked_identities = set()
             valid_release_count = 0
             blocked_release_count = 0
@@ -1288,6 +1310,7 @@ def main():
                     )
 
                 # Testing includes stable + prereleases
+                release_tags[v_obj["name"]] = rel.get("tag_name", "")
                 testing_versions.append(v_obj.copy())
                 # Stable only includes non-prereleases
                 if not rel.get("prerelease"):
@@ -1325,6 +1348,10 @@ def main():
 
             sort_versions(stable_versions)
             sort_versions(testing_versions)
+            for newest in {
+                v[0]["name"] for v in (stable_versions, testing_versions) if v
+            }:
+                warn_package_version_mismatch(owner, repo, release_tags[newest], newest)
 
             custom_plugin_names.add(plugin_name)
 

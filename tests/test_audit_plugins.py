@@ -702,6 +702,28 @@ class TestStaticAnalysis(unittest.TestCase):
         rule_ids = {f.rule_id for f in findings}
         self.assertIn("OBFUSCATION_LARGE_BASE64", rule_ids)
 
+    def test_javascript_obfuscator_output_needs_manual_review(self):
+        names = "".join(f"var _0x{index:04x}=0x{index:x};" for index in range(120))
+        rotation = (
+            "(function(_0x5dce8c,_0x4b06fe){while(!![]){try{"
+            "const _0x4cbcea=-parseInt(_0x219af7(0x47a));break;}"
+            "catch(_0x3b2c1a){_0x28596e.push(_0x28596e.shift());}}}(_0x1f2e,0x5e3a1));"
+        )
+        findings = self._scan(rotation + names, "dist/index.js", ".js")
+        obfuscated = [f for f in findings if f.rule_id == "OBFUSCATION_JS_OBFUSCATOR"]
+        self.assertEqual(1, len(obfuscated))
+        self.assertEqual("MANUAL_REVIEW", obfuscated[0].classification)
+
+        for content in (
+            rotation + names[:400],  # rotation loop with few hex names
+            names + "for(;;){if(!0)break}",  # hex names, minifier-style loop
+        ):
+            with self.subTest(content=content[:30]):
+                rule_ids = {
+                    f.rule_id for f in self._scan(content, "dist/index.js", ".js")
+                }
+                self.assertNotIn("OBFUSCATION_JS_OBFUSCATOR", rule_ids)
+
     def test_static_rules_redact_secrets_in_evidence(self):
         token = "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
         content = f"subprocess.run(cmd)  # token {token}\n"
