@@ -140,7 +140,7 @@ def warn_package_version_mismatch(owner, repo, tag, version_name):
         package_version = str(resp.json().get("version") or "").strip()
     except (requests.RequestException, ValueError, AttributeError):
         return
-    if package_version and normalize_version(package_version) != version_name:
+    if package_version and package_version.removeprefix("v") != version_name:
         print(
             f"  Warning: package.json at {tag} has version {package_version!r}, "
             f"but the catalog version is {version_name!r}."

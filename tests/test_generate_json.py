@@ -379,6 +379,7 @@ class GenerateJsonTests(unittest.TestCase):
 
         cases = [
             (response("1.2.0"), "1.3.0", True),  # author did not bump package.json
+            (response("0.3.alfa"), "0.3", True),  # installed string Decky compares
             (response("v1.3.0"), "1.3.0", False),
             (generate_json.requests.ConnectionError("down"), "1.3.0", False),
         ]
