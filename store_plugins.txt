@@ -21,6 +21,7 @@ https://github.com/decksettings/decky-virtual-surround-sound
 https://github.com/deckthemes/sdh-cssloader
 https://github.com/emudeck/emudecky
 https://github.com/felipejfc/decky-wifi-locker
+https://github.com/gedasfx/decky-cloud-save
 https://github.com/gedasfx/decky-ludusavi
 https://github.com/hard/varta-decky
 https://github.com/honjow/huesync
