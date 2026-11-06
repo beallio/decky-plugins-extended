@@ -325,6 +325,53 @@ class GenerateJsonTests(unittest.TestCase):
                 server.shutdown()
                 thread.join()
 
+    def test_github_rejection_reports_rate_limit_evidence(self):
+        body = b'{"message": "API rate limit exceeded for installation."}'
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(403)
+                self.send_header("X-RateLimit-Remaining", "0")
+                self.send_header("X-RateLimit-Limit", "1000")
+                self.send_header("X-RateLimit-Resource", "core")
+                self.send_header("X-RateLimit-Reset", "1794012000")
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            url = (
+                f"http://127.0.0.1:{server.server_port}/repos/o/r/contents/.gitmodules"
+            )
+            try:
+                with (
+                    patch("urllib3.util.retry.time.sleep"),
+                    patch("builtins.print") as printed,
+                    generate_json.get_session() as github,
+                ):
+                    response = github.get(url, timeout=10)
+                    with self.assertRaises(requests.HTTPError) as raised:
+                        response.raise_for_status()
+            finally:
+                server.shutdown()
+                thread.join()
+
+        self.assertEqual(403, raised.exception.response.status_code)
+        evidence = " ".join(str(call.args[0]) for call in printed.call_args_list)
+        for expected in (
+            "X-RateLimit-Remaining=0",
+            "X-RateLimit-Resource=core",
+            "X-RateLimit-Reset=2026-11-07T00:40:00+00:00",
+            "'API rate limit exceeded for installation.'",
+        ):
+            self.assertIn(expected, evidence)
+
     def test_image_is_usable_distinguishes_dead_from_transient(self):
         class Response:
             def __init__(self, status_code, content_type="image/png"):

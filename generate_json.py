@@ -5,6 +5,7 @@ import shutil
 import sys
 import tempfile
 import zipfile
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 import requests
@@ -56,11 +57,38 @@ if not GITHUB_TOKEN:
     raise ValueError("GITHUB_TOKEN environment variable is required")
 
 
+def _log_rejected_github_response(response, *_args, **_kwargs):
+    """Print why GitHub refused a request: a rate limit or an access policy."""
+    if response.status_code not in (403, 429):
+        return
+    headers = response.headers
+    reset = headers.get("X-RateLimit-Reset", "")
+    if reset.isdigit():
+        reset = datetime.fromtimestamp(int(reset), timezone.utc).isoformat()
+    try:
+        message = response.json().get("message")
+    except (ValueError, AttributeError):
+        message = response.text[:200]
+    print(
+        f"  GitHub HTTP {response.status_code} for {response.url}: "
+        f"X-RateLimit-Remaining={headers.get('X-RateLimit-Remaining')} "
+        f"X-RateLimit-Limit={headers.get('X-RateLimit-Limit')} "
+        f"X-RateLimit-Resource={headers.get('X-RateLimit-Resource')} "
+        f"X-RateLimit-Reset={reset or None} "
+        f"Retry-After={headers.get('Retry-After')} message={message!r}"
+    )
+
+
 def get_session():
     session = requests.Session()
+    # raise_on_status=False hands the final 403/429 to the hook and raise_for_status.
     retry = Retry(
-        total=3, backoff_factor=1, status_forcelist=[403, 429, 500, 502, 503, 504]
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[403, 429, 500, 502, 503, 504],
+        raise_on_status=False,
     )
+    session.hooks["response"].append(_log_rejected_github_response)
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
