@@ -241,3 +241,4 @@ https://github.com/JDLKMR/Museck
 https://github.com/JDLKMR/Decky-GlucoDeck
 https://github.com/JDLKMR/Remove-Decky-Warnings
 https://github.com/JDLKMR/Decky-AppID-Lister
+https://github.com/JasperJz/hhd-decky-steamos-ally
