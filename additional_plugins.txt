@@ -50,7 +50,6 @@ https://github.com/Rayekkk/LegionGo2Companion
 https://github.com/danielcamilo1/decky-add-non-steam-games/
 https://github.com/OpenCloudGaming/OpenNOW
 https://github.com/Rannius/ControllerXbox
-https://github.com/ValentineBSAA/TitleDeck
 https://github.com/ValentineBSAA/Game-Theme-Music
 https://github.com/SavageCore/xone-decky-plugin
 https://github.com/kromossomom-debug/decky-ps5-dashboard
@@ -99,7 +98,6 @@ https://github.com/emu-sync/EmuSync-DeckyPlugin
 https://github.com/Steamdeckchecker/Github-Decky-Plugins-Updater
 https://github.com/Ciphay/Decky-File-Manager
 https://github.com/WowOne987/eGPUBridge
-https://github.com/Qiming-Liu/CreamDeck
 https://github.com/artistro08/decky-youtube-music-player
 https://github.com/Janleyx/decky-spotify-connect
 https://github.com/Wurielle/decky-launch-options-recipes
