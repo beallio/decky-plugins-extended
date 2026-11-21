@@ -452,7 +452,8 @@
   ],
   "https://github.com/ohaiibuzzle/decky-dot-dns": [
     "0.0.2",
-    "0.0.4-d6ba4c6"
+    "0.0.4-d6ba4c6",
+    "0.0.5-6e2eefc"
   ],
   "https://github.com/ohaiibuzzle/decky-spoof-dpi": [
     "0.12.0"
