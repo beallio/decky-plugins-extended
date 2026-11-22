@@ -397,3 +397,59 @@ jobs:
           path: security-reports
           retention-days: 90
           if-no-files-found: warn
+
+  report-audit-failure:
+    name: Open or close audit failure issue
+    needs: [prepare-audit-worklist, scheduled-audit, aggregate-and-publish]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - name: Download aggregate scheduled evidence
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: scheduled-security-audit-aggregate
+          path: security-reports
+
+      - name: Open, update, or close the audit failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          label=audit-failure
+          issue=$(gh issue list --label "$label" --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [[ " $RESULTS " != *" failure "* ]]; then
+            # Close only after a fully green run; a cancelled run proves nothing.
+            if [[ -n "$issue" && "$RESULTS" =~ ^(success ?)+$ ]]; then
+              gh issue close "$issue" --comment "The audit passed again: $RUN_URL"
+            fi
+            exit 0
+          fi
+          errors=""
+          report=security-reports/security-report.json
+          if [[ -f "$report" ]]; then
+            # Backticks are removed so plugin-supplied text cannot leave the code block.
+            errors=$(jq -r '[.reports[]
+              | select(.final_classification == "AUDIT_ERROR" or .final_classification == "BLOCK")
+              | "\(.final_classification) \(.repository) \(.release // "") \((.errors // []) | join("; "))"
+              | gsub("`"; "")] | sort | .[:50] | join("\n")' "$report")
+          fi
+          errors=${errors:-No AUDIT_ERROR or BLOCK report is available. Examine the failed jobs in the run.}
+          # The marker lets later runs with the same errors skip a duplicate comment.
+          marker="<!-- audit-errors:$(sha256sum <<<"$errors" | cut -c1-16) -->"
+          body=$(printf 'Scheduled Security Audit failed: %s\n\nJob results: %s\n\n```text\n%s\n```\n\n%s\n' \
+            "$RUN_URL" "$RESULTS" "$errors" "$marker")
+          if [[ -z "$issue" ]]; then
+            gh label create "$label" --color B60205 \
+              --description "Scheduled Security Audit is failing" --force
+            gh issue create --title "Scheduled Security Audit is failing" --label "$label" --body "$body"
+          elif ! gh issue view "$issue" --json body,comments --jq '.body, .comments[].body' \
+            | grep -qF "$marker"; then
+            gh issue comment "$issue" --body "$body"
+          fi

@@ -115,6 +115,11 @@ required root metadata from the additional list when they are no longer usable.
 Removing a fork does not remove the official plugin source tracked separately in
 `store_plugins.txt`.
 
+When a scheduled audit fails, the workflow opens one issue with the
+`audit-failure` label. The issue lists each `AUDIT_ERROR` and `BLOCK` report.
+Later failed runs add a comment only when the error list changes. The next fully
+successful run closes the issue.
+
 Each repository must have:
 
 - A `plugin.json` file on its default branch with a `name` field. Decky
