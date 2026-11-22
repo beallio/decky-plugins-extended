@@ -210,7 +210,6 @@ https://github.com/SafetZahirovic/decky-discord-integration
 https://github.com/sonck201/warp-deck
 https://github.com/th3pajay/DeckyNews
 https://github.com/TochaRude/VPN-WoL-Decky
-https://github.com/abduznik/romm-armada
 https://github.com/Hintay/decky-rustdeck
 https://github.com/kedMertens/steamdbDeckyButton
 https://github.com/mysteriousHerb/just-clock
