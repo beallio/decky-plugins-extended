@@ -242,3 +242,5 @@ https://github.com/JDLKMR/Remove-Decky-Warnings
 https://github.com/JDLKMR/Decky-AppID-Lister
 https://github.com/JasperJz/hhd-decky-steamos-ally
 https://github.com/shikamaru2694/CuivarPulse
+https://github.com/JDLKMR/Decky-3D-Game-Cases
+https://github.com/JDLKMR/Decky-Cover-Overlayer
