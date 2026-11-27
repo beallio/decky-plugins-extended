@@ -245,3 +245,4 @@ https://github.com/shikamaru2694/CuivarPulse
 https://github.com/JDLKMR/Decky-3D-Game-Cases
 https://github.com/JDLKMR/Decky-Cover-Overlayer
 https://github.com/JDLKMR/Decky-Collections-Shortcut
+https://github.com/JDLKMR/Decky-CheevoViewer
